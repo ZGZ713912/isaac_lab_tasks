@@ -13,7 +13,15 @@
 """Script to an environment with random action agent."""
 
 """Launch Isaac Sim Simulator first."""
+import os
 import sys
+
+# ensure the repository root is importable regardless of how the script is invoked
+# (env.py imports scripts.utils.velocity_trace_html at module level)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import argparse
 import math
 import time
