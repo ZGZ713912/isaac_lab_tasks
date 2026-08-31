@@ -16,6 +16,7 @@ import os
 
 # 导入子模块，触发 gymnasium 环境注册
 import agent_tasks.direct.wheelbipe.wheelbipe_V14  # noqa: F401
+import agent_tasks.direct.deformable_suspension  # noqa: F401
 
 # Parent Path
 RootPath = os.path.dirname(os.path.abspath(__file__))
