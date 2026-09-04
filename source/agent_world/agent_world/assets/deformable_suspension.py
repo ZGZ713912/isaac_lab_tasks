@@ -43,12 +43,13 @@ DeformableSuspensionCFG = ArticulationCfg(
             solver_velocity_iteration_count=4,
         ),
     ),
-    # 名义站姿：q=0（四腿同角 0，车体原点离地 0.132 m，轮半径 0.077 m）
+    # 名义站姿：q = 1.3439（77°，max 位，腿与水平夹角 77°，车体最高）——
+    # 角度约定已与部署统一：q 数值 = 最粗杆与水平面的夹角（5°~77°，量角器实测）
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.137),
         joint_pos={
-            "joint_leg_.*": 0.0,
-            "joint_wheel_set_.*": 0.0,
+            "joint_leg_.*": 1.3439,
+            "joint_wheel_set_.*": 1.3439,
             "joint_wheel_.*": 0.0,
         },
         joint_vel={".*": 0.0},

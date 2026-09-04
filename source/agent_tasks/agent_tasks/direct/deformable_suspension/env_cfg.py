@@ -47,8 +47,9 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
 
     # ---- 任务参数（与部署 rmcs_rl 配置严格对齐）----
     leg_action_scale = 0.25  # rad per action unit
-    default_height_cmd = 0.132  # 车体原点离地高度（θ=0 名义站姿）
+    default_height_cmd = 0.132  # 名义站姿高度指令（对应 q=1.3439 = 77°，水平夹角系）
     height_range = (0.05, 0.17)  # 高度指令范围（三档基准：普通 0.132 / 高 0.16+ / 低 0.05~0.06）
+    init_root_height = 0.18  # 初始车体原点离地高度（名义 0.132 + 缓冲，防初始穿透）
     termination_roll_deg = 35.0
     termination_pitch_deg = 35.0
     terminate_base_height_low = 0.03  # 接触力终止兜底，高度终止仅防数值异常

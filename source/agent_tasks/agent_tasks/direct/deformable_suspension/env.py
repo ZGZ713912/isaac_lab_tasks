@@ -260,15 +260,15 @@ class DeformableSuspensionEnv(DirectRLEnv):
         n = len(env_ids)
         device = self.device
 
-        # 关节：leg/ws 恢复默认位姿（q=0），轮子随机角（continuous 无害）
+        # 关节：leg/ws 恢复默认位姿（q=1.3439 = 77° 名义站姿），轮子随机角（continuous 无害）
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         joint_pos[:, self._wheels_idx] = torch.rand(n, len(self._wheels_idx), device=device) * 4 * math.pi - 2 * math.pi
         joint_vel = torch.zeros(n, self._num_joints, device=device)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        # 根状态：地形 origin + 名义高度 + 缓冲；yaw 随机；速度归零（calm start）
+        # 根状态：地形 origin + 初始高度（名义 0.132 + 缓冲）；yaw 随机；速度归零（calm start）
         root_pos = self.scene.env_origins[env_ids].clone()
-        root_pos[:, 2] += 0.132 + 0.005
+        root_pos[:, 2] += self.cfg.init_root_height
         yaw = torch.rand(n, device=device) * 2 * math.pi - math.pi
         root_quat = torch.zeros(n, 4, device=device)
         root_quat[:, 0] = torch.cos(yaw / 2)
