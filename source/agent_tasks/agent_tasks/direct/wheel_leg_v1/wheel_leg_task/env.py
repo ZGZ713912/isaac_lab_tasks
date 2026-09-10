@@ -114,17 +114,18 @@ class WheelLegV1Env(WheelLegTerrainEnv):
 
         # —— 找到关键部件的索引（之后每步都按索引批量读写，避免每步按名字查找）——
         self._wheel_link_idx, _ = self.robot.find_bodies("(L_link3|R_link3)")  # 左右轮子 link 的索引（算轮子高度/接触用）
-        self._gimbal_yaw_link_idx, _ = self.robot.find_bodies("gimbal_yaw_link")  # 云台 yaw 连杆索引（算云台朝向用）
         self._guide_link_idx = []          # V14 已去掉 guide 机构，这里保留空列表兼容父类逻辑
         self._use_gimbal = self._is_gimbal_enabled()  # 读配置判断本任务是否启用云台
-        if self._use_gimbal:               # 启用云台：找到 yaw / pitch 两个关节的索引
+        if self._use_gimbal:               # 启用云台：找到 yaw / pitch 两个关节与 yaw 连杆的索引
+            self._gimbal_yaw_link_idx, _ = self.robot.find_bodies("gimbal_yaw_link")  # 云台 yaw 连杆索引
             self._gimbal_yaw_idx, self._gimbal_yaw_joint_names = self.robot.find_joints(
                 self.cfg.gimbal_yaw_name   # 配置里写的 yaw 关节名（正则）
             )
             self._gimbal_pitch_idx, self._gimbal_pitch_joint_names = self.robot.find_joints(
                 self.cfg.gimbal_pitch_name  # pitch 关节名
             )
-        else:                              # 不启用云台：索引留空，相关逻辑会自动跳过
+        else:                              # 不启用云台：索引留空，相关逻辑会自动跳过（find_* 对无匹配会抛错，故不查询）
+            self._gimbal_yaw_link_idx = []
             self._gimbal_yaw_idx, self._gimbal_yaw_joint_names = [], []
             self._gimbal_pitch_idx, self._gimbal_pitch_joint_names = [], []
         self._gimbal_idx = list(self._gimbal_yaw_idx) + list(self._gimbal_pitch_idx)  # 云台全部关节索引
@@ -595,16 +596,16 @@ class WheelLegV1Env(WheelLegTerrainEnv):
         n = env_ids_t.numel()
         if n == 0:
             return
-        root_pos = self.scene.env_origins[env_ids_t].clone()
-        root_pos[:, 2] += float(getattr(self.cfg, "simple_reset_root_height", 0.35))
+        # Isaac Lab 2.x API：pose = [pos(3) | quat wxyz(4)]，velocity = [lin(3) | ang(3)]，各一个张量。
+        root_pose = torch.zeros(n, 7, device=self.device)
+        root_pose[:, :3] = self.scene.env_origins[env_ids_t]
+        root_pose[:, 2] += float(getattr(self.cfg, "simple_reset_root_height", 0.35))
         yaw = torch.rand(n, device=self.device) * 2 * torch.pi - torch.pi
-        root_quat = torch.zeros(n, 4, device=self.device)
-        root_quat[:, 0] = torch.cos(yaw / 2)
-        root_quat[:, 3] = torch.sin(yaw / 2)
-        self.robot.write_root_pose_to_sim(root_pos, root_quat, env_ids=env_ids_t)
+        root_pose[:, 3] = torch.cos(yaw / 2)   # quat w
+        root_pose[:, 6] = torch.sin(yaw / 2)   # quat z
+        self.robot.write_root_pose_to_sim(root_pose, env_ids=env_ids_t)
         self.robot.write_root_velocity_to_sim(
-            torch.zeros(n, 3, device=self.device),
-            torch.zeros(n, 3, device=self.device),
+            torch.zeros(n, 6, device=self.device),
             env_ids=env_ids_t,
         )
 

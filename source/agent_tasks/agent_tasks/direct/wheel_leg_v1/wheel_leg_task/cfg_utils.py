@@ -67,6 +67,20 @@ V14_NP3O_ON_CONSTRAINT_EXTRA_PRIV_DIM = (
     + V14_PRIV_OBS_PLUS_EXTRA_DIM
     + V14_BASE_POLICY_OBS_DIM * V14_NP3O_POLICY_HIST
 )
+
+# ── Wheel_leg_V1 实际特权观测维度 ────────────────────────────────────────────
+# WheelLegV1FlatEnvCfg 在 32 维基础特权观测之上再拼 39 维 privileged_extra
+# （privileged_extra_obs_dim=39），因此实际 critic 向量 = 32 + 39 = 71。
+# 以下常量供 DreamWaQ / HIM / NP3O 等算法变体对齐观测空间，避免维度声明与实际
+# 张量长度不一致（此前误用 V14_BASE_PRIVILEGED_OBS_DIM=32 导致训练崩溃）。
+V14_PRIVILEGED_EXTRA_OBS_DIM = 39
+V14_WHEEL_LEG_PRIVILEGED_OBS_DIM = V14_BASE_PRIVILEGED_OBS_DIM + V14_PRIVILEGED_EXTRA_OBS_DIM  # 71
+V14_WHEEL_LEG_PRIV_LATENT_DIM = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM - V14_BASE_POLICY_OBS_DIM      # 43
+V14_NP3O_ON_CONSTRAINT_V1_DIM = (
+    V14_BASE_POLICY_OBS_DIM                                   # policy
+    + V14_WHEEL_LEG_PRIV_LATENT_DIM                           # priv_latent（含 privileged extra）
+    + V14_BASE_POLICY_OBS_DIM * V14_NP3O_POLICY_HIST          # policy_hist
+)  # 28 + 43 + 280 = 351
 V14_BODY_HEIGHT_SCANNER_GRID_SIZE = (0.02, 0.02)
 V14_BODY_HEIGHT_SCANNER_RESOLUTION = 0.01
 V14_WHEEL_HEIGHT_SCANNER_GRID_SIZE = (0.015, 0.015)
@@ -850,6 +864,10 @@ __all__ = (
     "V14_NP3O_COST_DIM",
     "V14_NP3O_ON_CONSTRAINT_DIM",
     "V14_NP3O_ON_CONSTRAINT_EXTRA_PRIV_DIM",
+    "V14_PRIVILEGED_EXTRA_OBS_DIM",
+    "V14_WHEEL_LEG_PRIVILEGED_OBS_DIM",
+    "V14_WHEEL_LEG_PRIV_LATENT_DIM",
+    "V14_NP3O_ON_CONSTRAINT_V1_DIM",
     "V14_BASIC_OBS_CLIP",
     "V14_BASIC_OBS_SCALE",
     "V14_EXTRA_OBS_CLIP",

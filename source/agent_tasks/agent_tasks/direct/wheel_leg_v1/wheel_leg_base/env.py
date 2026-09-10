@@ -2050,10 +2050,12 @@ class WheelLegBaseEnv(DirectRLEnv):
         self._rear1_joint_idx, _ = self.robot.find_joints("(L_joint2|R_joint2)")
         self._legs_front_idx = self._front1_joint_idx
         self._legs_rear_idx = self._rear1_joint_idx
-        self._front2_joint_idx, _ = self.robot.find_joints("L_joint1_never")  # 无 front2
-        self._front3_joint_idx, _ = self.robot.find_joints("L_joint1_never")
-        self._front4_joint_idx, _ = self.robot.find_joints("L_joint1_never")
-        self._rear2_joint_idx, _ = self.robot.find_joints("L_joint1_never")
+        # Wheel_leg_V1 无 front2..4 / rear2 关节（find_joints 对无匹配正则直接抛错），
+        # 显式置空列表，下游消费处均有 len()==0 守卫。
+        self._front2_joint_idx = []
+        self._front3_joint_idx = []
+        self._front4_joint_idx = []
+        self._rear2_joint_idx = []
         self.reorder_reset_joint_idx = self._actuate_idx  # 重置写全 6 DOF（L1,L2,L3,R1,R2,R3 DOF 序）
         self._deviation_joint_idx = self._legs_act_idx
         self._left_right_leg_joint_pair_idx = self._get_left_right_leg_joint_pair_indices()

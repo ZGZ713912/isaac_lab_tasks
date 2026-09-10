@@ -1961,23 +1961,23 @@ class WheelLegV1FlatDreamWaqEnvCfg(WheelLegV1FlatEnvCfg):
     observation_space = {            # DreamWaQ 的分组观测空间
         "policy": V14_BASE_POLICY_OBS_DIM,                       # 策略当前观测
         "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_DREAMWAQ_POLICY_HIST,  # 策略历史堆叠
-        "critic": V14_BASE_PRIVILEGED_OBS_DIM,                   # critic 特权观测
-        "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,              # 上一帧 critic 观测
-        "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,              # critic 历史
+        "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,              # critic 特权观测（=71）
+        "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,         # 上一帧 critic 观测
+        "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,         # critic 历史
     }
-    state_space = V14_BASE_PRIVILEGED_OBS_DIM
+    state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
 
     def __post_init__(self):
         super().__post_init__()
         self.num_single_obs = V14_BASE_POLICY_OBS_DIM            # 单帧维度对齐
-        self.num_single_privileged_obs = V14_BASE_PRIVILEGED_OBS_DIM
-        self.state_space = V14_BASE_PRIVILEGED_OBS_DIM
+        self.num_single_privileged_obs = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
+        self.state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
         self.observation_space = {                               # 再次显式设置（保证一致）
             "policy": V14_BASE_POLICY_OBS_DIM,
             "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_DREAMWAQ_POLICY_HIST,
-            "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+            "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
         }
 
 
@@ -1999,23 +1999,23 @@ class WheelLegV1FlatDreamWaqEnvCfg_Play(WheelLegV1FlatEnvCfg_Play):
     observation_space = {            # 同训练版
         "policy": V14_BASE_POLICY_OBS_DIM,
         "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_DREAMWAQ_POLICY_HIST,
-        "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-        "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-        "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+        "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+        "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+        "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
     }
-    state_space = V14_BASE_PRIVILEGED_OBS_DIM
+    state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
 
     def __post_init__(self):
         super().__post_init__()
         self.num_single_obs = V14_BASE_POLICY_OBS_DIM
-        self.num_single_privileged_obs = V14_BASE_PRIVILEGED_OBS_DIM
-        self.state_space = V14_BASE_PRIVILEGED_OBS_DIM
+        self.num_single_privileged_obs = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
+        self.state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
         self.observation_space = {   # 同训练版
             "policy": V14_BASE_POLICY_OBS_DIM,
             "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_DREAMWAQ_POLICY_HIST,
-            "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+            "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
         }
 
 
@@ -2033,23 +2033,23 @@ class WheelLegV1FlatHIMEnvCfg(WheelLegV1FlatEnvCfg):
     observation_space = {            # HIM 的分组观测空间（结构同 DreamWaQ，历史长度不同）
         "policy": V14_BASE_POLICY_OBS_DIM,
         "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_HIM_POLICY_HIST,
-        "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-        "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-        "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+        "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+        "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+        "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
     }
-    state_space = V14_BASE_PRIVILEGED_OBS_DIM
+    state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
 
     def __post_init__(self):
         super().__post_init__()
         self.num_single_obs = V14_BASE_POLICY_OBS_DIM
-        self.num_single_privileged_obs = V14_BASE_PRIVILEGED_OBS_DIM
-        self.state_space = V14_BASE_PRIVILEGED_OBS_DIM
+        self.num_single_privileged_obs = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
+        self.state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
         self.observation_space = {   # 同上
             "policy": V14_BASE_POLICY_OBS_DIM,
             "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_HIM_POLICY_HIST,
-            "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+            "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
         }
 
 
@@ -2069,23 +2069,23 @@ class WheelLegV1FlatHIMEnvCfg_Play(WheelLegV1FlatEnvCfg_Play):
     observation_space = {            # 同训练版
         "policy": V14_BASE_POLICY_OBS_DIM,
         "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_HIM_POLICY_HIST,
-        "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-        "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-        "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+        "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+        "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+        "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
     }
-    state_space = V14_BASE_PRIVILEGED_OBS_DIM
+    state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
 
     def __post_init__(self):
         super().__post_init__()
         self.num_single_obs = V14_BASE_POLICY_OBS_DIM
-        self.num_single_privileged_obs = V14_BASE_PRIVILEGED_OBS_DIM
-        self.state_space = V14_BASE_PRIVILEGED_OBS_DIM
+        self.num_single_privileged_obs = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
+        self.state_space = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
         self.observation_space = {   # 同训练版
             "policy": V14_BASE_POLICY_OBS_DIM,
             "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_HIM_POLICY_HIST,
-            "critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "prev_critic": V14_BASE_PRIVILEGED_OBS_DIM,
-            "critic_hist": V14_BASE_PRIVILEGED_OBS_DIM,
+            "critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "prev_critic": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
+            "critic_hist": V14_WHEEL_LEG_PRIVILEGED_OBS_DIM,
         }
 
 
@@ -2119,21 +2119,21 @@ class WheelLegV1FlatNP3OBarlowEnvCfg(WheelLegV1FlatEnvCfg):
     observation_space = {            # NP3O 的分组观测空间（多了约束观测）
         "policy": V14_BASE_POLICY_OBS_DIM,
         "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_NP3O_POLICY_HIST,
-        "priv_latent": V14_NP3O_EST_DIM,             # 特权隐变量
-        "on_constraint": V14_NP3O_ON_CONSTRAINT_DIM, # 约束观测
+        "priv_latent": V14_WHEEL_LEG_PRIV_LATENT_DIM,        # 特权隐变量（含 39 维 privileged extra）
+        "on_constraint": V14_NP3O_ON_CONSTRAINT_V1_DIM,      # 约束观测（policy+priv_latent+policy_hist）
     }
-    state_space = V14_NP3O_ON_CONSTRAINT_DIM
+    state_space = V14_NP3O_ON_CONSTRAINT_V1_DIM
 
     def __post_init__(self):
         super().__post_init__()
         self.num_single_obs = V14_BASE_POLICY_OBS_DIM
-        self.num_single_privileged_obs = V14_BASE_PRIVILEGED_OBS_DIM
-        self.state_space = V14_NP3O_ON_CONSTRAINT_DIM
+        self.num_single_privileged_obs = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
+        self.state_space = V14_NP3O_ON_CONSTRAINT_V1_DIM
         self.observation_space = {   # 同上
             "policy": V14_BASE_POLICY_OBS_DIM,
             "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_NP3O_POLICY_HIST,
-            "priv_latent": V14_NP3O_EST_DIM,
-            "on_constraint": V14_NP3O_ON_CONSTRAINT_DIM,
+            "priv_latent": V14_WHEEL_LEG_PRIV_LATENT_DIM,
+            "on_constraint": V14_NP3O_ON_CONSTRAINT_V1_DIM,
         }
         # self.rewards = copy.deepcopy(self.rewards)   # （注释掉：NP3O 专用的奖励权重覆盖方案）
         # self.rewards.update(
@@ -2178,21 +2178,21 @@ class WheelLegV1FlatNP3OBarlowEnvCfg_Play(WheelLegV1FlatEnvCfg_Play):
     observation_space = {            # 同训练版
         "policy": V14_BASE_POLICY_OBS_DIM,
         "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_NP3O_POLICY_HIST,
-        "priv_latent": V14_NP3O_EST_DIM,
-        "on_constraint": V14_NP3O_ON_CONSTRAINT_DIM,
+        "priv_latent": V14_WHEEL_LEG_PRIV_LATENT_DIM,
+        "on_constraint": V14_NP3O_ON_CONSTRAINT_V1_DIM,
     }
-    state_space = V14_NP3O_ON_CONSTRAINT_DIM
+    state_space = V14_NP3O_ON_CONSTRAINT_V1_DIM
 
     def __post_init__(self):
         super().__post_init__()
         self.num_single_obs = V14_BASE_POLICY_OBS_DIM
-        self.num_single_privileged_obs = V14_BASE_PRIVILEGED_OBS_DIM
-        self.state_space = V14_NP3O_ON_CONSTRAINT_DIM
+        self.num_single_privileged_obs = V14_WHEEL_LEG_PRIVILEGED_OBS_DIM
+        self.state_space = V14_NP3O_ON_CONSTRAINT_V1_DIM
         self.observation_space = {   # 同训练版
             "policy": V14_BASE_POLICY_OBS_DIM,
             "policy_hist": V14_BASE_POLICY_OBS_DIM * V14_NP3O_POLICY_HIST,
-            "priv_latent": V14_NP3O_EST_DIM,
-            "on_constraint": V14_NP3O_ON_CONSTRAINT_DIM,
+            "priv_latent": V14_WHEEL_LEG_PRIV_LATENT_DIM,
+            "on_constraint": V14_NP3O_ON_CONSTRAINT_V1_DIM,
         }
 
 @configclass
