@@ -574,6 +574,52 @@ class CurriculumCfgV14Stand:
         },
     )
 
+    # ★站立优先速度指令课程：先全体零指令练站住，再分档放开运动指令。
+    #   - 阶段0：rel_standing_envs=1.0（全体零指令，自旋/冲刺拿不到环境），
+    #     最少 400 轮 + 存活≥10s + track_height_exp_tight 窗口均值≥0.4 才晋级；
+    #   - 阶段1：小速度 ±0.4 m/s / ±0.5 rad/s，最少 300 轮 + 存活≥12s 晋级；
+    #   - 阶段2：恢复常规 ±1.2 m/s / ±1.0 rad/s（冲刺/自旋仍按各自轮次原计划）。
+    #   disable_special_modes：新的课程接管零指令阶段，关闭旧的写死窗口 zero_cmd。
+    command_velocity_progression = CurrTerm(
+        func=mdp.CommandVelocityProgression,
+        params={
+            "reward_key": "track_height_exp_tight",
+            "num_steps_per_env": 24,
+            "window_size": 64,
+            "min_stage_episodes": 64,
+            "normalize_by_episode_length": True,
+            "disable_special_modes": ("zero_cmd",),
+            "stages": [
+                {
+                    "rel_standing_envs": 1.0,
+                    "lin_vel_x": (0.0, 0.0),
+                    "lin_vel_y": (0.0, 0.0),
+                    "ang_vel_z": (0.0, 0.0),
+                    "min_iterations": 400,
+                    "min_episodes": 64,
+                    "min_episode_time_s": 10.0,
+                    "threshold": 0.4,
+                },
+                {
+                    "rel_standing_envs": 0.1,
+                    "lin_vel_x": (-0.4, 0.4),
+                    "lin_vel_y": (0.0, 0.0),
+                    "ang_vel_z": (-0.5, 0.5),
+                    "min_iterations": 300,
+                    "min_episodes": 64,
+                    "min_episode_time_s": 12.0,
+                    "threshold": 0.4,
+                },
+                {
+                    "rel_standing_envs": 0.1,
+                    "lin_vel_x": (-1.2, 1.2),
+                    "lin_vel_y": (0.0, 0.0),
+                    "ang_vel_z": (-1.0, 1.0),
+                },
+            ],
+        },
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # V14 平地基类：所有 V14 任务的"默认参数"都在这里，其它任务类继承后只改差异项。
@@ -891,6 +937,8 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     height_upright_gate_sigma: float = 0.1
     stand_still_deadzone_enabled: bool = True       # "站住"死区：指令速度≈0 时按站住判定
     stand_still_deadzone_threshold: float = 0.1     # 死区阈值 0.1 m/s
+    stand_drift_deadband: float = 0.1               # ★净位移惩罚死区（m）：小于该漂移不罚，允许平衡微动
+    stand_drift_sigma: float = 1.0                  # ★净位移惩罚缩放（1/m）：越大罚得越陡
     # —— 轮电机轴对齐奖励参数（保持轮轴水平=身体不歪）——
     wheel_motor_z_axis_align_ref_y_offset: float = 0.20855  # 参考点 y 偏移
     wheel_motor_z_axis_align_tolerance: float = 0.0         # 容差
@@ -1045,6 +1093,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         track_ang_vel_z_square=-1.0, # 转向误差平方惩罚
         # track_ang_vel_z_square=-0.1,
         stand_still_lin_vel=-1.0,    # 指令为零时乱动惩罚（站着别晃）
+        stand_drift=-2.0,            # ★指令≈0 时净水平位移惩罚（允许平衡微动，防慢慢漂走）
         # stand_still=-2.0,
         stand_still=-0.0,            # 站住奖励（当前关闭）
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）

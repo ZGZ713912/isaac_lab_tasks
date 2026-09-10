@@ -1962,6 +1962,8 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         # initial actions buffer
         self._actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
+        # 站立课程用：每个 episode 的水平参考位置（净位移惩罚基准，reset 时更新）
+        self._stand_ref_pos_w = torch.zeros(self.num_envs, 2, device=self.device)
         self._previous_actions = torch.zeros(
             self.num_envs, self.cfg.action_space, device=self.device
         )
@@ -3779,6 +3781,18 @@ class WheelLegBaseEnv(DirectRLEnv):
             torch.sum(torch.abs(self.robot.data.root_lin_vel_b[:, :2]), dim=1)
             * stand_still_lin_mask.float()
         )
+        # ★净水平位移惩罚：指令≈0 时，惩罚相对本回合复位参考点的水平漂移。
+        #   允许平衡修正带来的来回微动（位移回到参考点则不计），只防慢慢漂走。
+        stand_ref_xy = getattr(self, "_stand_ref_pos_w", None)
+        if stand_ref_xy is not None:
+            stand_drift_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - stand_ref_xy, dim=-1)
+            stand_drift_deadband = max(float(getattr(self.cfg, "stand_drift_deadband", 0.1)), 0.0)
+            stand_drift_sigma = max(float(getattr(self.cfg, "stand_drift_sigma", 1.0)), 0.0)
+            rew_stand_drift = torch.square(
+                torch.clamp(stand_drift_dist - stand_drift_deadband, min=0.0) * stand_drift_sigma
+            ) * stand_still_lin_mask.float()
+        else:
+            rew_stand_drift = torch.zeros(self.num_envs, device=self.device)
 
         # 约束加减速足端位置
         # foot_bound_square = torch.square(wheel_pos_heading_b[:,:,0])

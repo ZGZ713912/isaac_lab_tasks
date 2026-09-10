@@ -51,12 +51,21 @@ class CommandVelocityProgression(ManagerTermBase):
         self.normalize_by_episode_length: bool = bool(params.get("normalize_by_episode_length", True))
         self.window_size = self.window_size * self.num_steps_per_env
         self.min_stage_episodes = self.min_stage_episodes * self.num_steps_per_env
+        # 可选：构造时禁用指定名字的 special_modes（把它们 rel_envs 置 0），
+        # 例如站立课程完全接管指令时关闭旧的 "zero_cmd" 写死窗口。
+        raw_disabled_modes = params.get("disable_special_modes", ()) or ()
+        if isinstance(raw_disabled_modes, str):
+            raw_disabled_modes = (raw_disabled_modes,)
+        self.disable_special_modes: tuple[str, ...] = tuple(str(name) for name in raw_disabled_modes)
 
         stages = params.get("stages")
         if not stages or not isinstance(stages, Sequence):
             raise ValueError("CommandVelocityProgression 需要在 params['stages'] 中提供至少一个阶段配置。")
 
         self._stage_configs: list[dict[str, tuple[float, float] | None]] = []
+        self._stage_rel_standing_envs: list[float | None] = []
+        self._stage_min_iterations: list[int] = []
+        self._stage_min_episode_time_s: list[float | None] = []
         thresholds: list[float] = []
         min_episodes_per_stage: list[int] = []
 
@@ -79,14 +88,28 @@ class CommandVelocityProgression(ManagerTermBase):
 
             self._stage_configs.append(stage_ranges)
 
+            # 可选：本阶段的"站立环境比例"（1.0=全体零指令；不填=沿用当前 cfg）
+            rel_standing = stage_cfg.get("rel_standing_envs", None)
+            self._stage_rel_standing_envs.append(
+                None if rel_standing is None else min(max(float(rel_standing), 0.0), 1.0)
+            )
+            # 可选：本阶段至少经过多少训练轮次才允许晋级
+            self._stage_min_iterations.append(max(0, int(stage_cfg.get("min_iterations", 0) or 0)))
+            # 可选：本阶段窗口平均存活时间下限（秒），与阈值一起构成晋级条件
+            min_episode_time = stage_cfg.get("min_episode_time_s", None)
+            self._stage_min_episode_time_s.append(
+                None if min_episode_time is None else max(float(min_episode_time), 0.0)
+            )
+
             if idx < len(stages) - 1:
                 if "threshold" not in stage_cfg:
                     raise ValueError("除最后一个阶段外，其他阶段必须提供 'threshold' 阈值。")
                 thresholds.append(float(stage_cfg["threshold"]))
-                min_ep = stage_cfg.get("min_episodes")*self.num_steps_per_env
-                min_episodes_per_stage.append(
-                    max(0, int(min_ep)) if min_ep is not None else self.min_stage_episodes
-                )
+                min_ep = stage_cfg.get("min_episodes")
+                if min_ep is None:
+                    min_episodes_per_stage.append(self.min_stage_episodes)
+                else:
+                    min_episodes_per_stage.append(max(0, int(float(min_ep) * self.num_steps_per_env)))
             elif "threshold" in stage_cfg:
                 thresholds.append(float(stage_cfg["threshold"]))
 
@@ -101,11 +124,15 @@ class CommandVelocityProgression(ManagerTermBase):
         self._stage = max(0, min(initial_stage, self._num_stages - 1))
 
         self._recent_rewards: deque[float] = deque(maxlen=self.window_size)
+        self._episode_times: deque[float] = deque(maxlen=self.window_size)
         self._episodes_since_stage_change: int = 0
         self._total_episodes: int = 0
         self._last_window_mean: float = 0.0
         self._last_batch_mean: float = 0.0
+        self._last_episode_time_mean: float = 0.0
+        self._stage_start_iteration: int = self._get_training_iteration()
 
+        self._disable_special_modes()
         self._update_command_range()
 
     @property
@@ -124,18 +151,68 @@ class CommandVelocityProgression(ManagerTermBase):
         num_steps_per_env=None,
         stages=None,
         initial_stage=None,
+        disable_special_modes=None,
     ):
         episode_ids = self._normalize_env_ids(env_ids)
         if not episode_ids:
             return self._build_state_dict()
 
         self._accumulate_rewards(episode_ids)
+        self._accumulate_episode_times(episode_ids)
         self._try_advance_stage()
         return self._build_state_dict()
 
     def reset(self, env_ids: Sequence[int] | None = None):
         # 课程学习当前无需额外 reset 操作，保留接口兼容性
         return None
+
+    def _get_training_iteration(self) -> int:
+        """读取环境外推的训练轮次（没有该接口时回退到 runner 锚点）。"""
+        get_iteration = getattr(self._env, "_get_training_iteration", None)
+        if callable(get_iteration):
+            return max(int(get_iteration()), 0)
+        return max(int(getattr(self._env, "_training_iteration", 0)), 0)
+
+    def _disable_special_modes(self) -> None:
+        """按名字把指定 special_modes 的 rel_envs 置 0（站立课程接管指令时用）。"""
+        if not self.disable_special_modes:
+            return
+        command_generator = getattr(self._env, "command_generator", None)
+        cfg_modes = getattr(getattr(command_generator, "cfg", None), "special_modes", None)
+        if not cfg_modes:
+            return
+        # 生成器初始化时会把 mapping 归一化成 tuple，名字保留在 _mode_names 里。
+        mode_names = tuple(getattr(command_generator, "_mode_names", ()) or ())
+        disabled: list[str] = []
+        for idx, mode_cfg in enumerate(cfg_modes):
+            name = mode_names[idx] if idx < len(mode_names) else None
+            if name is not None and name in self.disable_special_modes:
+                mode_cfg.rel_envs = 0.0
+                disabled.append(name)
+        if disabled:
+            print(
+                "[Curriculum] CommandVelocityProgression disabled special modes: "
+                f"{disabled}",
+                flush=True,
+            )
+
+    def _accumulate_episode_times(self, env_ids: list[int]) -> None:
+        """统计刚结束回合的存活时长（秒），用于"先站住再走"的晋级门槛。"""
+        episode_length = getattr(self._env, "episode_length_buf", None)
+        if episode_length is None:
+            return
+        step_dt = float(getattr(self._env, "step_dt", 0.0) or 0.0)
+        if step_dt <= 0.0:
+            return
+        device_ids = torch.as_tensor(env_ids, device=episode_length.device, dtype=torch.long)
+        if device_ids.numel() == 0:
+            return
+        lengths = episode_length[device_ids].detach().to(dtype=torch.float32) * step_dt
+        values = [float(v) for v in lengths.detach().cpu().tolist() if v > 0.0]
+        if not values:
+            return
+        self._episode_times.append(sum(values) / len(values))
+        self._last_episode_time_mean = float(sum(self._episode_times) / len(self._episode_times))
 
     """
     Internal helpers.
@@ -192,6 +269,26 @@ class CommandVelocityProgression(ManagerTermBase):
         if self._episodes_since_stage_change < min_ep:
             return
 
+        # 最少轮数下限：达到后才有资格晋级（未达标则继续本阶段）
+        stage_min_iterations = (
+            self._stage_min_iterations[self._stage]
+            if self._stage < len(self._stage_min_iterations)
+            else 0
+        )
+        if stage_min_iterations > 0:
+            if self._get_training_iteration() - self._stage_start_iteration < stage_min_iterations:
+                return
+
+        # 存活时间下限：窗口平均回合时长不足时不允许晋级
+        stage_min_episode_time = (
+            self._stage_min_episode_time_s[self._stage]
+            if self._stage < len(self._stage_min_episode_time_s)
+            else None
+        )
+        if stage_min_episode_time is not None and len(self._episode_times) > 0:
+            if self._last_episode_time_mean < stage_min_episode_time:
+                return
+
         window_values = list(self._recent_rewards)[-self.window_size :]
         window_mean = float(sum(window_values) / self.window_size)
         threshold = self._thresholds[self._stage]
@@ -200,12 +297,15 @@ class CommandVelocityProgression(ManagerTermBase):
             self._stage = min(self._stage + 1, self._num_stages - 1)
             self._episodes_since_stage_change = 0
             self._recent_rewards.clear()
+            self._episode_times.clear()
             self._last_window_mean = window_mean
+            self._stage_start_iteration = self._get_training_iteration()
             self._update_command_range()
             print(
                 "[Curriculum] Command velocity stage -> "
                 f"{self._stage + 1}/{self._num_stages}, "
                 f"lin_vel_x={self._env.cfg.commands.ranges.lin_vel_x}, "
+                f"rel_standing_envs={self._env.cfg.commands.rel_standing_envs}, "
                 f"avg_reward={window_mean:.4f} (threshold {threshold:.4f})"
             )
 
@@ -222,6 +322,20 @@ class CommandVelocityProgression(ManagerTermBase):
             if hasattr(generator_ranges, key):
                 setattr(generator_ranges, key, tuple(value))
 
+        # 可选的"站立环境比例"：同步写进 env cfg 与生成器 cfg，下次重采指令生效
+        rel_standing = (
+            self._stage_rel_standing_envs[self._stage]
+            if self._stage < len(self._stage_rel_standing_envs)
+            else None
+        )
+        if rel_standing is not None:
+            commands_cfg = getattr(self._env.cfg, "commands", None)
+            if commands_cfg is not None and hasattr(commands_cfg, "rel_standing_envs"):
+                commands_cfg.rel_standing_envs = float(rel_standing)
+            generator_cfg = getattr(self._env.command_generator, "cfg", None)
+            if generator_cfg is not None and hasattr(generator_cfg, "rel_standing_envs"):
+                generator_cfg.rel_standing_envs = float(rel_standing)
+
     def _build_state_dict(self) -> dict[str, float]:
         stage_cfg = self._stage_configs[self._stage]
         state = {
@@ -230,6 +344,8 @@ class CommandVelocityProgression(ManagerTermBase):
             "last_window_mean": float(self._last_window_mean),
             "last_batch_mean": float(self._last_batch_mean),
             "total_episodes": int(self._total_episodes/self.num_steps_per_env),
+            "mean_episode_time_s": float(self._last_episode_time_mean),
+            "stage_start_iteration": int(self._stage_start_iteration),
         }
 
         for key, value in stage_cfg.items():
@@ -242,6 +358,16 @@ class CommandVelocityProgression(ManagerTermBase):
             state["next_threshold"] = float(self._thresholds[self._stage])
         if self._stage < len(self._min_episodes_per_stage):
             state["min_episodes"] = int(self._min_episodes_per_stage[self._stage]/self.num_steps_per_env)
+        if self._stage < len(self._stage_min_iterations):
+            state["min_iterations"] = int(self._stage_min_iterations[self._stage])
+        if self._stage < len(self._stage_min_episode_time_s):
+            min_episode_time = self._stage_min_episode_time_s[self._stage]
+            if min_episode_time is not None:
+                state["min_episode_time_s"] = float(min_episode_time)
+        if self._stage < len(self._stage_rel_standing_envs):
+            rel_standing = self._stage_rel_standing_envs[self._stage]
+            if rel_standing is not None:
+                state["rel_standing_envs"] = float(rel_standing)
 
         return state
 

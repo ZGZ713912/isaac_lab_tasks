@@ -336,6 +336,7 @@ _on_command_updated
 | `track_ang_vel_z_square` | `(σ·err)²` | -1.0 | |
 | `stand_still` | `Σv_xy²·mask + ωz²·mask` | -0.0 | |
 | `stand_still_lin_vel` | `Σ|v_xy|·mask` | -1.0 | 指令≈0 时要求站住 |
+| `stand_drift` | `(σ·max(‖p_xy−p_ref‖−deadband,0))²·mask` | -2.0 | ★指令≈0 时净水平位移罚：防慢慢漂走，允许平衡微动（deadband=0.1 m, σ=1.0；`_stand_ref_pos_w` 由 `_simple_root_reset` 记录） |
 | `track_height_exp` | `exp(−h_err²/σ)` | 0.0 | |
 | `track_height_exp_soft` | `exp(−h_err²/σ_soft)` | 0.0 | |
 | `track_height_exp_tight` | `exp(−h_err²/σ_tight)` | +1.0 | ★身高跟踪主项 |
@@ -441,6 +442,7 @@ Wheel_leg_V1 中该机制仅在开启状态机的任务（Flat-v1、Rough-v1）�
 - 出生：`reset_base` 事件随机 roll/pitch ±0.15 rad、yaw ±π；`_simple_root_reset` 抬到 0.35 m 后落下（Rough-v1 还开 `predefined_reset_air` 空中出生）。
 - 越界：Rough 任务开 `rough_terrain_boundary_reset_cfg`，超出地形半边界减 margin 0.5 m 即按 time_out 重置。
 - 高度课程：`V14_ROUGH_HEIGHT_OFFSET_CURRICULUM_DEFAULT_CFG`（`enabled=False`）——打开后按训练 iteration 每 500 轮升一级，共 11 级，并在 `_apply_rough_height_offset_curriculum` 中把 env 搬到对应难度行。
+- 平地站立起步课程：`CurriculumCfgV14Stand`（`env_cfg.py:485`）——① 托举力 60→30→0 N；② 高度范围 `[0.30,0.32]` 逐级展宽到 `[0.25,0.39]`；③ 腿振荡惩罚逐级收紧；④ `command_velocity_progression` 速度指令分档：阶段0 全体零指令（`rel_standing_envs=1.0`，并在构造时禁用旧 `zero_cmd`）→ 阶段1 小速度 ±0.4 m/s / ±0.5 rad/s → 阶段2 常规 ±1.2 m/s / ±1.0 rad/s；晋级条件 = 最少轮数（400/300）+ 窗口平均存活（≥10/12 s）+ `track_height_exp_tight` 窗口均值 ≥0.4。
 
 ---
 

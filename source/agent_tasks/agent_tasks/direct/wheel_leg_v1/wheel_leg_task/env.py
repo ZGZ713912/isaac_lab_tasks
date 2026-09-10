@@ -591,6 +591,10 @@ class WheelLegV1Env(WheelLegTerrainEnv):
         让车从略高处自然落下（reset 事件 reset_base 随后再随机 roll/pitch/yaw）。
         """
         if not getattr(self.cfg, "use_simple_root_reset", True):
+            # 未启用简单复位时，用当前实际位置作为净位移参考点
+            if hasattr(self, "_stand_ref_pos_w"):
+                env_ids_t = self._as_env_ids_tensor(env_ids)
+                self._stand_ref_pos_w[env_ids_t] = self.robot.data.root_pos_w[env_ids_t, :2]
             return
         env_ids_t = self._as_env_ids_tensor(env_ids)
         n = env_ids_t.numel()
@@ -608,6 +612,9 @@ class WheelLegV1Env(WheelLegTerrainEnv):
             torch.zeros(n, 6, device=self.device),
             env_ids=env_ids_t,
         )
+        # 站立课程用：记录本回合水平参考点（净位移惩罚基准，与写入的出生点一致）
+        if hasattr(self, "_stand_ref_pos_w"):
+            self._stand_ref_pos_w[env_ids_t] = root_pose[:, :2]
 
     def _get_rough_terrain_boundary_time_out(self) -> torch.Tensor:
         # 检测哪些环境"跑出了地形边界"（返回布尔张量）
