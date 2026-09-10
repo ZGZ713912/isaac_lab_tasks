@@ -2135,6 +2135,13 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.height_cmd.fill_(self.cfg.default_height_cmd)
         self._init_special_height_wave_state()
 
+        # 弹跳抑制：腿长/腿关节速度的 EMA（交流分量惩罚用）
+        self._leg_osc_ema_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._leg_len_dot_ema = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device)
+        self._leg_joint_vel_ema = torch.zeros(
+            self.num_envs, len(self._legs_act_idx), dtype=torch.float, device=self.device
+        )
+
         # initial obs buffers
         self.joint_pos = self.robot.data.joint_pos
         self.joint_vel = self.robot.data.joint_vel
@@ -3552,6 +3559,25 @@ class WheelLegBaseEnv(DirectRLEnv):
         #     rew_lin_vel_z = torch.square(left_leg_length_dot+right_leg_length_dot)
         # else:
         rew_leg_len_vel = torch.square(left_leg_length_dot) + torch.square(right_leg_length_dot)
+        # 弹跳 vs 抬升区分：腿长/腿关节速度的交流分量（EMA 高通）
+        if bool(getattr(self.cfg, "leg_osc_penalty_enabled", False)):
+            ema_tau = max(float(getattr(self.cfg, "leg_osc_ema_tau", 1.0)), 1.0e-3)
+            alpha = math.exp(-self.step_dt / ema_tau)
+            leg_len_dot = torch.stack([left_leg_length_dot, right_leg_length_dot], dim=-1)
+            leg_act_vel = self.joint_vel[:, self._legs_act_idx]
+            ema_valid = self._leg_osc_ema_valid
+            self._leg_len_dot_ema[ema_valid] = leg_len_dot[ema_valid]
+            self._leg_joint_vel_ema[ema_valid] = leg_act_vel[ema_valid]
+            self._leg_osc_ema_valid.fill_(True)
+            self._leg_len_dot_ema.mul_(alpha).add_(leg_len_dot, alpha=1.0 - alpha)
+            self._leg_joint_vel_ema.mul_(alpha).add_(leg_act_vel, alpha=1.0 - alpha)
+            rew_leg_len_osc = torch.sum(torch.square(leg_len_dot - self._leg_len_dot_ema), dim=-1)
+            rew_leg_joint_osc = torch.sum(
+                torch.square(leg_act_vel - self._leg_joint_vel_ema), dim=-1
+            )
+        else:
+            rew_leg_len_osc = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            rew_leg_joint_osc = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         rew_lin_vel_z = torch.square(self.robot.data.root_lin_vel_b[:, 2])
         rew_lin_vel_z_exp = torch.exp(-rew_lin_vel_z / self.cfg.lin_vel_z_sigma)
         rew_ang_vel_xy = torch.sum(torch.square(self.robot.data.root_ang_vel_b[:, :2]), dim=1)
@@ -3824,6 +3850,15 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         height_reward_target = self._get_height_reward_target_height()
         height_err = height_reward_ref - height_reward_target
+        # lin_vel_z 抬升豁免：离目标高度远且正在朝目标方向移动时不罚（到位/反向照罚）
+        if bool(getattr(self.cfg, "lin_vel_z_height_gate_enabled", False)):
+            gate_band = max(float(getattr(self.cfg, "lin_vel_z_height_gate_band", 0.02)), 0.0)
+            height_to_go = height_reward_target - height_reward_ref   # 正 = 需要升高
+            vz_body = self.robot.data.root_lin_vel_b[:, 2]
+            moving_toward_target = (vz_body * height_to_go) > 0.0
+            far_from_target = torch.abs(height_to_go) >= gate_band
+            keep_penalty = ~(far_from_target & moving_toward_target)
+            rew_lin_vel_z = rew_lin_vel_z * keep_penalty.to(dtype=rew_lin_vel_z.dtype)
         if self.cfg.height_err_constraint is not None:
             track_height_err = torch.square(torch.clamp(height_err,
                                                          min=-self.cfg.height_err_constraint,
@@ -5080,6 +5115,7 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.command_generator.reset(env_ids)
         self._update_axis_aligned_reset_heading_mask(env_ids, use_env_origins=True)
         self.height_cmd[env_ids] = self._sample_height_command(env_ids, use_env_origins=True)
+        self._leg_osc_ema_valid[env_ids] = False   # 重置后首步用当前值初始化 EMA，避免启动尖峰
         self._latch_special_height_wave(env_ids)
         self._resample_height_command_special_modes(env_ids)
         self._clear_predefined_reset_air_command_limits(env_ids)

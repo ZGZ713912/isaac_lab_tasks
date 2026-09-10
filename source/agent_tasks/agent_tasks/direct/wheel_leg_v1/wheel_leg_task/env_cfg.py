@@ -482,15 +482,13 @@ class CurriculumCfgV14:
 
 
 @configclass
-class CurriculumCfgV14AssistOnly:
-    """只保留"竖直托举力"课程的配置（Wheel_leg_V1 站立起步用）。
+class CurriculumCfgV14Stand:
+    """Wheel_leg_V1 站立起步课程：托举力 + 高度范围自动展宽 + 振荡惩罚自动收紧。
 
-    与 CurriculumCfgV14 的差异（针对本机质量/奖励表修正）：
-    - 不再顺带打开 track_height_progression，避免同时改奖励权重，先单变量验证托举力效果；
-    - force_z 由 160/80/0 降到 60/30/0 N：本机总质量约 12 kg（重力约 118 N），
-      原 160 N 会把车抬离地面；
-    - 监控键改为 track_height_exp_tight：Flat 奖励表中 track_height_exp 权重为 0，
-      监控它会导致回合和恒为 0、托举力永远撤不掉。
+    - 托举力：60N→30N→0N，按 track_height_exp_tight 晋级；
+    - 高度范围：先在窄区间 [0.30,0.32] 站稳，达到阈值后逐级放宽到 [0.25,0.39]；
+    - 振荡惩罚（leg_len_osc / leg_joint_osc / action_smoothness_leg）：从轻到重，
+      只针对弹跳/抖动，不针对单向抬升。
     """
 
     base_vertical_assist_force_progression = CurrTerm(
@@ -521,6 +519,61 @@ class CurriculumCfgV14AssistOnly:
         },
     )
 
+    height_range_progression = CurrTerm(
+        func=mdp.HeightRangeProgression,
+        params={
+            "reward_key": "track_height_exp_tight",
+            "num_steps_per_env": 24,
+            "window_size": 64,
+            "min_stage_episodes": 64,
+            "normalize_by_episode_length": True,
+            "stages": [
+                {"height_range": (0.30, 0.32), "threshold": 0.50, "min_episodes": 200},
+                {"height_range": (0.28, 0.34), "threshold": 0.55, "min_episodes": 200},
+                {"height_range": (0.26, 0.37), "threshold": 0.55, "min_episodes": 200},
+                {"height_range": (0.25, 0.39)},
+            ],
+        },
+    )
+
+    leg_osc_progression = CurrTerm(
+        func=mdp.RewardWeightProgression,
+        params={
+            "reward_key": "track_height_exp_tight",
+            "num_steps_per_env": 24,
+            "window_size": 64,
+            "min_stage_episodes": 64,
+            "normalize_by_episode_length": True,
+            "stages": [
+                {
+                    "reward_weights": {
+                        "leg_len_osc": -0.2,
+                        "leg_joint_osc": -5.0e-3,
+                        "action_smoothness_leg": -0.1,
+                    },
+                    "threshold": 0.50,
+                    "min_episodes": 200,
+                },
+                {
+                    "reward_weights": {
+                        "leg_len_osc": -0.35,
+                        "leg_joint_osc": -8.0e-3,
+                        "action_smoothness_leg": -0.125,
+                    },
+                    "threshold": 0.65,
+                    "min_episodes": 200,
+                },
+                {
+                    "reward_weights": {
+                        "leg_len_osc": -0.5,
+                        "leg_joint_osc": -1.0e-2,
+                        "action_smoothness_leg": -0.15,
+                    },
+                },
+            ],
+        },
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # V14 平地基类：所有 V14 任务的"默认参数"都在这里，其它任务类继承后只改差异项。
@@ -537,9 +590,9 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # Temporarily disable domain randomization for V14 training.
     events = EventCfgV14()            # 换用上面定义的 V14 域随机化事件表
     # curriculum = CurriculumCfgV14()
-    # ★站立起步：只开"竖直托举力"课程（60→30→0 N），先让车学会站住再看劈叉归因。
+    # ★站立起步：托举力 + 高度范围自动展宽 + 振荡惩罚自动收紧（见 CurriculumCfgV14Stand）。
     # 其它任务（v1/v2/Rough/Play）在各自类里显式 curriculum = None，不受影响。
-    curriculum = CurriculumCfgV14AssistOnly()
+    curriculum = CurriculumCfgV14Stand()
     play_keep_done_reset = True       # Play 模式下"到时重置"照常执行（保持演示节奏）
     # reset_heading_axis_aligned_only = True
     robot_cfg: ArticulationCfg = WheelLegV1_CFG.replace(prim_path="/World/envs/env_.*/Robot").copy()  # ★用哪台机器人：V14 二代，挂到每个环境自己的路径下
@@ -568,7 +621,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # ★ 身高指令：低到 160 mm、高到机械上限 390 mm（base_link 坐标轴到地面）。
     #   FK 核算：零位（q=0）站高约 0.229 m；轮在髋正下方、髋膝配合时可达约 0.52 m，
     #   因此 0.16~0.39 m 全范围可达。
-    default_height_cmd = 0.32        # 默认身高指令 0.32 m（区间内偏上）
+    default_height_cmd = 0.31        # 默认身高指令 0.31 m（初始课程区间 [0.30,0.32] 中点）
 
     # —— 观测延迟模拟（sim2real：真机传感/通信有延迟，训练时就让策略适应）——
     # 每项 = [最小延迟步数, 最大延迟步数]，重置时在区间内随机取固定值
@@ -635,7 +688,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     )
 
     use_leg_length_as_height = False # 是否用"腿长"代替"车体高度"作为高度指令（False=用车体离地高）
-    height_range = [0.25, 0.39]      # ★身高指令采样范围：250~390 mm。0.16 虽可达但只能蹲/跪（腿杆近地），先排除低趴区
+    height_range = [0.30, 0.32]      # ★初始课程区间（窄）；HeightRangeProgression 会逐级展宽到 [0.25,0.39]
     terrain_command_overrides: dict[str, TerrainCommandOverrideCfg] = field(default_factory=dict)  # 按地形名覆盖速度指令的表（粗糙任务里填）
     terrain_command_switch_hold_steps: int = 0       # 地形命令切换后保持的步数
     use_absolute_height = True       # 用绝对高度观测（无需地面估计/高度扫描仪，省算力）
@@ -959,8 +1012,10 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     rewards = OrderedDict(
         termination = -200.,         # ★摔倒终止：一次 -200（最大的罚，让策略极度怕摔）
         leg_joint_acc=-5e-7,         # 腿关节加速度惩罚（动作要柔，别猛甩腿）
-        leg_joint_vel = -2.0e-2,     # 腿关节速度惩罚（★提高：定高度下腿尽量不动）
-        leg_len_vel=-1.0,            # ★腿伸缩速度惩罚（两腿"长度变化率"²和，抑制持续蹬伸/蹲起）
+        leg_joint_vel = -5.0e-3,     # 腿关节速度惩罚（保留小幅；防弹跳主要交给 leg_joint_osc）
+        leg_len_vel=-0.2,            # 腿伸缩速度惩罚（小幅，避免压制主动抬升）
+        leg_len_osc=-0.5,            # ★腿长变化率的交流分量惩罚（只罚弹跳/抖动，不罚单向抬升）
+        leg_joint_osc=-1.0e-2,       # ★腿关节速度的交流分量惩罚（同上）
         leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
         joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
@@ -969,7 +1024,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         wheel_air_spin=-1e-3,        # ★腾空时轮子空转惩罚（打断"跳-空转-落地-再跳"循环）
         lin_vel_z=-0.8,              # 竖直速度惩罚（别上下颠簸/蹦跳）
         ang_vel_xy=-0.05,            # 横滚/俯仰角速度惩罚（车身要稳）
-        action_smoothness_leg=-0.1,  # 腿动作平滑性惩罚（相邻动作差值）
+        action_smoothness_leg=-0.15, # 腿动作平滑性惩罚（二阶差分，天然偏"罚振荡、不罚匀速抬升"）
         action_rate = -0.01,         # 动作变化率惩罚
         action_smoothness_wheel=-0.01, # 轮动作平滑性惩罚
         flat_orientation_y=-0.0,     # 俯仰保持水平奖励（当前关闭）
@@ -993,7 +1048,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         # stand_still=-2.0,
         stand_still=-0.0,            # 站住奖励（当前关闭）
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）
-        track_height_exp_soft=0.0,   # 宽松版身高追踪（关闭）
+        track_height_exp_soft=1.0,   # ★宽松版身高追踪（远处也有梯度，帮助先接近目标高度）
         track_height_exp_tight=1.5,  # ★严格版身高追踪（打开：身高要准）
         track_height_square=-1.5,    # 身高误差平方惩罚
         track_height_exp_both_wheels_contact=0.0,  # 双轮着地时的身高追踪（关闭）

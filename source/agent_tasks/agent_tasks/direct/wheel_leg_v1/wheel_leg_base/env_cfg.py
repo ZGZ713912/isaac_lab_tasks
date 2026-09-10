@@ -588,6 +588,12 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     height_upright_gate_sigma: float = 0.5
     stand_still_deadzone_enabled: bool = False
     stand_still_deadzone_threshold: float = 0.2
+    # 弹跳抑制：腿长/腿关节速度的 EMA 交流分量惩罚（只罚振荡，不罚单向抬升）
+    leg_osc_penalty_enabled: bool = True
+    leg_osc_ema_tau: float = 1.0   # EMA 时间常数(s)，越大越宽松（抬升时 AC 更小）
+    # lin_vel_z 抬升豁免：离目标高度远且正在朝目标方向移动时，不罚竖直速度
+    lin_vel_z_height_gate_enabled: bool = True
+    lin_vel_z_height_gate_band: float = 0.02   # m，进入该带内后所有竖直速度都罚
     rewards = OrderedDict(
         ### alive
         # termination = 0.,

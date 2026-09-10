@@ -24,6 +24,7 @@ from isaaclab.utils.math import quat_apply_inverse
 
 __all__ = [
     "CommandVelocityProgression",
+    "HeightRangeProgression",
     "ActuatorGainsProgression",
     "BaseVerticalAssistForceProgression",
     "JointFrictionScaleProgression",
@@ -242,6 +243,204 @@ class CommandVelocityProgression(ManagerTermBase):
         if self._stage < len(self._min_episodes_per_stage):
             state["min_episodes"] = int(self._min_episodes_per_stage[self._stage]/self.num_steps_per_env)
 
+        return state
+
+
+class HeightRangeProgression(ManagerTermBase):
+    """基于身高跟踪奖励的高度指令范围课程学习.
+
+    在 episode 结束时统计 ``reward_key`` 对应的回合平均奖励，当最近 ``window_size``
+    个 episode 的均值达到阈值时，把 ``cfg.height_range``（以及 terrain manager 里
+    实际用于采样的 base profile）放宽到下一阶段，实现"先在一个窄高度区间站稳，
+    再逐步扩大高度随机范围"。
+
+    stages 每个阶段提供 ``height_range=(lo, hi)``；除最后一个阶段外还需提供
+    ``threshold`` 和可选 ``min_episodes``。
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+
+        params = dict(cfg.params) if cfg.params is not None else {}
+        self.reward_key: str = params.get("reward_key", "track_height_exp_tight")
+        self.num_steps_per_env: int = int(params.get("num_steps_per_env", 24))
+        self.window_size: int = max(1, int(params.get("window_size", 32)))
+        self.min_stage_episodes: int = max(1, int(params.get("min_stage_episodes", self.window_size)))
+        self.normalize_by_episode_length: bool = bool(params.get("normalize_by_episode_length", True))
+        self.window_size = self.window_size * self.num_steps_per_env
+        self.min_stage_episodes = self.min_stage_episodes * self.num_steps_per_env
+
+        stages = params.get("stages")
+        if not stages or not isinstance(stages, Sequence):
+            raise ValueError("HeightRangeProgression 需要在 params['stages'] 中提供至少一个阶段配置。")
+
+        self._stage_ranges: list[tuple[float, float]] = []
+        thresholds: list[float] = []
+        min_episodes_per_stage: list[int] = []
+
+        for idx, stage_cfg in enumerate(stages):
+            if not isinstance(stage_cfg, dict):
+                raise ValueError("HeightRangeProgression 的 stages 中每个元素必须是 dict。")
+            if "height_range" not in stage_cfg:
+                raise ValueError(f"阶段 {idx} 必须提供 'height_range'。")
+            range_pair = tuple(float(v) for v in stage_cfg["height_range"])
+            if len(range_pair) != 2:
+                raise ValueError(f"阶段 {idx} 的 'height_range' 必须提供长度为 2 的区间。")
+            self._stage_ranges.append(range_pair)  # type: ignore[arg-type]
+
+            if idx < len(stages) - 1:
+                if "threshold" not in stage_cfg:
+                    raise ValueError("除最后一个阶段外，其他阶段必须提供 'threshold' 阈值。")
+                thresholds.append(float(stage_cfg["threshold"]))
+                min_ep = stage_cfg.get("min_episodes")
+                min_ep = (
+                    max(0, int(min_ep * self.num_steps_per_env))
+                    if min_ep is not None
+                    else self.min_stage_episodes
+                )
+                min_episodes_per_stage.append(min_ep)
+            elif "threshold" in stage_cfg:
+                thresholds.append(float(stage_cfg["threshold"]))
+
+        self._thresholds = thresholds[: len(self._stage_ranges) - 1]
+        self._min_episodes_per_stage = min_episodes_per_stage
+        self._num_stages = len(self._stage_ranges)
+
+        initial_stage = int(params.get("initial_stage", 0))
+        self._stage = max(0, min(initial_stage, self._num_stages - 1))
+
+        self._recent_rewards: deque[float] = deque(maxlen=self.window_size)
+        self._episodes_since_stage_change: int = 0
+        self._total_episodes: int = 0
+        self._last_window_mean: float = 0.0
+        self._last_batch_mean: float = 0.0
+
+        self._update_height_range()
+
+    @property
+    def stage(self) -> int:
+        """当前课程阶段（从 0 开始计数）。"""
+        return self._stage
+
+    def __call__(
+        self,
+        env,
+        env_ids: Sequence[int] | torch.Tensor | None,
+        reward_key=None,
+        window_size=None,
+        min_stage_episodes=None,
+        normalize_by_episode_length=None,
+        num_steps_per_env=None,
+        stages=None,
+        initial_stage=None,
+    ):
+        episode_ids = self._normalize_env_ids(env_ids)
+        if not episode_ids:
+            return self._build_state_dict()
+
+        self._accumulate_rewards(episode_ids)
+        self._try_advance_stage()
+        return self._build_state_dict()
+
+    def reset(self, env_ids: Sequence[int] | None = None):
+        return None
+
+    def _normalize_env_ids(self, env_ids: Sequence[int] | torch.Tensor | None) -> list[int]:
+        if env_ids is None:
+            return list(range(self.num_envs))
+        if isinstance(env_ids, torch.Tensor):
+            if env_ids.numel() == 0:
+                return []
+            return env_ids.detach().cpu().tolist()
+        return [int(idx) for idx in env_ids]
+
+    def _accumulate_rewards(self, env_ids: list[int]):
+        reward_buffer = getattr(self._env, "_episode_sums", {}).get(self.reward_key)
+        if reward_buffer is None:
+            return
+
+        device_ids = torch.as_tensor(env_ids, device=reward_buffer.device, dtype=torch.long)
+        if device_ids.numel() == 0:
+            return
+
+        rewards = reward_buffer[device_ids].clone()
+        if self.normalize_by_episode_length:
+            max_ep_len_s = getattr(self._env, "max_episode_length_s", 20.0)
+            rewards = rewards / max_ep_len_s
+
+        rewards_cpu = rewards.detach().cpu().tolist()
+        if not rewards_cpu:
+            return
+
+        self._last_batch_mean = float(sum(rewards_cpu) / len(rewards_cpu))
+        self._recent_rewards.append(self._last_batch_mean)
+        self._episodes_since_stage_change += 1
+        self._total_episodes += 1
+
+        if len(self._recent_rewards) > 0:
+            self._last_window_mean = float(sum(self._recent_rewards) / len(self._recent_rewards))
+
+    def _try_advance_stage(self) -> bool:
+        if self._stage >= self._num_stages - 1:
+            return False
+        if len(self._recent_rewards) < self.window_size:
+            return False
+        min_ep = (
+            self._min_episodes_per_stage[self._stage]
+            if self._stage < len(self._min_episodes_per_stage)
+            else self.min_stage_episodes
+        )
+        if self._episodes_since_stage_change < min_ep:
+            return False
+
+        window_values = list(self._recent_rewards)[-self.window_size :]
+        window_mean = float(sum(window_values) / self.window_size)
+        threshold = self._thresholds[self._stage]
+
+        if window_mean < threshold:
+            return False
+
+        self._stage = min(self._stage + 1, self._num_stages - 1)
+        self._episodes_since_stage_change = 0
+        self._recent_rewards.clear()
+        self._last_window_mean = window_mean
+        self._update_height_range()
+        print(
+            "[Curriculum] Height range stage -> "
+            f"{self._stage + 1}/{self._num_stages}, "
+            f"height_range={self._stage_ranges[self._stage]}, "
+            f"avg_reward={window_mean:.4f} (threshold {threshold:.4f})"
+        )
+        return True
+
+    def _update_height_range(self) -> None:
+        low, high = self._stage_ranges[self._stage]
+        try:
+            self._env.cfg.height_range = [low, high]
+        except Exception:
+            pass
+        get_manager = getattr(self._env, "_get_terrain_command_manager", None)
+        manager = get_manager() if callable(get_manager) else None
+        if manager is not None and hasattr(manager, "set_base_height_range"):
+            manager.set_base_height_range((low, high))
+
+    def _build_state_dict(self) -> dict[str, float]:
+        low, high = self._stage_ranges[self._stage]
+        state = {
+            "stage": float(self._stage),
+            "stage_count": float(self._num_stages),
+            "last_window_mean": float(self._last_window_mean),
+            "last_batch_mean": float(self._last_batch_mean),
+            "total_episodes": int(self._total_episodes / self.num_steps_per_env),
+            "height_range_min": float(low),
+            "height_range_max": float(high),
+        }
+        if self._stage < len(self._thresholds):
+            state["next_threshold"] = float(self._thresholds[self._stage])
+        if self._stage < len(self._min_episodes_per_stage):
+            state["min_episodes"] = int(
+                self._min_episodes_per_stage[self._stage] / self.num_steps_per_env
+            )
         return state
 
 
