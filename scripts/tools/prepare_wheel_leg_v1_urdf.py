@@ -25,6 +25,12 @@
 #   python scripts/tools/prepare_wheel_leg_v1_urdf.py --wheel-collision cylinder  # → urdf_V4.0_cylwheel.urdf
 #   bash scripts/tools/convert_wheel_leg_urdf.sh                            # mesh 轮转 USD
 #   bash scripts/tools/convert_wheel_leg_urdf_cylinder.sh                   # 圆柱轮转 USD（A/B）
+#
+# 注意：坐标轴不对的 SolidWorks 原始 URDF（urdf_V4.0_solidworks.urdf）已从仓库删除，
+# 避免误用。若将来拿到新的 SolidWorks 导出需要重新规范化，把原始文件放回
+# urdf/urdf_V4.0_solidworks.urdf 再运行本脚本即可；旧版可从 git 历史取回：
+#   git show 21f2a31:source/agent_world/agent_world/assets/usd_files/Wheel_leg_V1/urdf/urdf_V4.0_solidworks.urdf \
+#     > source/agent_world/agent_world/assets/usd_files/Wheel_leg_V1/urdf/urdf_V4.0_solidworks.urdf
 # =============================================================================
 """Normalize the Wheel_leg_V1 SolidWorks URDF to the repo RL frame conventions."""
 
@@ -123,7 +129,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if not os.path.isfile(_RAW):
-        raise SystemExit(f"raw URDF not found: {_RAW}\n（可从 git 恢复：git show HEAD:<path>/urdf_V4.0.urdf）")
+        raise SystemExit(
+            f"raw SolidWorks URDF not found: {_RAW}\n"
+            "（该文件已从仓库删除以避免误用；如需重新规范化，请把 SolidWorks 原始导出放到该路径，\n"
+            " 或从 git 历史取回旧版：\n"
+            "   git show 21f2a31:source/agent_world/agent_world/assets/usd_files/Wheel_leg_V1/urdf/urdf_V4.0_solidworks.urdf"
+            " > " + _RAW + "）"
+        )
 
     tree = ET.parse(_RAW)
     root = tree.getroot()

@@ -481,6 +481,47 @@ class CurriculumCfgV14:
     )
 
 
+@configclass
+class CurriculumCfgV14AssistOnly:
+    """只保留"竖直托举力"课程的配置（Wheel_leg_V1 站立起步用）。
+
+    与 CurriculumCfgV14 的差异（针对本机质量/奖励表修正）：
+    - 不再顺带打开 track_height_progression，避免同时改奖励权重，先单变量验证托举力效果；
+    - force_z 由 160/80/0 降到 60/30/0 N：本机总质量约 12 kg（重力约 118 N），
+      原 160 N 会把车抬离地面；
+    - 监控键改为 track_height_exp_tight：Flat 奖励表中 track_height_exp 权重为 0，
+      监控它会导致回合和恒为 0、托举力永远撤不掉。
+    """
+
+    base_vertical_assist_force_progression = CurrTerm(
+        func=mdp.BaseVerticalAssistForceProgression,
+        params={
+            "reward_key": "track_height_exp_tight",
+            "num_steps_per_env": 24,
+            "window_size": 64,
+            "min_stage_episodes": 64,
+            "normalize_by_episode_length": True,
+            "apply_on_compute": True,
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+            "stages": [
+                {
+                    "force_z": 60.0,
+                    "threshold": 0.4,
+                    "min_episodes": 200,
+                },
+                {
+                    "force_z": 30.0,
+                    "threshold": 0.4,
+                    "min_episodes": 200,
+                },
+                {
+                    "force_z": 0.0,
+                },
+            ],
+        },
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # V14 平地基类：所有 V14 任务的"默认参数"都在这里，其它任务类继承后只改差异项。
 # 属性分几大类：机器人与执行器 / 观测（噪声、延迟、维度）/ 动作延迟 /
@@ -496,7 +537,9 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # Temporarily disable domain randomization for V14 training.
     events = EventCfgV14()            # 换用上面定义的 V14 域随机化事件表
     # curriculum = CurriculumCfgV14()
-    curriculum = None                 # 课程学习关闭（None = 用不到课程；需要时换回上面的 CurriculumCfgV14()）
+    # ★站立起步：只开"竖直托举力"课程（60→30→0 N），先让车学会站住再看劈叉归因。
+    # 其它任务（v1/v2/Rough/Play）在各自类里显式 curriculum = None，不受影响。
+    curriculum = CurriculumCfgV14AssistOnly()
     play_keep_done_reset = True       # Play 模式下"到时重置"照常执行（保持演示节奏）
     # reset_heading_axis_aligned_only = True
     robot_cfg: ArticulationCfg = WheelLegV1_CFG.replace(prim_path="/World/envs/env_.*/Robot").copy()  # ★用哪台机器人：V14 二代，挂到每个环境自己的路径下
@@ -522,11 +565,10 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # alpha_offset = V14_ALPHA_OFFSET
 
     mute_wheel_pos_obs = True        # 不把轮子角度放进观测：轮子可无限旋转，位置没有信息量
-    # ★ 身高指令：必须是本机构可达范围。
-    #   Wheel_leg_V1 站高（base 原点离地）在 q2=0 时约 0.23 m，最大伸展（q2≈-1）约 0.31 m，
-    #   最小（q2≈+1）接近 0。原 [0.20,0.42] 上界不可达（>0.31 永远拿不到高度奖励，
-    #   还会被 track_height_square 持续重罚），故收窄到可达区间。
-    default_height_cmd = 0.24        # 默认身高指令 0.24 m（接近自然站立高度）
+    # ★ 身高指令：低到 160 mm、高到机械上限 390 mm（base_link 坐标轴到地面）。
+    #   FK 核算：零位（q=0）站高约 0.229 m；轮在髋正下方、髋膝配合时可达约 0.52 m，
+    #   因此 0.16~0.39 m 全范围可达。
+    default_height_cmd = 0.32        # 默认身高指令 0.32 m（区间内偏上）
 
     # —— 观测延迟模拟（sim2real：真机传感/通信有延迟，训练时就让策略适应）——
     # 每项 = [最小延迟步数, 最大延迟步数]，重置时在区间内随机取固定值
@@ -593,7 +635,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     )
 
     use_leg_length_as_height = False # 是否用"腿长"代替"车体高度"作为高度指令（False=用车体离地高）
-    height_range = [0.16, 0.30]      # 身高指令采样范围：本机构可达约 [0.05, 0.31] m，留裕量取 0.16~0.30
+    height_range = [0.25, 0.39]      # ★身高指令采样范围：250~390 mm。0.16 虽可达但只能蹲/跪（腿杆近地），先排除低趴区
     terrain_command_overrides: dict[str, TerrainCommandOverrideCfg] = field(default_factory=dict)  # 按地形名覆盖速度指令的表（粗糙任务里填）
     terrain_command_switch_hold_steps: int = 0       # 地形命令切换后保持的步数
     use_absolute_height = True       # 用绝对高度观测（无需地面估计/高度扫描仪，省算力）
@@ -917,16 +959,17 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     rewards = OrderedDict(
         termination = -200.,         # ★摔倒终止：一次 -200（最大的罚，让策略极度怕摔）
         leg_joint_acc=-5e-7,         # 腿关节加速度惩罚（动作要柔，别猛甩腿）
-        leg_joint_vel = -5.0e-3,     # 腿关节速度惩罚
+        leg_joint_vel = -2.0e-2,     # 腿关节速度惩罚（★提高：定高度下腿尽量不动）
+        leg_len_vel=-1.0,            # ★腿伸缩速度惩罚（两腿"长度变化率"²和，抑制持续蹬伸/蹲起）
         leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
         joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
         wheel_vel=-1e-5,             # 轮速惩罚
         wheel_power=-1e-4,           # 轮功率惩罚（直接对应电池功耗）
-        wheel_air_spin=0.,           # 腾空时轮子空转惩罚（当前关闭）
-        lin_vel_z=-0.5,              # 竖直速度惩罚（别上下颠簸/蹦跳）
+        wheel_air_spin=-1e-3,        # ★腾空时轮子空转惩罚（打断"跳-空转-落地-再跳"循环）
+        lin_vel_z=-0.8,              # 竖直速度惩罚（别上下颠簸/蹦跳）
         ang_vel_xy=-0.05,            # 横滚/俯仰角速度惩罚（车身要稳）
-        action_smoothness_leg=-0.05, # 腿动作平滑性惩罚（相邻动作差值）
+        action_smoothness_leg=-0.1,  # 腿动作平滑性惩罚（相邻动作差值）
         action_rate = -0.01,         # 动作变化率惩罚
         action_smoothness_wheel=-0.01, # 轮动作平滑性惩罚
         flat_orientation_y=-0.0,     # 俯仰保持水平奖励（当前关闭）
@@ -951,8 +994,8 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         stand_still=-0.0,            # 站住奖励（当前关闭）
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）
         track_height_exp_soft=0.0,   # 宽松版身高追踪（关闭）
-        track_height_exp_tight=1.0,  # ★严格版身高追踪（打开：身高要准）
-        track_height_square=-1.0,    # 身高误差平方惩罚
+        track_height_exp_tight=1.5,  # ★严格版身高追踪（打开：身高要准）
+        track_height_square=-1.5,    # 身高误差平方惩罚
         track_height_exp_both_wheels_contact=0.0,  # 双轮着地时的身高追踪（关闭）
         no_fork = -1.0,              # 防劈叉惩罚
         no_fork_square = -1.0,       # 防劈叉平方惩罚
@@ -1099,6 +1142,22 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                 ),
             },
         )
+        # ★先纯站立（0~400 轮）：所有环境零指令，只练"定高 + 轮子平衡 + 腿保持不动"；
+        # 400 轮后自动回到普通速度指令（自旋/冲刺分别 2000/3000 轮后才开）。
+        self.commands.special_modes["zero_cmd"] = mdp.SpecialModeEntryCfg(
+            rel_envs=1.0,
+            iteration_start=0,
+            iteration_end=400,
+            disable_jump_takeoff=True,
+            debug_print=False,
+            ranges=mdp.SpecialModeEntryCfg.Ranges(
+                lin_vel_x=(0.0, 0.0),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(0.0, 0.0),
+            ),
+        )
+        # 特殊模式开局即可进入（否则每局前 5s 仍是随机指令，纯站立阶段会被打断）
+        self.commands.special_mode_min_episode_time = 0.0
         self.height_command_special_modes_cfg = {   # 身高指令的特殊模式（正弦/阶跃变高训练），当前关闭
             "enabled": False,
             "min_episode_time": 0.0,
@@ -1141,6 +1200,16 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         self.decimation = 4              # 每个策略步内跑 4 次物理仿真
         self.sim.dt = 1 / 200.0          # 物理仿真步长 1/200 秒 → 策略频率 = 200/4 = 50Hz
         self.max_wheel_torque = 20.0     # 轮电机最大力矩 20 N·m
+
+        # 启用"竖直托举力"课程时必须关掉随机外力事件：
+        # base_external_force_torque_xyz（interval、base_link ±10N）用
+        # set_external_force_and_torque 覆盖同一个外力缓冲区，会周期性把托举力冲掉。
+        if (
+            self.curriculum is not None
+            and hasattr(self.curriculum, "base_vertical_assist_force_progression")
+        ):
+            self.events = copy.deepcopy(self.events)
+            self.events.base_external_force_torque_xyz = None
 
     def _apply_ctrl_mode_obs_cfg(self, enabled: bool | None = None):
         # 把"控制模式观测"(7维)并入观测维度：维护 num_single_obs / 空间维度的一致性
@@ -1246,6 +1315,8 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
 @configclass
 class WheelLegV1FlatEnvCfg_v2(WheelLegV1FlatEnvCfg):
     """Flat V14 with gimbal-heading PD and gimbal-frame spin/translation commands."""
+
+    curriculum = None  # 小陀螺平移任务不启用站立托举力课程（保持原行为）
 
     # —— 云台航向锁定 PD 控制参数 ——
     gimbal_heading_control_cfg = {
@@ -1540,6 +1611,7 @@ def _apply_v14_airborne_landing_precontact_cfg(cfg) -> None:
 @configclass
 class WheelLegV1FlatEnvCfg_v1(WheelLegV1FlatEnvCfg):
     # ★腾空落地预训练任务：把机器人从空中随机扔下来，学会"安全落地"
+    curriculum = None  # 腾空落地预训练不启用站立托举力课程（保持原行为）
     termination_duration_steps = 10   # 摔倒判定放宽到连续 10 步（落地瞬间姿态本来就不稳）
     ctrl_mode_obs_enabled = True
     ctrl_mode_obs_dim = 7

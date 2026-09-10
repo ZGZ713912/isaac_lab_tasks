@@ -675,11 +675,19 @@ class BaseVerticalAssistForceProgression(ManagerTermBase):
         return body_ids
 
     def _clear_assist_force(self, asset, env_ids: torch.Tensor, body_ids: torch.Tensor):
-        indices = body_ids.repeat(len(env_ids), 1) + env_ids.unsqueeze(1) * asset.num_bodies
-        indices = indices.view(-1)
-        asset._external_force_b.flatten(0, 1)[indices] = 0.0
-        asset._external_torque_b.flatten(0, 1)[indices] = 0.0
-        asset.has_external_wrench = bool(asset._external_force_b.any() or asset._external_torque_b.any())
+        # 通过公开 API 把目标 body 的外力清零（Isaac Lab 2.3.2 已改为 WrenchComposer，
+        # 旧的 asset._external_force_b/_external_torque_b 缓冲区已不存在）。
+        zeros = torch.zeros(
+            (len(env_ids), len(body_ids), 3),
+            dtype=torch.float,
+            device=asset.device,
+        )
+        asset.set_external_force_and_torque(
+            forces=zeros,
+            torques=zeros,
+            env_ids=env_ids,
+            body_ids=body_ids,
+        )
 
     def _build_state_dict(self) -> dict[str, float]:
         state = {

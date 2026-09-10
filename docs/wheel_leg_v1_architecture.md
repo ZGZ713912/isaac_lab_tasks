@@ -50,7 +50,7 @@
 
 ### 0.3 坐标系与关节符号约定（2026-09-11 修正）
 
-**背景**：SolidWorks 导出的 `urdf_V4.0_solidworks.urdf` 的 base 坐标系是
+**背景**：SolidWorks 原始导出的 base 坐标系是
 `+X=左、+Y=车尾、+Z=上`，轮轴沿 X → 轮子沿 Y 滚动；而整套 RL 代码（奖励/指令/观测）
 按 wheelbipe 的 `+X=前进、+Y=左、+Z=上` 约定编写。这导致平地训练出现一系列症状：
 
@@ -59,8 +59,10 @@
 - 左右腿关节轴镜像，同号动作 = 一伸一缩 → 落地后两腿不对称。
 
 **修正**（不动任何几何尺寸，只改坐标系/正方向）：
-`scripts/tools/prepare_wheel_leg_v1_urdf.py` 读取
-`urdf/urdf_V4.0_solidworks.urdf`，做两件事后写出 `urdf/urdf_V4.0.urdf`：
+`scripts/tools/prepare_wheel_leg_v1_urdf.py` 以 SolidWorks 原始导出为输入，
+做下面两件事后写出 `urdf/urdf_V4.0.urdf`。
+坐标轴不对的原始 URDF（`urdf_V4.0_solidworks.urdf`）与对应的旧 USD 已从仓库删除，
+避免误用；如需重新规范化，可从 git 历史 `21f2a31` 取回原始文件后再运行脚本：
 
 1. **根坐标系绕 Z 转 +90°**：新 `+X=前进`、`+Y=左`、`+Z=上`；L 腿在 +Y、R 腿在 -Y，轮轴沿 Y。
    （只变换 base_link 的 inertial/visual/collision origin 与父为 base_link 的 L/R_joint1 origin；
@@ -85,8 +87,9 @@ bash scripts/tools/convert_wheel_leg_urdf.sh
 
 **随之调整的 Flat 训练配置**（`wheel_leg_task/env_cfg.py:WheelLegV1FlatEnvCfg`）：
 
-- `height_range`：`[0.20, 0.42]` → `[0.16, 0.30]`（原上界不可达，导致身高奖励恒 0 + 平方罚）；
-- `default_height_cmd`：0.22 → 0.24；
+- `height_range`：设为 `[0.16, 0.39]`（160 mm 蹲低 ~ 390 mm 机械上限，base_link 到地面）；
+  原 `[0.20, 0.42]` 上界不可达，会导致身高奖励恒 0 + 平方重罚；
+- `default_height_cmd`：0.32（区间内偏上）；
 - `leg_joint_pair_pos_diff`：0 → **-1.0**（左右腿镜像对称惩罚，资产统一符号后此项才有意义）；
 - 普通指令范围：`lin_vel_x ±2.7 → ±1.2`，`ang_vel_z ±2π → ±1.0`（先学站住/慢走，
   自旋/冲刺仍由 `special_modes` 在 iteration 2000/3000/4000 后加入）。

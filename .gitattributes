@@ -1,0 +1,3 @@
+# 二进制文档：让 git diff 只输出 "Binary files differ"，
+# 避免 rsl_rl 的 store_code_state 因非 UTF-8 字节抛 UnicodeEncodeError 中断训练。
+*.pdf binary
