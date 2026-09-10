@@ -754,3 +754,58 @@ def _randomize_prop_by_op(
             f"Unknown operation: '{operation}' for property randomization. Please use 'add', 'scale', or 'abs'."
         )
     return data
+
+
+# =============================================================================
+# Isaac Lab 2.3.x 兼容层：class 型 ManagerTerm 的函数式包装。
+#
+# Isaac Lab 2.3 把部分 mdp 事件改成了 ManagerTermBase 子类（__init__(cfg, env)），
+# 但 EventManager 只对 mode="prestartup" 的 class 型 term 自动实例化；startup/reset
+# 模式仍按旧式"函数(env, env_ids, **params)"调用 → 直接引用 class 会 TypeError。
+# 这里提供同名纯函数包装器（__call__ 即旧式签名），经 mdp.* 引用时自动遮蔽 class。
+# 原始任务(wheelbipe)/本仓库全部任务共用此别名，一处修复全局生效。
+# =============================================================================
+
+from isaaclab.envs.mdp.events import (  # noqa: E402
+    randomize_rigid_body_mass as _RandomizeRigidBodyMassCls,
+    randomize_rigid_body_material as _RandomizeRigidBodyMaterialCls,
+    randomize_actuator_gains as _RandomizeActuatorGainsCls,
+)
+
+
+def _functional_event_term(term_cls):
+    """把 ManagerTermBase 子类包装成旧式函数 (env, env_ids=None, **params)。
+
+    必须携带 __signature__（= 类 __call__ 去掉 self）：EventManager 的静态参数校验
+    用 inspect.signature 读取签名，裸 **params 会被当作"无默认值参数"参与集合比对而恒失配；
+    继承原类签名后，校验按 (env, env_ids, asset_cfg, ...) 进行，与直接引用官方类等价。
+    """
+
+    import inspect
+
+    def _call(env, env_ids=None, **params):
+        # 现建一个最小 EventTermCfg（仅存放 params，供 term __init__ 校验/取用）
+        term_cfg = EventTermCfg(func=term_cls, params=params, mode="startup")
+        term = term_cls(cfg=term_cfg, env=env)
+        return term(env, env_ids, **params)
+
+    _call.__name__ = term_cls.__name__
+    _call.__qualname__ = term_cls.__qualname__
+    _call.__doc__ = term_cls.__doc__
+    _call.__module__ = term_cls.__module__
+    # 关键：继承类 __call__ 的签名（去掉 self），供 EventManager/ManagerBase 静态校验
+    cls_call_sig = inspect.signature(term_cls.__call__)
+    _call.__signature__ = cls_call_sig.replace(
+        parameters=[p for p in cls_call_sig.parameters.values() if p.name != "self"]
+    )
+    return _call
+
+
+# 遮蔽 class → 函数（保持名字不变，事件表无需改动）
+randomize_rigid_body_mass = _functional_event_term(_RandomizeRigidBodyMassCls)
+randomize_rigid_body_material = _functional_event_term(_RandomizeRigidBodyMaterialCls)
+randomize_actuator_gains = _functional_event_term(_RandomizeActuatorGainsCls)
+# 其余 ManagerTermBase 子类同样遮蔽（friction / effort-noise term 均为 startup/reset 模式旧式函数调用，
+# 直接引用 class 会在 EventManager.apply 时 TypeError: __init__() got an unexpected keyword argument）
+randomize_joint_parameters_v1 = _functional_event_term(randomize_joint_parameters_v1)
+randomize_actuator_effort_output = _functional_event_term(randomize_actuator_effort_output)

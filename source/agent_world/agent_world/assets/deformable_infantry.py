@@ -6,7 +6,7 @@
 # See LICENSE for full license terms.
 #
 # Deformable (变形底盘) chassis asset configuration.
-# USD：assets/usd_files/deformable_infantry/deformable_infantry.usd
+# USD：assets/usd_files/deformable_V1/deformable_infantry.usd
 #   （由 deformable_infantry/urdf/deformable_infantry.urdf 经 Isaac Lab
 #     UrdfConverter 转换，joint drive: force / target none / convex_hull）
 # 12 DOF：joint_leg_1..4 + joint_wheel_set_1..4 + joint_wheel_1..4，
@@ -26,7 +26,7 @@ from agent_world import AssetPath
 
 DeformableInfantryCFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{AssetPath}/usd_files/deformable_infantry/deformable_infantry.usd",
+        usd_path=f"{AssetPath}/usd_files/deformable_V1/deformable_infantry.usd",
         activate_contact_sensors=True,
         copy_from_source=True,  # Required for proper articulation loading in Isaac Lab 2.3.0
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -34,8 +34,8 @@ DeformableInfantryCFG = ArticulationCfg(
             retain_accelerations=False,
             linear_damping=0.0,
             angular_damping=0.0,
-            max_linear_velocity=1000.0,
-            max_angular_velocity=1000.0,
+            max_linear_velocity=10.0,
+            max_angular_velocity=10.0,
             max_depenetration_velocity=1.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
@@ -72,7 +72,11 @@ DeformableInfantryCFG = ArticulationCfg(
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=["joint_wheel_.*"],
             stiffness=0.0,
-            damping=0.0,
+            damping=0.2,
+            effort_limit=5.0,
+            velocity_limit=60.0,
+            # armature=0.001,
+            armature=0,
         ),
     },
 )

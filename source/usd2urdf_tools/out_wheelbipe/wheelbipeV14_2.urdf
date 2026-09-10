@@ -1,0 +1,656 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="wheelbipeV14_2">
+  <joint name="gimbal_pitch_joint" type="revolute">
+    <origin xyz="-0.058485 -0.0553 0.18 " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_gimbal_yaw_link"/>
+    <child link="wheelbipeV14_2_gimbal_pitch_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-1.2" upper="0." effort="2." velocity="49.9999973"/>
+  </joint>
+  <joint name="gimbal_yaw_joint" type="continuous">
+    <origin xyz="0. 0. 0.05495" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2"/>
+    <child link="wheelbipeV14_2_gimbal_yaw_link"/>
+    <axis xyz="0. 0. 1."/>
+  </joint>
+  <joint name="left_front1_joint" type="continuous">
+    <origin xyz="0. 0.1845 0. " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2"/>
+    <child link="wheelbipeV14_2_left_front1_link"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="left_front2_joint" type="revolute">
+    <origin xyz="0.11265 -0.0095 0.013046" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_left_front1_link"/>
+    <child link="wheelbipeV14_2_left_front2_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.9999999" upper="0.1" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="left_front3_joint" type="revolute">
+    <origin xyz="-0.10879 0.0065 -0.079941" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_left_front2_link"/>
+    <child link="wheelbipeV14_2_left_front3_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.1" upper="0.9999999" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="left_front4_joint" type="revolute">
+    <origin xyz="-0.16505 -0.0065 0.11386" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_left_front3_link"/>
+    <child link="wheelbipeV14_2_left_front4_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-1.9999999" upper="0.1" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="left_rear1_joint" type="continuous">
+    <origin xyz="0. 0.174 0. " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2"/>
+    <child link="wheelbipeV14_2_left_rear1_link"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="left_rear2_joint" type="revolute">
+    <origin xyz="-0.21 0.0145 0. " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_left_rear1_link"/>
+    <child link="wheelbipeV14_2_left_rear2_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.02" upper="1.2" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="left_spring1_joint" type="revolute">
+    <origin xyz="0.0023551 -0.002 -0.044938 " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_left_rear1_link"/>
+    <child link="wheelbipeV14_2_left_spring1_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.5" upper="0.1" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="left_spring2_joint" type="prismatic">
+    <origin xyz="-0.03295 -0.0055 0.0044022" rpy="0. -0.13282 3.1415927"/>
+    <parent link="wheelbipeV14_2_left_spring1_link"/>
+    <child link="wheelbipeV14_2_left_spring2_link"/>
+    <axis xyz="1. 0. 0."/>
+    <limit lower="-0.015" upper="0.065" effort="2000." velocity="100."/>
+  </joint>
+  <joint name="left_wheel_joint" type="continuous">
+    <origin xyz="0.21661 0.03355 -0.12483" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_left_rear2_link"/>
+    <child link="wheelbipeV14_2_left_wheel_link"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="right_front1_joint" type="continuous">
+    <origin xyz="0. -0.1845 0. " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2"/>
+    <child link="wheelbipeV14_2_right_front1_link"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="right_front2_joint" type="revolute">
+    <origin xyz="0.11265 0.0095 0.013046" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_right_front1_link"/>
+    <child link="wheelbipeV14_2_right_front2_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.9999999" upper="0.1" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="right_front3_joint" type="revolute">
+    <origin xyz="-0.10879 -0.0065 -0.079941" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_right_front2_link"/>
+    <child link="wheelbipeV14_2_right_front3_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.1" upper="0.9999999" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="right_front4_joint" type="revolute">
+    <origin xyz="-0.16505 0.0065 0.11386" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_right_front3_link"/>
+    <child link="wheelbipeV14_2_right_front4_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-1.9999999" upper="0.1" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="right_rear1_joint" type="continuous">
+    <origin xyz="0. -0.174 0. " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2"/>
+    <child link="wheelbipeV14_2_right_rear1_link"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <joint name="right_rear2_joint" type="revolute">
+    <origin xyz="-0.21 -0.0145 0. " rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_right_rear1_link"/>
+    <child link="wheelbipeV14_2_right_rear2_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.02" upper="1.2" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="right_spring1_joint" type="revolute">
+    <origin xyz="0.0023551 0.00195 -0.0449383" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_right_rear1_link"/>
+    <child link="wheelbipeV14_2_right_spring1_link"/>
+    <axis xyz="0. 1. 0."/>
+    <limit lower="-0.5" upper="0.1" effort="1000." velocity="99.9999945"/>
+  </joint>
+  <joint name="right_spring2_joint" type="prismatic">
+    <origin xyz="-0.03295 0.0055 0.0044022" rpy="0. -0.13282 3.1415927"/>
+    <parent link="wheelbipeV14_2_right_spring1_link"/>
+    <child link="wheelbipeV14_2_right_spring2_link"/>
+    <axis xyz="1. 0. 0."/>
+    <limit lower="-0.015" upper="0.065" effort="2000." velocity="100."/>
+  </joint>
+  <joint name="right_wheel_joint" type="continuous">
+    <origin xyz="0.21661 -0.03355 -0.12483" rpy="0. 0. 0."/>
+    <parent link="wheelbipeV14_2_right_rear2_link"/>
+    <child link="wheelbipeV14_2_right_wheel_link"/>
+    <axis xyz="0. 1. 0."/>
+  </joint>
+  <link name="wheelbipeV14_2">
+    <visual>
+      <origin xyz="0. 0. -0.117" rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_base_link_visuals_base_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0.0051111 0.001174 -0.0455102" rpy="-3.1369758 -0.0132759 0.0280779"/>
+      <geometry>
+        <box size="0.45 0.3 0.2 "/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0051111 0.001174 -0.0455102" rpy="-3.1369758 -0.0132759 0.0280779"/>
+      <geometry>
+        <box size="0.45 0.3 0.2 "/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_gimbal_pitch_link">
+    <inertial>
+      <origin xyz="0.077937 0.022206 -0.043928" rpy="0. 0. 0."/>
+      <mass value="2.9094813"/>
+      <inertia ixx="0.0152198" ixy="-0.0020655" ixz="0.0058831" iyy="0.019075" iyz="0.001189" izz="0.0180859"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_gimbal_pitch_link_visuals_gimbal_pitch_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0.1222416 0.0276848 -0.0553651" rpy="0. 0.4537856 0. "/>
+      <geometry>
+        <box size="0.35 0.2 0.1824486"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.1222416 0.0276848 -0.0553651" rpy="0. 0.4537856 0. "/>
+      <geometry>
+        <box size="0.35 0.2 0.1824486"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_gimbal_yaw_link">
+    <inertial>
+      <origin xyz="-0.032712 0.039683 0.102088" rpy="0. 0. 0."/>
+      <mass value="1.1135894"/>
+      <inertia ixx="0.0115811" ixy="0.0022103" ixz="0.0053499" iyy="0.0131184" iyz="-0.0031031" izz="0.0083629"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_gimbal_yaw_link_visuals_gimbal_yaw_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0. 0. 0.07" rpy="0. 0. 0."/>
+      <geometry>
+        <cylinder radius="0.05" length="0.1"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. 0. 0.07" rpy="0. 0. 0."/>
+      <geometry>
+        <cylinder radius="0.05" length="0.1"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_front1_link">
+    <inertial>
+      <origin xyz="0.0253161 -0.014124 0.002932 " rpy="0. 0. 0."/>
+      <mass value="0.1366592"/>
+      <inertia ixx="0.0000557" ixy="-0.0000336" ixz="-0.0000194" iyy="0.0002338" iyz="-0.0000039" izz="0.0002213"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_front1_link_visuals_left_front1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0.0470403 -0.0125 0.0000064" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1510806 0.025 0.0569199"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0470403 -0.0125 0.0000064" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1510806 0.025 0.0569199"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_front2_link">
+    <inertial>
+      <origin xyz="-0.0544 -0.0044715 -0.0399756" rpy="0. 0. 0."/>
+      <mass value="0.0328941"/>
+      <inertia ixx="0.0000295" ixy="0." ixz="-0.0000382" iyy="0.0000824" iyz="0." izz="0.0000534"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_front2_link_visuals_left_front2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0543931 -0.005 -0.0399705" rpy="1.5709748 -0.6339841 0.000014 "/>
+      <geometry>
+        <box size="0.159616 0.0250343 0.0100062"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0543931 -0.005 -0.0399705" rpy="1.5709748 -0.6339841 0.000014 "/>
+      <geometry>
+        <box size="0.159616 0.0250343 0.0100062"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_front3_link">
+    <inertial>
+      <origin xyz="-0.0844609 -0.002949 0.0515978" rpy="0. 0. 0."/>
+      <mass value="0.044351"/>
+      <inertia ixx="0.0000504" ixy="0." ixz="0.0000724" iyy="0.0001643" iyz="0." izz="0.0001141"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_front3_link_visuals_left_front3_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0861303 -0.002974 0.0506382" rpy="-1.5565776 0.595678 0.0005639"/>
+      <geometry>
+        <box size="0.2213999 0.036172 0.0065436"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0861303 -0.002974 0.0506382" rpy="-1.5565776 0.595678 0.0005639"/>
+      <geometry>
+        <box size="0.2213999 0.036172 0.0065436"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_front4_link">
+    <inertial>
+      <origin xyz="-0.0483173 -0.0045295 0. " rpy="0. 0. 0."/>
+      <mass value="0.0271098"/>
+      <inertia ixx="0.0000013" ixy="0." ixz="0." iyy="0.0000388" iyz="0." izz="0.0000379"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_front4_link_visuals_left_front4_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0483739 -0.005 0. " rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1214521 0.01 0.0248567"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0483739 -0.005 0. " rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1214521 0.01 0.0248567"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_rear1_link">
+    <inertial>
+      <origin xyz="-0.118781 -0.0027946 0.0008623" rpy="0. 0. 0."/>
+      <mass value="0.3825444"/>
+      <inertia ixx="0.0001321" ixy="0.0001506" ixz="0.0000351" iyy="0.0027388" iyz="-0.0000011" izz="0.0026657"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_rear1_link_visuals_left_rear1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0993414 0.001 -0.0097397" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.2646828 0.026 0.0853934"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0993414 0.001 -0.0097397" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.2646828 0.026 0.0853934"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_rear2_link">
+    <inertial>
+      <origin xyz="0.0846462 -0.0052396 -0.0474341" rpy="0. 0. 0."/>
+      <mass value="0.3113572"/>
+      <inertia ixx="0.0010235" ixy="0.0000254" ixz="0.0014813" iyy="0.0035485" iyz="-0.0000179" izz="0.0025387"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_rear2_link_visuals_left_rear2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0.088539 -0.0060013 -0.04 " rpy="1.5613623 0.5373949 0.00013 "/>
+      <geometry>
+        <box size="0.32 0.0782605 0.0127731"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.088539 -0.0060013 -0.04 " rpy="1.5613623 0.5373949 0.00013 "/>
+      <geometry>
+        <box size="0.32 0.0782605 0.0127731"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_spring1_link">
+    <inertial>
+      <origin xyz="-0.0452477 -0.005217 0.0060453" rpy="0. 0. 0."/>
+      <mass value="0.0305218"/>
+      <inertia ixx="0.0000007" ixy="-0.0000001" ixz="0.0000023" iyy="0.0000178" iyz="0." izz="0.0000174"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_spring1_link_visuals_left_spring1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_spring1_link_collisions_left_spring1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_spring1_link_collisions_left_spring1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_spring2_link">
+    <inertial>
+      <origin xyz="-0.0688384 0.0001674 0. " rpy="0. 0. 0."/>
+      <mass value="0.0923989"/>
+      <inertia ixx="0.0000025" ixy="0.0000001" ixz="0." iyy="0.0001019" iyz="0." izz="0.0001017"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0. 0. 0." rpy="0. 0.0000007 3.1415927"/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_spring2_link_visuals_left_spring2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0. 0. 0." rpy="0. 0.0000007 3.1415927"/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_spring2_link_collisions_left_spring2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0. 0. 0." rpy="0. 0.0000007 3.1415927"/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_spring2_link_collisions_left_spring2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_left_wheel_link">
+    <inertial>
+      <origin xyz="0.0001535 -0.0202192 -0.0001147" rpy="0. 0. 0."/>
+      <mass value="0.5120844"/>
+      <inertia ixx="0.0003895" ixy="0.0000008" ixz="-0.0000009" iyy="0.0006331" iyz="-0.0000006" izz="0.0003889"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_left_wheel_link_visuals_left_wheel_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0. -0.0125 0. " rpy="1.5707963 0. 0. "/>
+      <geometry>
+        <cylinder radius="0.06" length="0.025"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. -0.0125 0. " rpy="1.5707963 0. 0. "/>
+      <geometry>
+        <cylinder radius="0.06" length="0.025"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_front1_link">
+    <inertial>
+      <origin xyz="0.0285012 0.0106521 0.0033009" rpy="0. 0. 0."/>
+      <mass value="0.121387"/>
+      <inertia ixx="0.0000422" ixy="0.0000216" ixz="-0.0000182" iyy="0.0002193" iyz="0.0000025" izz="0.0001969"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_front1_link_visuals_right_front1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0.0470403 0.0125 0.0000064" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1510806 0.025 0.0569199"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0470403 0.0125 0.0000064" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1510806 0.025 0.0569199"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_front2_link">
+    <inertial>
+      <origin xyz="-0.0543861 0.0044715 -0.0399654" rpy="0. 0. 0."/>
+      <mass value="0.0328941"/>
+      <inertia ixx="0.0000295" ixy="0." ixz="-0.0000382" iyy="0.0000824" iyz="0." izz="0.0000534"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_front2_link_visuals_right_front2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0543931 0.005 -0.0399705" rpy="-1.5709913 -0.6334791 0.000014 "/>
+      <geometry>
+        <box size="0.159616 0.0250343 0.0100062"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0543931 0.005 -0.0399705" rpy="-1.5709913 -0.6334791 0.000014 "/>
+      <geometry>
+        <box size="0.159616 0.0250343 0.0100062"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_front3_link">
+    <inertial>
+      <origin xyz="-0.0844609 0.002949 0.0515978" rpy="0. 0. 0."/>
+      <mass value="0.044351"/>
+      <inertia ixx="0.0000504" ixy="0." ixz="0.0000724" iyy="0.0001643" iyz="0." izz="0.0001141"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_front3_link_visuals_right_front3_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0861992 0.0029902 0.0505581" rpy="1.5560837 0.5975584 -0.0002124"/>
+      <geometry>
+        <box size="0.2213991 0.0360053 0.0065395"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0861992 0.0029902 0.0505581" rpy="1.5560837 0.5975584 -0.0002124"/>
+      <geometry>
+        <box size="0.2213991 0.0360053 0.0065395"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_front4_link">
+    <inertial>
+      <origin xyz="-0.0483173 0.0045295 0. " rpy="0. 0. 0."/>
+      <mass value="0.0271098"/>
+      <inertia ixx="0.0000013" ixy="0." ixz="0." iyy="0.0000388" iyz="0." izz="0.0000379"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_front4_link_visuals_right_front4_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0483739 0.005 0. " rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1214521 0.01 0.0248567"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0483739 0.005 0. " rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.1214521 0.01 0.0248567"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_rear1_link">
+    <inertial>
+      <origin xyz="-0.118781 0.0027946 0.0008623" rpy="0. 0. 0."/>
+      <mass value="0.3825444"/>
+      <inertia ixx="0.0001321" ixy="-0.0001506" ixz="0.0000351" iyy="0.0027388" iyz="0.0000011" izz="0.0026657"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_rear1_link_visuals_right_rear1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0.0993414 -0.001 -0.0097397" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.2646828 0.026 0.0853934"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0993414 -0.001 -0.0097397" rpy="0. 0. 0."/>
+      <geometry>
+        <box size="0.2646828 0.026 0.0853934"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_rear2_link">
+    <inertial>
+      <origin xyz="0.0840113 0.0054568 -0.0469827" rpy="0. 0. 0."/>
+      <mass value="0.3029696"/>
+      <inertia ixx="0.001019" ixy="-0.000027" ixz="0.0014775" iyy="0.0035378" iyz="0.000019" izz="0.0025312"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_rear2_link_visuals_right_rear2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0.08855 0.0060154 -0.04 " rpy="-1.5677263 0.5357573 -0.0014918"/>
+      <geometry>
+        <box size="0.32 0.0776915 0.0126591"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.08855 0.0060154 -0.04 " rpy="-1.5677263 0.5357573 -0.0014918"/>
+      <geometry>
+        <box size="0.32 0.0776915 0.0126591"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_spring1_link">
+    <inertial>
+      <origin xyz="-0.0452477 0.005217 0.0060453" rpy="0. 0. 0."/>
+      <mass value="0.0305218"/>
+      <inertia ixx="0.0000007" ixy="0.0000001" ixz="0.0000023" iyy="0.0000178" iyz="-0." izz="0.0000174"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_spring1_link_visuals_right_spring1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_spring1_link_collisions_right_spring1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_spring1_link_collisions_right_spring1_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_spring2_link">
+    <inertial>
+      <origin xyz="-0.0688384 -0.0001674 0. " rpy="0. 0. 0."/>
+      <mass value="0.0923989"/>
+      <inertia ixx="0.0000025" ixy="-0.0000001" ixz="0." iyy="0.0001019" iyz="0." izz="0.0001017"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0. -0. 0." rpy="0. 0.0000007 3.1415927"/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_spring2_link_visuals_right_spring2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="-0. -0. 0." rpy="0. 0.0000007 3.1415927"/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_spring2_link_collisions_right_spring2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0. -0. 0." rpy="0. 0.0000007 3.1415927"/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_spring2_link_collisions_right_spring2_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="wheelbipeV14_2_right_wheel_link">
+    <inertial>
+      <origin xyz="0.0001779 0.0202192 -0.0000713" rpy="0. 0. 0."/>
+      <mass value="0.5120844"/>
+      <inertia ixx="0.0003899" ixy="-0.0000009" ixz="-0.0000007" iyy="0.0006331" iyz="0.0000004" izz="0.0003885"/>
+    </inertial>
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
+      <geometry>
+        <mesh filename="./meshes/wheelbipeV14_2_right_wheel_link_visuals_right_wheel_link_node_STL_BINARY__mesh.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <visual>
+      <origin xyz="0. 0.0125 0. " rpy="1.5707963 0. 0. "/>
+      <geometry>
+        <cylinder radius="0.06" length="0.025"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. 0.0125 0. " rpy="1.5707963 0. 0. "/>
+      <geometry>
+        <cylinder radius="0.06" length="0.025"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>
