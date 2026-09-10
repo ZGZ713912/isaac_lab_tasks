@@ -64,7 +64,7 @@ import torch  # noqa: E402
 import agent_tasks  # noqa: E402,F401  (triggers gym registration)
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 
-WHEEL_HINT = "joint3"
+WHEEL_HINT = "link3"  # 轮子连杆名 L_link3 / R_link3（此前误写 joint3，导致 wheel_centers 一直为空）
 
 
 def _quat_to_pitch_deg(quat_w: torch.Tensor) -> torch.Tensor:

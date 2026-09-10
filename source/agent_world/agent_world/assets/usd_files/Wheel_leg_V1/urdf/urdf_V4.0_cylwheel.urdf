@@ -95,13 +95,7 @@
         <color rgba="0.84314 0.81569 0.75294 1" />
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <mesh filename="../meshes/L_link3.STL" />
-      </geometry>
-    </collision>
-  </link>
+    <collision><origin xyz="0 0 0.0203500008211" rpy="0 0 0" /><geometry><cylinder radius="0.0600000032506" length="0.0250000003725" /></geometry></collision></link>
   <joint name="L_joint3" type="continuous">
     <origin xyz="0.25 0 0.015" rpy="0 0 -1.5708" />
     <parent link="L_link2" />
@@ -182,13 +176,7 @@
         <color rgba="0.84314 0.81569 0.75294 1" />
       </material>
     </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <mesh filename="../meshes/R_link3.STL" />
-      </geometry>
-    </collision>
-  </link>
+    <collision><origin xyz="0 0 -0.0203500008211" rpy="0 0 0" /><geometry><cylinder radius="0.0600000031546" length="0.0250000003725" /></geometry></collision></link>
   <joint name="R_joint3" type="continuous">
     <origin xyz="0.249999999999996 0 -0.0150000000000006" rpy="0 0 3.14159265358979" />
     <parent link="R_link2" />

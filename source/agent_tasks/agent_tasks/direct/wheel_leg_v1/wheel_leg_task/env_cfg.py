@@ -522,7 +522,11 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # alpha_offset = V14_ALPHA_OFFSET
 
     mute_wheel_pos_obs = True        # 不把轮子角度放进观测：轮子可无限旋转，位置没有信息量
-    default_height_cmd = 0.22        # 默认身高指令 0.22 m（轮轴到底盘的伸缩高度）
+    # ★ 身高指令：必须是本机构可达范围。
+    #   Wheel_leg_V1 站高（base 原点离地）在 q2=0 时约 0.23 m，最大伸展（q2≈-1）约 0.31 m，
+    #   最小（q2≈+1）接近 0。原 [0.20,0.42] 上界不可达（>0.31 永远拿不到高度奖励，
+    #   还会被 track_height_square 持续重罚），故收窄到可达区间。
+    default_height_cmd = 0.24        # 默认身高指令 0.24 m（接近自然站立高度）
 
     # —— 观测延迟模拟（sim2real：真机传感/通信有延迟，训练时就让策略适应）——
     # 每项 = [最小延迟步数, 最大延迟步数]，重置时在区间内随机取固定值
@@ -589,7 +593,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     )
 
     use_leg_length_as_height = False # 是否用"腿长"代替"车体高度"作为高度指令（False=用车体离地高）
-    height_range = [0.20, 0.42]      # 身高指令采样范围 0.20~0.42 m
+    height_range = [0.16, 0.30]      # 身高指令采样范围：本机构可达约 [0.05, 0.31] m，留裕量取 0.16~0.30
     terrain_command_overrides: dict[str, TerrainCommandOverrideCfg] = field(default_factory=dict)  # 按地形名覆盖速度指令的表（粗糙任务里填）
     terrain_command_switch_hold_steps: int = 0       # 地形命令切换后保持的步数
     use_absolute_height = True       # 用绝对高度观测（无需地面估计/高度扫描仪，省算力）
@@ -914,7 +918,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         termination = -200.,         # ★摔倒终止：一次 -200（最大的罚，让策略极度怕摔）
         leg_joint_acc=-5e-7,         # 腿关节加速度惩罚（动作要柔，别猛甩腿）
         leg_joint_vel = -5.0e-3,     # 腿关节速度惩罚
-        leg_joint_pair_pos_diff=-0.0, # 左右腿对称性惩罚（当前关闭）
+        leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
         joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
         wheel_vel=-1e-5,             # 轮速惩罚
@@ -1036,9 +1040,11 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
             special_mode_stable_root_lin_vel_b_abs_max=3.0,          # 稳定判据：线速度上限
             special_mode_stable_root_ang_vel_b_abs_max=10.0,         # 稳定判据：角速度上限
             ranges=mdp.SpecialModeUniformVelocityCommandCfg.Ranges(  # 普通指令的采样范围
-                lin_vel_x=(-2.7, 2.7),        # x 速度 ±2.7 m/s
+                # ★平地自稳起步：先小速度学会"站住+慢走"，特殊模式（自旋/冲刺）后置；
+                # 大速度/大角速度会让新机器人来不及学平衡就摔（原 ±2.7 / ±2π 太激进）。
+                lin_vel_x=(-1.2, 1.2),        # x 速度 ±1.2 m/s
                 lin_vel_y=(0.0, 0.0),         # y 速度 0（轮腿机器人横移靠平移模式）
-                ang_vel_z=(-2.*torch.pi, 2.*torch.pi),  # 偏航角速度 ±2π
+                ang_vel_z=(-1.0, 1.0),        # 偏航角速度 ±1 rad/s（自旋由 special_modes 后置加入）
                 heading=(-torch.pi, torch.pi),  # 目标朝向范围
             ),
             special_modes={                   # 特殊训练模式表（按比例分配给环境）
