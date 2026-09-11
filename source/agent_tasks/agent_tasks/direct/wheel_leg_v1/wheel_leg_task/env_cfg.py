@@ -593,10 +593,9 @@ class CurriculumCfgV14Stand:
     leg_osc_progression = None
 
     # ★站立优先速度指令课程：先全体零指令练站住，再分档放开运动指令。
-    #   - 阶段0：rel_standing_envs=1.0（全体零指令，自旋/冲刺拿不到环境），
-    #     最少 400 轮 + 存活≥10s + track_height_exp_tight 窗口均值≥0.4 才晋级；
-    #   - 阶段1：小速度 ±0.4 m/s / ±0.5 rad/s，最少 300 轮 + 存活≥12s 晋级；
-    #   - 阶段2：恢复常规 ±1.2 m/s / ±1.0 rad/s（冲刺/自旋仍按各自轮次原计划）。
+    #   advance_policy=reward_or_iterations：表现达标可提前晋级，否则到 min_iterations
+    #   强制晋级（避免像之前那样永远卡在 stage0、策略见不到非零指令）。
+    #   s0 纯站立(保底800) → s1 ±0.2 → s2 ±0.4 → s3 ±0.8 → s4 ±1.2 m/s。
     #   disable_special_modes：新的课程接管零指令阶段，关闭旧的写死窗口 zero_cmd。
     command_velocity_progression = CurrTerm(
         func=mdp.CommandVelocityProgression,
@@ -606,6 +605,7 @@ class CurriculumCfgV14Stand:
             "window_size": 64,
             "min_stage_episodes": 64,
             "normalize_by_episode_length": True,
+            "advance_policy": "reward_or_iterations",
             "disable_special_modes": ("zero_cmd",),
             "stages": [
                 {
@@ -613,20 +613,38 @@ class CurriculumCfgV14Stand:
                     "lin_vel_x": (0.0, 0.0),
                     "lin_vel_y": (0.0, 0.0),
                     "ang_vel_z": (0.0, 0.0),
-                    "min_iterations": 400,
+                    "min_iterations": 800,
                     "min_episodes": 64,
-                    "min_episode_time_s": 10.0,
+                    "min_episode_time_s": 8.0,
                     "threshold": 0.4,
                 },
                 {
-                    "rel_standing_envs": 0.1,
+                    "rel_standing_envs": 0.5,
+                    "lin_vel_x": (-0.2, 0.2),
+                    "lin_vel_y": (0.0, 0.0),
+                    "ang_vel_z": (-0.4, 0.4),
+                    "min_iterations": 400,
+                    "min_episodes": 64,
+                    "min_episode_time_s": 6.0,
+                    "threshold": 0.3,
+                },
+                {
+                    "rel_standing_envs": 0.3,
                     "lin_vel_x": (-0.4, 0.4),
                     "lin_vel_y": (0.0, 0.0),
-                    "ang_vel_z": (-0.5, 0.5),
-                    "min_iterations": 300,
+                    "ang_vel_z": (-0.6, 0.6),
+                    "min_iterations": 400,
                     "min_episodes": 64,
-                    "min_episode_time_s": 12.0,
-                    "threshold": 0.4,
+                    "threshold": 0.3,
+                },
+                {
+                    "rel_standing_envs": 0.2,
+                    "lin_vel_x": (-0.8, 0.8),
+                    "lin_vel_y": (0.0, 0.0),
+                    "ang_vel_z": (-0.8, 0.8),
+                    "min_iterations": 400,
+                    "min_episodes": 64,
+                    "threshold": 0.3,
                 },
                 {
                     "rel_standing_envs": 0.1,
@@ -956,6 +974,22 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # —— 打滑惩罚（方案A）参考轮半径：轮底接触点 = 轮心 + (0,0,-r) ——
     wheel_slip_reference_radius = 0.06        # 轮半径（m）
 
+    # —— 刹车课程（保底 iteration_start）：前进 T_move → 急停 T_stop 循环 ——
+    #   命中环境在 stop 相把前向速度指令置 0，并打开 braking_mask 供刹车奖励使用。
+    #   刹车期 wheel_slip 临时置 0（见 base/env.py），避免与"必须快速降轮速"对冲。
+    brake_training_cfg = {
+        "enabled": True,
+        "iteration_start": 3500,   # 保底：移动达标后（s4 全速约 2000 轮）才开刹车
+        "rel_envs": 0.25,          # 命中刹车课程的 env 比例
+        "move_s": 1.2,             # 前进保持时长（秒）
+        "stop_s": 1.0,             # 急停保持时长（秒）
+        "speed_range": (0.8, 1.2), # 前进目标速度采样范围（m/s）
+    }
+    brake_stop_sigma = 0.05            # 急停奖励 σ：exp(-v_fwd²/σ)，越小越强调完全停住
+    brake_leg_forward_deadband = 0.0   # 前伸死区（m）：delta_x 超出该值才奖励
+    brake_leg_forward_cap = 0.15       # 前伸奖励上限（m）
+    stand_wheel_x_ref_ema_tau = 1.0    # "静止站立轮心前后参考" EMA 时间常数（秒）
+
     # —— 底盘/腿杆接触惩罚（按向上法向力 -F_z 连续，越压越痛）——
     undesired_contact_ref_force = 1.0         # 死区参考力：1N 以下忽略传感器噪声
     undesired_contact_penalty_cap = 5.0       # 单根连杆惩罚上限（防数值爆炸）
@@ -1114,18 +1148,20 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         leg_len_osc=0.0,             # 临时回滚（原 -0.5，先站稳再加）
         leg_joint_osc=0.0,           # 临时回滚（原 -1.0e-2，先站稳再加）
         leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
-        joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
+        joint_torque=-5e-5,          # 力矩惩罚（省电+保护电机；调小以不禁锢快速移动/刹车力矩）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
         wheel_vel=-1e-5,             # 轮速惩罚
         wheel_power=-1e-4,           # 轮功率惩罚（直接对应电池功耗）
         wheel_air_spin=0.0,          # 临时回滚（原 -1e-3）
         wheel_hop=-2.0,              # ★弹跳惩罚：轮心离地高度超 (r+tol) 部分的平方（只抓离地，不限制前后摆腿）
         wheel_slip=-0.5,             # ★打滑惩罚（方案A）：轮底接触点切向滑移速度²，仅触地轮累计；纯滚动=0
+        brake_stop=1.0,              # ★刹车奖励：急停相 exp(-v_fwd²/σ)，越快停累计奖励越高
+        brake_leg_forward=0.5,       # ★刹车奖励：急停相奖励轮心相对"静止站立参考"前伸
         lin_vel_z=-0.5,              # 竖直速度惩罚（别上下颠簸/蹦跳）
-        ang_vel_xy=-0.05,            # 横滚/俯仰角速度惩罚（车身要稳）
-        action_smoothness_leg=-0.01, # 腿动作平滑性惩罚（保留极小值防高频抖动；不阻止平衡所需的前后摆动）
-        action_rate = -0.01,         # 动作变化率惩罚
-        action_smoothness_wheel=-0.01, # 轮动作平滑性惩罚
+        ang_vel_xy=-0.02,            # 横滚/俯仰角速度惩罚（调小以允许快速移动/刹车的俯仰动态）
+        action_smoothness_leg=-0.005, # 腿动作平滑性惩罚（调小以允许腿快速前伸）
+        action_rate = -0.005,        # 动作变化率惩罚（调小以允许快速动作变化）
+        action_smoothness_wheel=-0.003, # 轮动作平滑性惩罚（调小以允许轮速快速变化/刹车）
         flat_orientation_y=-0.0,     # 俯仰保持水平奖励（当前关闭）
         flat_orientation_y_v=-2.0,   # 俯仰角速度惩罚
         flat_orientation_y_exp = 1.0,  # 俯仰 exp 奖励（越平越好）
@@ -1283,10 +1319,10 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                 #         ang_vel_z=[(4.5*torch.pi, 5.5*torch.pi), (-4.5*torch.pi, -5.5*torch.pi)],
                 #     ),
                 # ),
-                # 模式1 — 高速前冲/后退：20% 非站立环境
+                # 模式1 — 高速前冲/后退：15% 非站立环境
                 "dash": mdp.SpecialModeEntryCfg(       # 冲刺：±2~3 m/s 的高速机动
-                    rel_envs=0.3,
-                    iteration_start=2000,
+                    rel_envs=0.15,
+                    iteration_start=2600,
                     iteration_end=-1,
                     disable_jump_takeoff=True,   # 冲刺时禁止触发跳跃
                     debug_print=False,

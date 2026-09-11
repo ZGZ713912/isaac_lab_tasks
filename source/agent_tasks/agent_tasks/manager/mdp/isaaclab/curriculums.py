@@ -49,6 +49,15 @@ class CommandVelocityProgression(ManagerTermBase):
         self.window_size: int = max(1, int(params.get("window_size", 32)))
         self.min_stage_episodes: int = max(1, int(params.get("min_stage_episodes", self.window_size)))
         self.normalize_by_episode_length: bool = bool(params.get("normalize_by_episode_length", True))
+        # 晋级策略："reward"=只看奖励阈值(旧行为)；"iterations"=只看最少轮数(时间表)；
+        # "reward_or_iterations"=表现达标可提前晋级，否则到 min_iterations 强制晋级。
+        advance_policy = str(params.get("advance_policy", "reward")).lower()
+        if advance_policy not in ("reward", "iterations", "reward_or_iterations"):
+            raise ValueError(
+                "CommandVelocityProgression: advance_policy 必须是 "
+                f"'reward' / 'iterations' / 'reward_or_iterations'，得到 {advance_policy!r}"
+            )
+        self.advance_policy: str = advance_policy
         self.window_size = self.window_size * self.num_steps_per_env
         self.min_stage_episodes = self.min_stage_episodes * self.num_steps_per_env
         # 可选：构造时禁用指定名字的 special_modes（把它们 rel_envs 置 0），
@@ -256,11 +265,32 @@ class CommandVelocityProgression(ManagerTermBase):
         if len(self._recent_rewards) > 0:
             self._last_window_mean = float(sum(self._recent_rewards) / len(self._recent_rewards))
 
+    def _advance_stage(self, reason: str, window_mean: float | None = None) -> None:
+        """推进到下一阶段并重置本阶段缓冲（reason: 'reward' | 'iterations'）。"""
+        prev_stage = self._stage
+        self._stage = min(self._stage + 1, self._num_stages - 1)
+        self._episodes_since_stage_change = 0
+        self._recent_rewards.clear()
+        self._episode_times.clear()
+        if window_mean is not None:
+            self._last_window_mean = window_mean
+        self._stage_start_iteration = self._get_training_iteration()
+        self._update_command_range()
+        print(
+            "[Curriculum] Command velocity stage -> "
+            f"{self._stage + 1}/{self._num_stages} (by {reason}), "
+            f"lin_vel_x={self._env.cfg.commands.ranges.lin_vel_x}, "
+            f"rel_standing_envs={self._env.cfg.commands.rel_standing_envs}, "
+            f"window_mean={self._last_window_mean:.4f}, "
+            f"stage {prev_stage}->{self._stage}",
+            flush=True,
+        )
+
     def _try_advance_stage(self):
         if self._stage >= self._num_stages - 1:
             return
-        if len(self._recent_rewards) < self.window_size:
-            return
+
+        # 本阶段最少 episode 数（两种策略共用的前置条件）
         min_ep = (
             self._min_episodes_per_stage[self._stage]
             if self._stage < len(self._min_episodes_per_stage)
@@ -269,15 +299,25 @@ class CommandVelocityProgression(ManagerTermBase):
         if self._episodes_since_stage_change < min_ep:
             return
 
-        # 最少轮数下限：达到后才有资格晋级（未达标则继续本阶段）
+        # 最少轮数下限
         stage_min_iterations = (
             self._stage_min_iterations[self._stage]
             if self._stage < len(self._stage_min_iterations)
             else 0
         )
-        if stage_min_iterations > 0:
-            if self._get_training_iteration() - self._stage_start_iteration < stage_min_iterations:
-                return
+        iterations_elapsed = self._get_training_iteration() - self._stage_start_iteration
+        iterations_ready = stage_min_iterations > 0 and iterations_elapsed >= stage_min_iterations
+
+        # 时间保底：到点强制晋级，避免永远卡在同一阶段（阻塞移动指令解锁）
+        if self.advance_policy in ("iterations", "reward_or_iterations") and iterations_ready:
+            self._advance_stage("iterations")
+            return
+        if self.advance_policy == "iterations":
+            return
+
+        # 表现达标提前晋级
+        if len(self._recent_rewards) < self.window_size:
+            return
 
         # 存活时间下限：窗口平均回合时长不足时不允许晋级
         stage_min_episode_time = (
@@ -294,20 +334,7 @@ class CommandVelocityProgression(ManagerTermBase):
         threshold = self._thresholds[self._stage]
 
         if window_mean >= threshold:
-            self._stage = min(self._stage + 1, self._num_stages - 1)
-            self._episodes_since_stage_change = 0
-            self._recent_rewards.clear()
-            self._episode_times.clear()
-            self._last_window_mean = window_mean
-            self._stage_start_iteration = self._get_training_iteration()
-            self._update_command_range()
-            print(
-                "[Curriculum] Command velocity stage -> "
-                f"{self._stage + 1}/{self._num_stages}, "
-                f"lin_vel_x={self._env.cfg.commands.ranges.lin_vel_x}, "
-                f"rel_standing_envs={self._env.cfg.commands.rel_standing_envs}, "
-                f"avg_reward={window_mean:.4f} (threshold {threshold:.4f})"
-            )
+            self._advance_stage("reward", window_mean=window_mean)
 
     def _update_command_range(self):
         stage_cfg = self._stage_configs[self._stage]
