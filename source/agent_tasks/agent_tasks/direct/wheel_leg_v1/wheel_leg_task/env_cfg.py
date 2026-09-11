@@ -132,16 +132,15 @@ class EventCfgV14(EventCfg):
     #         "operation": "scale",
     #     },
     # )
-    base_inertia = EventTerm(         # 车体转动惯量随机化：×0.8~1.2
+    base_inertia = EventTerm(         # 车体转动惯量随机化：×0.9~1.1（与质量事件解耦的额外惯量不确定性）
         func=mdp.randomize_rigid_body_inertia,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
-            "inertia_distribution_params": (0.8, 1.2),
+            "inertia_distribution_params": (0.9, 1.1),
             "operation": "scale",
         },
     )
-    base_inertia = None               # ↑上面定义后立刻置 None = 实际禁用车体惯量随机化（惯量乱动容易学不稳）
     add_leg_mass = EventTerm(         # 腿杆质量随机化：×0.9~1.1（Wheel_leg_V1：左右腿杆 link1/link2）
         func=_wl_randomize_rigid_body_mass,
         mode="startup",
@@ -164,16 +163,15 @@ class EventCfgV14(EventCfg):
             "operation": "scale",
         },
     )
-    wheels_inertia = EventTerm(       # 轮子转动惯量随机化：×0.8~1.2（影响轮子加减速响应）
+    wheels_inertia = EventTerm(       # 轮子转动惯量随机化：×0.9~1.1（影响轮子加减速响应）
         func=mdp.randomize_rigid_body_inertia,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="(L_link3|R_link3)"),
-            "inertia_distribution_params": (0.8, 1.2),
+            "inertia_distribution_params": (0.9, 1.1),
             "operation": "scale",
         },
     )
-    wheels_inertia = None             # 同上：定义后禁用
     # gimbal_com = EventTerm(           # （注释掉：云台质心随机化）
     #     func=mdp.randomize_rigid_body_com,
     #     mode="startup",
@@ -200,13 +198,23 @@ class EventCfgV14(EventCfg):
             "com_range": {"x": (-0.04, 0.04), "y": (-0.02, 0.02), "z": (-0.02, 0.02)},
         },
     )
-    base_material = EventTerm(        # 车体摩擦材质随机化：摩擦故意很低(0.01~0.1)，模拟车壳光滑
+    leg_com = EventTerm(              # 腿杆质心随机化：±5mm（覆盖装配/线缆走线造成的质量偏心）
+        func=mdp.randomize_rigid_body_com,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=["L_link1", "L_link2", "R_link1", "R_link2"]
+            ),
+            "com_range": {"x": (-0.005, 0.005), "y": (-0.005, 0.005), "z": (-0.005, 0.005)},
+        },
+    )
+    base_material = EventTerm(        # 车体摩擦材质随机化：不再故意极低，避免拿底盘当低成本滑块蹭地
         func=_wl_randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
-            "static_friction_range": (0.01, 0.1),    # 静摩擦范围
-            "dynamic_friction_range": (0.01, 0.1),   # 动摩擦范围
+            "static_friction_range": (0.2, 0.5),    # 静摩擦范围（原 0.01~0.1 太低）
+            "dynamic_friction_range": (0.15, 0.4),  # 动摩擦范围
             "restitution_range": (0.02, 0.2),        # 弹性(恢复系数)范围
             "num_buckets": 64,       # 材质分桶数（物理引擎按桶批量算）
             "make_consistent": True, # 保证静摩擦≥动摩擦
@@ -246,7 +254,7 @@ class EventCfgV14(EventCfg):
             # "static_friction_distribution_params": (2.0, 4.0),
             # "dynamic_friction_distribution_params": (1.0, 2.0),
             # "viscous_friction_distribution_params": (0.02, 0.1),
-            # "armature_distribution_params": (0.001, 0.003),
+            "armature_distribution_params": (0.001, 0.003),  # 电机转子惯量附加量（覆盖真机 armature 偏差）
             # "static_friction_distribution_params": (1.5, 2.0),
             # "dynamic_friction_distribution_params": (1.4, 1.8),
             # "viscous_friction_distribution_params": (0.01, 0.1),
@@ -265,7 +273,7 @@ class EventCfgV14(EventCfg):
             # "static_friction_distribution_params": (1.5, 3.0),
             # "dynamic_friction_distribution_params": (0.75, 1.5),
             # "viscous_friction_distribution_params": (0.01, 0.1),
-            # "armature_distribution_params": (0.001, 0.003),
+            "armature_distribution_params": (0.001, 0.003),  # 电机转子惯量附加量（覆盖真机 armature 偏差）
             # "static_friction_distribution_params": (0.9, 1.4),
             # "dynamic_friction_distribution_params": (0.8, 1.2),
             # "viscous_friction_distribution_params": (0.01, 0.1),
@@ -330,8 +338,8 @@ class EventCfgV14(EventCfg):
             # 输出力矩扰动：tau = clip(tau_nominal * scale + bias + N(0, noise_std))
             # 默认配置不改变行为，需要训练时可把 scale/bias/noise_std 的范围放开。
             "effort_scale_distribution_params": (0.8, 1.1),   # 力矩整体缩放
-            "effort_bias_distribution_params": (0.0, 0.0),    # 固定偏置（当前关）
-            "effort_noise_std_distribution_params": (0.0, 0.0),  # 随机噪声幅度（当前关）
+            "effort_bias_distribution_params": (-0.2, 0.2),   # 力矩常数/齿槽造成的固定偏置
+            "effort_noise_std_distribution_params": (0.0, 0.3),  # 每步力矩随机噪声幅度
             "distribution": "uniform",
         },
     )
@@ -344,8 +352,8 @@ class EventCfgV14(EventCfg):
             # 输出力矩扰动：tau = clip(tau_nominal * scale + bias + N(0, noise_std))
             # 默认配置不改变行为，需要训练时可把 scale/bias/noise_std 的范围放开。
             "effort_scale_distribution_params": (0.9, 1.1),
-            "effort_bias_distribution_params": (0.0, 0.0),
-            "effort_noise_std_distribution_params": (0.0, 0.0),
+            "effort_bias_distribution_params": (-0.02, 0.02),
+            "effort_noise_std_distribution_params": (0.0, 0.05),
             "distribution": "uniform",
         },
     )
@@ -361,7 +369,11 @@ class EventCfgV14(EventCfg):
             "velocity_range": {},     # 初速度不加扰动
         },
     )
-    # base_external_force_torque_xyz = None
+    # 纯自稳起步阶段：关闭随机推力/推送扰动。
+    # 注意：托举力课程注释后，__post_init__ 不再自动屏蔽 base_external_force_torque_xyz，
+    # 必须在此显式置 None，否则它会复活。
+    base_external_force_torque_xyz = None
+    push_robot = None
 
 
 @configclass
@@ -491,33 +503,35 @@ class CurriculumCfgV14Stand:
       只针对弹跳/抖动，不针对单向抬升。
     """
 
-    base_vertical_assist_force_progression = CurrTerm(
-        func=mdp.BaseVerticalAssistForceProgression,
-        params={
-            "reward_key": "track_height_exp_tight",
-            "num_steps_per_env": 24,
-            "window_size": 64,
-            "min_stage_episodes": 64,
-            "normalize_by_episode_length": True,
-            "apply_on_compute": True,
-            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
-            "stages": [
-                {
-                    "force_z": 60.0,
-                    "threshold": 0.4,
-                    "min_episodes": 200,
-                },
-                {
-                    "force_z": 30.0,
-                    "threshold": 0.4,
-                    "min_episodes": 200,
-                },
-                {
-                    "force_z": 0.0,
-                },
-            ],
-        },
-    )
+    # ── 托举力课程已注释：60N 托举会让机器人学不会用腿支撑（全程 stage0 卡死），
+    #    改为纯自稳起步，让策略自己承担全部体重。需要恢复时取消下面注释即可。
+    # base_vertical_assist_force_progression = CurrTerm(
+    #     func=mdp.BaseVerticalAssistForceProgression,
+    #     params={
+    #         "reward_key": "track_height_exp_tight",
+    #         "num_steps_per_env": 24,
+    #         "window_size": 64,
+    #         "min_stage_episodes": 64,
+    #         "normalize_by_episode_length": True,
+    #         "apply_on_compute": True,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+    #         "stages": [
+    #             {
+    #                 "force_z": 60.0,
+    #                 "threshold": 0.4,
+    #                 "min_episodes": 200,
+    #             },
+    #             {
+    #                 "force_z": 30.0,
+    #                 "threshold": 0.4,
+    #                 "min_episodes": 200,
+    #             },
+    #             {
+    #                 "force_z": 0.0,
+    #             },
+    #         ],
+    #     },
+    # )
 
     height_range_progression = CurrTerm(
         func=mdp.HeightRangeProgression,
@@ -535,6 +549,8 @@ class CurriculumCfgV14Stand:
             ],
         },
     )
+    # 临时关闭：先降高度目标站稳；后续按验证过的可达高度重设 stages 再开
+    height_range_progression = None
 
     leg_osc_progression = CurrTerm(
         func=mdp.RewardWeightProgression,
@@ -573,6 +589,8 @@ class CurriculumCfgV14Stand:
             ],
         },
     )
+    # 临时关闭：避免运行时把 leg osc/平滑惩罚覆盖回激进值（奖励表已回滚）
+    leg_osc_progression = None
 
     # ★站立优先速度指令课程：先全体零指令练站住，再分档放开运动指令。
     #   - 阶段0：rel_standing_envs=1.0（全体零指令，自旋/冲刺拿不到环境），
@@ -633,7 +651,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # PPO runner 每轮采集步数，用于从 common_step_counter 外推训练 iteration。
     training_progress_steps_per_iteration = 24  # PPO 每轮每环境采 24 步（num_steps_per_env，见 agents 配置）
 
-    # Temporarily disable domain randomization for V14 training.
+    # V14 域随机化事件表（质量/COM/惯量/摩擦/增益/力矩 + 关节零位偏置；当前启用）
     events = EventCfgV14()            # 换用上面定义的 V14 域随机化事件表
     # curriculum = CurriculumCfgV14()
     # ★站立起步：托举力 + 高度范围自动展宽 + 振荡惩罚自动收紧（见 CurriculumCfgV14Stand）。
@@ -664,10 +682,22 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # alpha_offset = V14_ALPHA_OFFSET
 
     mute_wheel_pos_obs = True        # 不把轮子角度放进观测：轮子可无限旋转，位置没有信息量
+
+    # sim2real：真车腿关节存在 1-2° 零位标定误差。
+    # 训练时每个 episode 为 4 个腿关节采样一个常值偏置，同时叠加到 joint_pos 观测和位置目标上，
+    # 让策略对"编码器零位/机械零位不一致"鲁棒；轮子不受影响（无位置观测、连续旋转）。
+    use_leg_joint_zero_offset = True
+    leg_joint_zero_offset_range = [-0.02, 0.02]  # rad（≈±1.15°）；跑稳后可放宽到 ±0.035（±2°）
+
+    # ★临时 joint1 训练限位（-0.2 ~ 1.0 rad），写入物理引擎并参与动作裁剪。
+    # 后续训练别的项目需要去掉 J1 限位时：把 use_joint1_pos_limit 置 False（或删掉这两行）即可。
+    use_joint1_pos_limit = True
+    joint1_pos_limit_range = (-0.2, 1.0)  # rad, (lower, upper)
+
     # ★ 身高指令：低到 160 mm、高到机械上限 390 mm（base_link 坐标轴到地面）。
     #   FK 核算：零位（q=0）站高约 0.229 m；轮在髋正下方、髋膝配合时可达约 0.52 m，
     #   因此 0.16~0.39 m 全范围可达。
-    default_height_cmd = 0.31        # 默认身高指令 0.31 m（初始课程区间 [0.30,0.32] 中点）
+    default_height_cmd = 0.27        # 默认身高指令 0.27 m（临时降高，初始区间 [0.26,0.28] 中点；站稳后逐步抬高）
 
     # —— 观测延迟模拟（sim2real：真机传感/通信有延迟，训练时就让策略适应）——
     # 每项 = [最小延迟步数, 最大延迟步数]，重置时在区间内随机取固定值
@@ -698,7 +728,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # }
     use_act_delay = True             # 开启动作延迟
 
-    # Temporarily disable observation noise for V14 training.
+    # 观测噪声（当前启用，各分量幅度见下表；joint_pos ±0.025 rad ≈ ±1.4°）
     ''' noise '''
     # —— 观测噪声：给每个观测量加均匀噪声（模拟传感器精度），提高鲁棒性 ——
     self_obs_noise_cfg = {
@@ -734,7 +764,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     )
 
     use_leg_length_as_height = False # 是否用"腿长"代替"车体高度"作为高度指令（False=用车体离地高）
-    height_range = [0.30, 0.32]      # ★初始课程区间（窄）；HeightRangeProgression 会逐级展宽到 [0.25,0.39]
+    height_range = [0.26, 0.28]      # ★临时降高区间（零位站高 ~0.229m，先站稳；HeightRangeProgression 暂关）
     terrain_command_overrides: dict[str, TerrainCommandOverrideCfg] = field(default_factory=dict)  # 按地形名覆盖速度指令的表（粗糙任务里填）
     terrain_command_switch_hold_steps: int = 0       # 地形命令切换后保持的步数
     use_absolute_height = True       # 用绝对高度观测（无需地面估计/高度扫描仪，省算力）
@@ -917,6 +947,23 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     undesired_contact_force_threshold = 3.0   # "乱接触"的判定力阈值 3N
     desired_contact_force_threshold = 5.0     # "正常接触"(轮子)的判定阈值 5N
 
+    # —— 弹跳惩罚（轮心离地高度判据）——
+    # 平地接触时轮心离地高度≈轮半径，且与腿部前后摆无关；因此该惩罚只抓跳起/离地，
+    # 不限制"大小腿配合前后摆"的平衡动作。
+    wheel_hop_reference_radius = 0.06         # 轮半径参考（实际轮半径 0.06m）
+    wheel_hop_clearance_tolerance = 0.01      # 离地容差：轮心离地 > r+tol 才开始罚
+
+    # —— 打滑惩罚（方案A）参考轮半径：轮底接触点 = 轮心 + (0,0,-r) ——
+    wheel_slip_reference_radius = 0.06        # 轮半径（m）
+
+    # —— 底盘/腿杆接触惩罚（按向上法向力 -F_z 连续，越压越痛）——
+    undesired_contact_ref_force = 1.0         # 死区参考力：1N 以下忽略传感器噪声
+    undesired_contact_penalty_cap = 5.0       # 单根连杆惩罚上限（防数值爆炸）
+    # —— 底盘/腿杆承重终止（leaky-bucket：接触 +1 / 脱离 -1，累计到阈值即 reset）——
+    base_contact_force_threshold = 30.0       # 单杆向上法向力 > 30N（≈24% 体重）才算"承重"
+    base_contact_min_steps = 4                # 漏水桶累计 ≥4 步终止（可容忍单次瞬碰）
+    base_contact_bucket_cap = 10              # 漏水桶上限
+
     # —— 观测堆叠（帧叠加）——
     use_frame_stack = False           # 不做帧堆叠（基础版用单帧+历史由算法侧管理）
     num_obs_hist = 1                  # 策略观测历史长度 1
@@ -939,6 +986,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     stand_still_deadzone_threshold: float = 0.1     # 死区阈值 0.1 m/s
     stand_drift_deadband: float = 0.1               # ★净位移惩罚死区（m）：小于该漂移不罚，允许平衡微动
     stand_drift_sigma: float = 1.0                  # ★净位移惩罚缩放（1/m）：越大罚得越陡
+    stand_drift_max_dist: float = 0.3               # ★净位移惩罚距离封顶（m）：防早期大漂移把二次项放大到炸 critic
     # —— 轮电机轴对齐奖励参数（保持轮轴水平=身体不歪）——
     wheel_motor_z_axis_align_ref_y_offset: float = 0.20855  # 参考点 y 偏移
     wheel_motor_z_axis_align_tolerance: float = 0.0         # 容差
@@ -1048,9 +1096,10 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     ang_vel_z_square_sigma = 0.5
     high_angVel_pen_sigma = 1.0      # 高角速度惩罚 σ
     height_sigma = 0.025             # 身高追踪 σ=2.5cm
+    height_tight_sigma = 0.005       # 严格版 σ（原继承 0.001 太窄 → 几乎恒 0、无梯度）
     height_square_sigma = 10.
-    base_height_bound = 0.2          # 身高下限 0.2m（低于就罚）
-    pen_base_too_low_sigma = 5.
+    base_height_bound = 0.22         # 身高下限 0.22m（低于 0.26 目标区间就罚）
+    pen_base_too_low_sigma = 10.
     orientation_y_exp_sigma = 0.02
     orientation_x_exp_sigma = 0.01
     lin_vel_err_constraint = 1.0     # NP3O 约束用的误差限
@@ -1060,19 +1109,21 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     rewards = OrderedDict(
         termination = -200.,         # ★摔倒终止：一次 -200（最大的罚，让策略极度怕摔）
         leg_joint_acc=-5e-7,         # 腿关节加速度惩罚（动作要柔，别猛甩腿）
-        leg_joint_vel = -5.0e-3,     # 腿关节速度惩罚（保留小幅；防弹跳主要交给 leg_joint_osc）
-        leg_len_vel=-0.2,            # 腿伸缩速度惩罚（小幅，避免压制主动抬升）
-        leg_len_osc=-0.5,            # ★腿长变化率的交流分量惩罚（只罚弹跳/抖动，不罚单向抬升）
-        leg_joint_osc=-1.0e-2,       # ★腿关节速度的交流分量惩罚（同上）
+        leg_joint_vel = 0.0,         # 临时禁用关节速度惩罚：腿平衡本身需要来回动，弹跳改用 wheel_hop 抓离地
+        leg_len_vel=0.0,             # 临时回滚（原 -0.2）
+        leg_len_osc=0.0,             # 临时回滚（原 -0.5，先站稳再加）
+        leg_joint_osc=0.0,           # 临时回滚（原 -1.0e-2，先站稳再加）
         leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
         joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
         wheel_vel=-1e-5,             # 轮速惩罚
         wheel_power=-1e-4,           # 轮功率惩罚（直接对应电池功耗）
-        wheel_air_spin=-1e-3,        # ★腾空时轮子空转惩罚（打断"跳-空转-落地-再跳"循环）
-        lin_vel_z=-0.8,              # 竖直速度惩罚（别上下颠簸/蹦跳）
+        wheel_air_spin=0.0,          # 临时回滚（原 -1e-3）
+        wheel_hop=-2.0,              # ★弹跳惩罚：轮心离地高度超 (r+tol) 部分的平方（只抓离地，不限制前后摆腿）
+        wheel_slip=-0.5,             # ★打滑惩罚（方案A）：轮底接触点切向滑移速度²，仅触地轮累计；纯滚动=0
+        lin_vel_z=-0.5,              # 竖直速度惩罚（别上下颠簸/蹦跳）
         ang_vel_xy=-0.05,            # 横滚/俯仰角速度惩罚（车身要稳）
-        action_smoothness_leg=-0.15, # 腿动作平滑性惩罚（二阶差分，天然偏"罚振荡、不罚匀速抬升"）
+        action_smoothness_leg=-0.01, # 腿动作平滑性惩罚（保留极小值防高频抖动；不阻止平衡所需的前后摆动）
         action_rate = -0.01,         # 动作变化率惩罚
         action_smoothness_wheel=-0.01, # 轮动作平滑性惩罚
         flat_orientation_y=-0.0,     # 俯仰保持水平奖励（当前关闭）
@@ -1092,20 +1143,21 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         track_ang_vel_z=1.0,         # ★追踪偏航角速度指令（转向控制）
         track_ang_vel_z_square=-1.0, # 转向误差平方惩罚
         # track_ang_vel_z_square=-0.1,
-        stand_still_lin_vel=-1.0,    # 指令为零时乱动惩罚（站着别晃）
-        stand_drift=-2.0,            # ★指令≈0 时净水平位移惩罚（允许平衡微动，防慢慢漂走）
+        stand_still_lin_vel=-3.0,    # 指令为零时乱动惩罚（站着别晃；临时加强压漂移）
+        stand_drift=0.0,             # 临时禁用（原 -2.0，尺度会炸 value function；后续用封顶版课程引入）
         # stand_still=-2.0,
-        stand_still=-0.0,            # 站住奖励（当前关闭）
+        stand_still=-0.3,            # 站住奖励（含 yaw 项，临时开启压自旋）
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）
-        track_height_exp_soft=1.0,   # ★宽松版身高追踪（远处也有梯度，帮助先接近目标高度）
-        track_height_exp_tight=1.5,  # ★严格版身高追踪（打开：身高要准）
-        track_height_square=-1.5,    # 身高误差平方惩罚
+        track_height_exp_soft=0.0,   # 临时回滚（原 1.0）
+        track_height_exp_tight=1.0,  # ★严格版身高追踪（打开：身高要准）
+        track_height_square=-1.0,    # 身高误差平方惩罚
         track_height_exp_both_wheels_contact=0.0,  # 双轮着地时的身高追踪（关闭）
         no_fork = -1.0,              # 防劈叉惩罚
         no_fork_square = -1.0,       # 防劈叉平方惩罚
         no_fork_exp=-0.0,            # 防劈叉 exp（关闭）
         no_fork_z_exp=-0.0,          # 防劈叉 z 向 exp（关闭）
-        undesired_contact=-2.0,      # ★不该碰的部件碰地惩罚（车体/腿蹭地）
+        undesired_contact=-20.0,     # ★不该碰的部件碰地惩罚（按 -F_z 连续，越压越痛）
+        pen_base_too_low=-50.0,      # ★底盘过低惩罚 (σ·(bound−h))²：贴地/塌腿重罚
     )
 
     def __post_init__(self):

@@ -33,5 +33,10 @@ fi
 unset LD_LIBRARY_PATH
 export LD_LIBRARY_PATH="$HOME/.local/lib"
 
+if [ -n "$WAYLAND_DISPLAY" ]; then
+    echo "[run_gui] 检测到 Wayland（WAYLAND_DISPLAY=$WAYLAND_DISPLAY），强制切换 X11/XWayland"
+fi
+unset WAYLAND_DISPLAY
+
 echo "[run_gui] LD_LIBRARY_PATH=$LD_LIBRARY_PATH (已清空 isaacgym 残留)"
 exec "$@"

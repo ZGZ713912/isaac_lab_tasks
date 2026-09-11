@@ -451,6 +451,13 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     no_fork_z_distance = 0.05 # m
     upper_joint_limit = 3.14 # rad
     lower_joint_limit = -3.14 # rad
+    # 按关节名收紧的位置限位（rad, (lower, upper)）：写入物理引擎硬限位 + 动作裁剪，
+    # 未列出的关节沿用上面的默认 ±3.14。Wheel_leg_V1 的 joint2 机械限位：
+    # 注：joint1 的临时限位由任务配置的 use_joint1_pos_limit / joint1_pos_limit_range 控制。
+    joint_pos_limit_overrides = {
+        "L_joint2": (-0.90, 0.10),
+        "R_joint2": (-0.90, 0.10),
+    }
     max_wheel_torque = 10. # N/m
     mute_wheel_pos_obs = False
 
@@ -494,6 +501,10 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     use_joint_vel_random_start = True
     leg_joint_vel_range = [-torch.pi/2.,torch.pi/2.]
     wheel_joint_vel_range = [-50.,50.]
+
+    # sim2real：腿关节零位标定误差 DR（per-episode 常值偏置，同时加在观测与位置目标上）
+    use_leg_joint_zero_offset = False
+    leg_joint_zero_offset_range = [-0.035, 0.035]  # rad（±2°）
     
     spring_settings = dict(
         mode = 'constant', # 'constant','linear','curve'

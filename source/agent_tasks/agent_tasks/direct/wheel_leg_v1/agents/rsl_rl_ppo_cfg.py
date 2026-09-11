@@ -241,7 +241,7 @@ class WheelLegTerrainFlatPPORunnerCfg(WheelLegBaseFlatPPORunnerCfg):
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-4,
-        schedule="adaptive",
+        schedule="fixed",  # 临时固定 lr=1e-4：站立起步阶段避免 adaptive 把 lr 顶到 0.01 引起发散
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,
@@ -279,6 +279,7 @@ class WheelLegTerrainRoughPPORunnerCfg(WheelLegBaseFlatPPORunnerCfg):
 class WheelLegV1FlatPPORunnerCfg(WheelLegTerrainFlatPPORunnerCfg):
     # ★V14 平地任务的 PPO 配置：网络改小（参数少训练快，轮腿任务不需要太大网络）
     experiment_name = "wheel_leg_v1_flat_direct"
+    save_interval = 100   # 调试期每 100 轮存一次（便于选 best checkpoint）
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         # actor_hidden_dims=[512, 256, 128],

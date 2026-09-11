@@ -2048,6 +2048,8 @@ class WheelLegBaseEnv(DirectRLEnv):
         self._legs_inact_idx, _ = self.robot.find_joints(self.cfg.legs_inact_name)
         self._wheel_idx, _ =  self.robot.find_joints(self.cfg.wheel_name)
         self._actuate_idx = self._legs_act_idx + self._wheel_idx
+        # 关节位置限位：把 cfg 中按关节名的限位写入物理引擎（如 joint2 = [-0.90, 0.10] rad）
+        self._leg_joint_lower_limit, self._leg_joint_upper_limit = self._setup_leg_joint_pos_limits()
         self._front1_joint_idx, _ = self.robot.find_joints("(L_joint1|R_joint1)")
         self._rear1_joint_idx, _ = self.robot.find_joints("(L_joint2|R_joint2)")
         self._legs_front_idx = self._front1_joint_idx
@@ -2149,6 +2151,10 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.joint_vel = self.robot.data.joint_vel
         self.joint_zero_torque = torch.zeros_like(self.joint_pos)
         self.default_joint_pos = self.robot.data.default_joint_pos
+        # sim2real：腿关节零位标定偏置（per-episode 常值；同时加在观测与位置目标上，默认全 0）
+        self.leg_joint_zero_offset = torch.zeros(
+            self.num_envs, len(self._legs_act_idx), dtype=torch.float, device=self.device
+        )
         self.finish_init = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.finish_init_time = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.start_reset = self.finish_init.clone()
@@ -2536,6 +2542,9 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         # Logging
         self._episode_sums = dict()
+        # 仅用于日志：腿前后行程统计（每步轮心 heading 系 x 变化量累加），判断策略是否在用腿平衡
+        self._leg_swing_travel_sums = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self._prev_wheel_fore_aft_heading = None
 
         # Curriculum manager (optional)
         self.curriculum_manager: CurriculumManager | None = None
@@ -2784,12 +2793,49 @@ class WheelLegBaseEnv(DirectRLEnv):
             )
         return actions[:, :leg_action_dim], actions[:, leg_action_dim:]
 
+    def _setup_leg_joint_pos_limits(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """按关节名构建腿部位置限位（rad）：写入物理引擎硬限位，并返回动作裁剪上下限。"""
+        leg_count = len(self._legs_act_idx)
+        lower = torch.full((leg_count,), float(self.cfg.lower_joint_limit), dtype=torch.float, device=self.device)
+        upper = torch.full((leg_count,), float(self.cfg.upper_joint_limit), dtype=torch.float, device=self.device)
+        overrides = dict(getattr(self.cfg, "joint_pos_limit_overrides", None) or {})
+        # 临时 joint1 限位：由任务配置的开关控制，后续项目把 use_joint1_pos_limit 置 False 即可去掉
+        if bool(getattr(self.cfg, "use_joint1_pos_limit", False)):
+            joint1_range = getattr(self.cfg, "joint1_pos_limit_range", None)
+            if joint1_range is not None:
+                for joint_name in ("L_joint1", "R_joint1"):
+                    overrides.setdefault(joint_name, tuple(joint1_range))
+        has_override = False
+        for local_idx, joint_name in enumerate(self._legs_act_idx_name):
+            limit_range = overrides.get(joint_name, None)
+            if limit_range is None:
+                continue
+            lo, hi = float(limit_range[0]), float(limit_range[1])
+            if lo >= hi:
+                raise ValueError(
+                    f"joint_pos_limit_overrides['{joint_name}'] 的 lower 必须小于 upper，得到 {(lo, hi)}"
+                )
+            lower[local_idx] = lo
+            upper[local_idx] = hi
+            has_override = True
+            print(f"[JointLimit] {joint_name}: [{lo:.4f}, {hi:.4f}] rad")
+        if has_override:
+            limits = torch.stack([lower, upper], dim=-1).unsqueeze(0).expand(self.num_envs, -1, -1)
+            self.robot.write_joint_position_limit_to_sim(
+                limits, joint_ids=self._legs_act_idx, warn_limit_violation=False
+            )
+        return lower, upper
+
     def _decode_leg_policy_actions(self, leg_policy_actions: torch.Tensor) -> torch.Tensor:
         '''解析腿部动作编码，返回实际的腿部关节位置命令'''
         encoding = str(getattr(self.cfg, "leg_action_encoding", "raw")).lower()
         default_leg_pos = self.robot.data.default_joint_pos[:, self._legs_act_idx]
         if encoding in ("raw", "none", ""):
-            return self.leg_action_scale * leg_policy_actions + default_leg_pos
+            return (
+                self.leg_action_scale * leg_policy_actions
+                + default_leg_pos
+                + self.leg_joint_zero_offset
+            )
         if encoding == "sincos_abs":
             leg_sin = torch.nan_to_num(
                 leg_policy_actions[:, : self._leg_action_dim], nan=0.0, posinf=0.0, neginf=0.0
@@ -2809,11 +2855,11 @@ class WheelLegBaseEnv(DirectRLEnv):
                 current_leg_pos = self.joint_pos[:, self._legs_act_idx]
                 decoded_leg_pos = current_leg_pos + wrap_to_pi(decoded_leg_pos - current_leg_pos)
             if not bool(getattr(self.cfg, "leg_action_sincos_clamp_after_unwrap", True)):
-                return decoded_leg_pos
+                return decoded_leg_pos + self.leg_joint_zero_offset
             return torch.clamp(
-                decoded_leg_pos,
-                self.cfg.lower_joint_limit,
-                self.cfg.upper_joint_limit,
+                decoded_leg_pos + self.leg_joint_zero_offset,
+                self._leg_joint_lower_limit,
+                self._leg_joint_upper_limit,
             )
         raise RuntimeError(f"Unsupported leg_action_encoding: {encoding}")
 
@@ -2850,11 +2896,9 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.wheel_actions = self.wheel_action_scale * wheel_policy_actions
 
     def _apply_action(self) -> None:
-        # dealing action limits
-        upper_joint_limit = torch.zeros(self.num_envs, self._leg_action_dim, dtype=torch.float, device=self.device)
-        lower_joint_limit = upper_joint_limit.clone()
-        upper_joint_limit = self.cfg.upper_joint_limit
-        lower_joint_limit = self.cfg.lower_joint_limit
+        # dealing action limits（每关节限位：joint2 等被 cfg 收紧）
+        upper_joint_limit = self._leg_joint_upper_limit
+        lower_joint_limit = self._leg_joint_lower_limit
         max_wheel_torque = self.cfg.max_wheel_torque
 
         # initial enable/disable env ids
@@ -2952,6 +2996,8 @@ class WheelLegBaseEnv(DirectRLEnv):
             self.obs_root_ang_vel_b = self.robot.data.root_ang_vel_b.clone()
             self.obs_projected_gravity_b = self.robot.data.projected_gravity_b.clone()
             self.obs_joint_pos = (self.joint_pos - self.default_joint_pos)[:,self._actuate_idx]
+            # sim2real：叠加腿关节零位标定偏置（只加腿 4 维；critic 特权观测仍用真值）
+            self.obs_joint_pos[:, : self.leg_joint_zero_offset.shape[1]] += self.leg_joint_zero_offset
             self.obs_joint_vel = self.joint_vel[:,self._actuate_idx].clone()
 
             if self.use_obs_delay:
@@ -3063,6 +3109,44 @@ class WheelLegBaseEnv(DirectRLEnv):
             torch.nan_to_num(wheel_vel[:, :wheel_count], nan=0.0, posinf=0.0, neginf=0.0)
         )
         return torch.sum(wheel_vel_sq * no_contact.float(), dim=1)
+
+    def _get_wheel_slip_reward(
+        self,
+        wheel_contact_force_peaks: torch.Tensor,
+        contact_force_threshold: float,
+    ) -> torch.Tensor:
+        """方案A：轮底接触点相对地面的切向滑移速度平方，只在轮子触地时累计。
+
+        v_bottom_w = v_link_w + ω_link_w × (0, 0, -r)；纯滚动时接触点速度≈0 → slip≈0。
+        返回 Σ_wheel slip²（仅触地轮），供 cfg.rewards["wheel_slip"] 加权（负=惩罚）。
+        """
+        wheel_lin_vel_w = getattr(self.robot.data, "body_lin_vel_w", None)
+        wheel_ang_vel_w = getattr(self.robot.data, "body_ang_vel_w", None)
+        if (
+            wheel_lin_vel_w is None
+            or wheel_ang_vel_w is None
+            or len(self._wheel_link_idx) == 0
+            or wheel_contact_force_peaks.shape[1] == 0
+        ):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        radius = float(
+            getattr(
+                self.cfg,
+                "wheel_slip_reference_radius",
+                getattr(self.cfg, "wheel_hop_reference_radius", 0.06),
+            )
+        )
+        lin_vel = wheel_lin_vel_w[:, self._wheel_link_idx]
+        ang_vel = wheel_ang_vel_w[:, self._wheel_link_idx]
+        bottom_offset = torch.zeros_like(lin_vel)
+        bottom_offset[..., 2] = -radius
+        bottom_vel = lin_vel + torch.cross(ang_vel, bottom_offset, dim=-1)
+        slip_sq = torch.sum(torch.square(bottom_vel[..., :2]), dim=-1)  # (N, n_wheel)
+        count = min(slip_sq.shape[1], wheel_contact_force_peaks.shape[1])
+        if count == 0:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        contact = wheel_contact_force_peaks[:, :count] > contact_force_threshold
+        return torch.sum(slip_sq[:, :count] * contact.to(slip_sq.dtype), dim=1)
 
     def _get_np3o_costs(self, obs_height: torch.Tensor) -> torch.Tensor:
         num_costs = int(getattr(self.cfg, "num_costs", 0) or 0)
@@ -3727,6 +3811,15 @@ class WheelLegBaseEnv(DirectRLEnv):
             relative_obs_height = obs_height - self.ground_z_est
         wheel_relative_ground_heights = self._get_wheel_relative_ground_heights_raw()
         self.wheel_relative_ground_heights = wheel_relative_ground_heights
+        # ★弹跳惩罚：轮心离地高度超出（轮半径 + 容差）的部分平方。
+        #   平地接触时该高度≈轮半径，与腿部前后摆无关 → 只抓跳起/离地，不限制前后摆腿。
+        wheel_hop_reference_radius = float(getattr(self.cfg, "wheel_hop_reference_radius", 0.06))
+        wheel_hop_clearance_tolerance = float(getattr(self.cfg, "wheel_hop_clearance_tolerance", 0.01))
+        wheel_hop_clearance = torch.clamp(
+            wheel_relative_ground_heights - (wheel_hop_reference_radius + wheel_hop_clearance_tolerance),
+            min=0.0,
+        )
+        rew_wheel_hop = torch.sum(torch.square(wheel_hop_clearance), dim=-1)
         wheel_height_w = self.robot.data.body_pos_w[:, self._wheel_link_idx, 2]
         height_reward_ref = self._get_height_reward_reference_height(relative_obs_height, wheel_height_w)
         # print(height_reward_ref)
@@ -3788,8 +3881,14 @@ class WheelLegBaseEnv(DirectRLEnv):
             stand_drift_dist = torch.norm(self.robot.data.root_pos_w[:, :2] - stand_ref_xy, dim=-1)
             stand_drift_deadband = max(float(getattr(self.cfg, "stand_drift_deadband", 0.1)), 0.0)
             stand_drift_sigma = max(float(getattr(self.cfg, "stand_drift_sigma", 1.0)), 0.0)
+            # 距离封顶：防止早期大漂移把二次惩罚放大到炸掉 value function（后续课程可安全开启）
+            stand_drift_max_dist = max(float(getattr(self.cfg, "stand_drift_max_dist", 0.3)), 0.0)
             rew_stand_drift = torch.square(
-                torch.clamp(stand_drift_dist - stand_drift_deadband, min=0.0) * stand_drift_sigma
+                torch.clamp(
+                    stand_drift_dist - stand_drift_deadband,
+                    min=0.0,
+                    max=stand_drift_max_dist,
+                ) * stand_drift_sigma
             ) * stand_still_lin_mask.float()
         else:
             rew_stand_drift = torch.zeros(self.num_envs, device=self.device)
@@ -3826,6 +3925,16 @@ class WheelLegBaseEnv(DirectRLEnv):
         rew_no_fork_square = torch.square((wheel_pos_b[:,0,0]-wheel_pos_b[:,1,0])*self.cfg.no_fork_square_sigma)
         no_fork_z_square_sigma = float(getattr(self.cfg, "no_fork_z_square_sigma", self.cfg.no_fork_square_sigma))
         rew_no_fork_z_square = torch.square((wheel_pos_b[:,0,2]-wheel_pos_b[:,1,2]) * no_fork_z_square_sigma)
+        # 仅日志：腿前后行程（heading 系轮心 x 每步变化量之和），用于判断策略是否在用腿前后摆平衡
+        wheel_fore_aft_heading = wheel_pos_heading_b[:, :, 0]
+        if self._prev_wheel_fore_aft_heading is None:
+            leg_swing_step_travel = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        else:
+            leg_swing_step_travel = torch.sum(
+                torch.abs(wheel_fore_aft_heading - self._prev_wheel_fore_aft_heading), dim=-1
+            )
+        self._prev_wheel_fore_aft_heading = wheel_fore_aft_heading.detach().clone()
+        self._leg_swing_travel_sums += leg_swing_step_travel.detach()
         # 兼容旧 reward key 名称：实际约束的是左右腿向量与世界重力方向对齐。
         wheel_motor_z_axis_align_err_sq = self._get_wheel_motor_z_axis_align_error_sq()
         wheel_motor_z_axis_align_sigma = max(
@@ -3957,9 +4066,6 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         # undesired contacts
         net_contact_forces = self.contact_sensor.data.net_forces_w_history
-        undesired_contact_force_threshold = float(
-            getattr(self.cfg, "undesired_contact_force_threshold", 5.0)
-        )
         desired_contact_force_threshold = float(
             getattr(self.cfg, "desired_contact_force_threshold", 1.0)
         )
@@ -3974,18 +4080,24 @@ class WheelLegBaseEnv(DirectRLEnv):
             wheel_contact_force_peaks,
             desired_contact_force_threshold,
         )
+        rew_wheel_slip = self._get_wheel_slip_reward(
+            wheel_contact_force_peaks,
+            desired_contact_force_threshold,
+        )
         rew_track_height_exp_both_wheels_contact = (
             rew_track_height_exp_soft * both_wheels_contact.float()
         )
 
-        # 计算总的有害接触奖励 (用于训练)
-        if net_contact_forces is not None:
-            harmful_contact_mask = (
-                torch.norm(net_contact_forces[:, :, self._undesired_contact_link_idx], dim=-1)
-                > undesired_contact_force_threshold
-            )
-            is_contact = torch.max(torch.max(harmful_contact_mask, dim=1)[0], dim=1)[0]
-            rew_undesired_contact = is_contact.float()
+        # 计算总的有害接触奖励 (用于训练)：按向上法向力 -F_z 连续惩罚，越压越痛。
+        # net_contact_forces 形状 (N, T, L, 3)；取历史窗口内每根 undesired 连杆的最大 -F_z。
+        if net_contact_forces is not None and len(self._undesired_contact_link_idx) > 0:
+            undesired_forces = net_contact_forces[:, :, self._undesired_contact_link_idx]  # (N,T,L,3)
+            fz_up = torch.clamp(-undesired_forces[..., 2], min=0.0)                          # 向上法向力
+            fz_up = torch.amax(fz_up, dim=1)                                                 # (N,L) 历史峰值
+            ref_force = max(float(getattr(self.cfg, "undesired_contact_ref_force", 1.0)), 1e-6)
+            cap = float(getattr(self.cfg, "undesired_contact_penalty_cap", 5.0))
+            excess = torch.clamp(fz_up / ref_force - 1.0, min=0.0, max=cap)
+            rew_undesired_contact = excess.sum(dim=-1)
         else:
             rew_undesired_contact = torch.zeros(self.num_envs, device=self.device)
 
@@ -4960,13 +5072,39 @@ class WheelLegBaseEnv(DirectRLEnv):
         raw_buf = getattr(self, raw_attr, None)
         if raw_buf is not None:
             raw_buf[env_ids] = False
+        # 承重接触 leaky-bucket 也要随 reset 清零
+        bucket = getattr(self, "_base_contact_bucket", None)
+        if bucket is not None:
+            bucket[env_ids] = 0
+
+    def _get_base_contact_terminate(self) -> torch.Tensor:
+        """leaky-bucket 承重接触终止。
+
+        所有 undesired 杆（base_link + 腿杆）的向上法向力 -F_z 超过阈值视为“承重接触”：
+        接触步 bucket+1、脱离步 bucket-1（下限 0），累计 >= base_contact_min_steps 才终止。
+        这样偶发/瞬时触地不会秒死，持续或高频间歇蹭地一定会触发。
+        """
+        threshold = float(getattr(self.cfg, "base_contact_force_threshold", 30.0))
+        min_steps = max(int(getattr(self.cfg, "base_contact_min_steps", 4)), 1)
+        cap = max(int(getattr(self.cfg, "base_contact_bucket_cap", 10)), min_steps)
+        if len(self._undesired_contact_link_idx) == 0:
+            contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            forces = self.contact_sensor.data.net_forces_w[:, self._undesired_contact_link_idx]  # (N,L,3)
+            fz_up = torch.clamp(-forces[..., 2], min=0.0)
+            contact = torch.any(fz_up > threshold, dim=-1)
+        bucket = getattr(self, "_base_contact_bucket", None)
+        if bucket is None or bucket.shape != contact.shape:
+            bucket = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
+            self._base_contact_bucket = bucket
+        bucket.add_(contact.to(torch.int32)).sub_((~contact).to(torch.int32)).clamp_(min=0, max=cap)
+        return bucket >= min_steps
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # contact termination
-        reset_contact_force = torch.norm(
-            self.contact_sensor.data.net_forces_w[:, self._reset_contact_link_idx], dim=-1)
+        # 承重接触终止：leaky-bucket（见 _get_base_contact_terminate），与全局 duration 解耦
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        terminate = torch.any(reset_contact_force > 1.0, dim=-1)
+        base_contact_terminate = self._get_base_contact_terminate()
+        terminate = base_contact_terminate.clone()
 
         # ------------------------------------------------------------------
         # Numerical safety termination
@@ -5070,9 +5208,10 @@ class WheelLegBaseEnv(DirectRLEnv):
         # 可以设置终止连续条件，持续N步满足才真正终止
         # 注意：数值安全类终止（NaN/Inf/Outlier/观测异常）不受 duration 限制，立即生效，
         # 以避免 NaN 环境在延迟窗口内持续污染仿真和 PPO rollout。
-        delayed_terminate = terminate & ~immediate_terminate
+        # 承重接触终止走自己的 leaky-bucket，同样不经全局 duration。
+        delayed_terminate = (terminate & ~immediate_terminate) & ~base_contact_terminate
         delayed_terminate = self._apply_termination_duration(delayed_terminate)
-        terminate = delayed_terminate | immediate_terminate
+        terminate = delayed_terminate | immediate_terminate | base_contact_terminate
 
         # others
         if self.cfg.play is True and not bool(getattr(self.cfg, "play_keep_done_reset", False)):
@@ -5171,6 +5310,12 @@ class WheelLegBaseEnv(DirectRLEnv):
         extras = dict()
         extras["Episode/Reset/terminate"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode/Reset/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
+        # 仅日志：本回合腿前后行程（m），用于判断策略是否在用腿前后摆平衡
+        if getattr(self, "_leg_swing_travel_sums", None) is not None:
+            extras["Episode/Debug/leg_swing_travel_m"] = float(
+                torch.mean(self._leg_swing_travel_sums[env_ids])
+            )
+            self._leg_swing_travel_sums[env_ids] = 0.0
         self.state_machine_manager.append_reset_logs(self, extras, env_ids)
         self.extras["log"].update(extras)
 
@@ -5418,6 +5563,18 @@ class WheelLegBaseEnv(DirectRLEnv):
     def _custom_reset_random(self, env_ids):
         '''定制的reset随机化'''
         env_count = len(env_ids)
+        # sim2real：每个 episode 重采腿关节零位标定偏置（play 模式保持 0，便于复现/对比）
+        if (
+            bool(getattr(self.cfg, "use_leg_joint_zero_offset", False))
+            and not bool(getattr(self.cfg, "play", False))
+            and self.leg_joint_zero_offset.shape[0] == self.num_envs
+        ):
+            offset_lo, offset_hi = self.cfg.leg_joint_zero_offset_range
+            self.leg_joint_zero_offset[env_ids] = torch.empty(
+                (env_count, self.leg_joint_zero_offset.shape[1]),
+                dtype=torch.float,
+                device=self.device,
+            ).uniform_(float(offset_lo), float(offset_hi))
         # spring force randomize（仅当启用弹簧时）
         if self.use_spring and (self.cfg.spring_settings['random_force'] is not None) and self._spring_idx is not None:
             self.spring_force_rand[env_ids] = torch.empty(
