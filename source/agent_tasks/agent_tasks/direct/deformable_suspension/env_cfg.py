@@ -30,7 +30,7 @@ from isaaclab.terrains import (
 )
 from isaaclab.utils import configclass
 
-from agent_world.assets.deformable_suspension import DeformableSuspensionCFG
+from agent_world.assets.deformable_infantry import DeformableInfantryCFG
 
 
 @configclass
@@ -106,7 +106,7 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     )
 
     # ---- robot ----
-    robot_cfg: ArticulationCfg = DeformableSuspensionCFG.replace(
+    robot_cfg: ArticulationCfg = DeformableInfantryCFG.replace(
         prim_path="/World/envs/env_.*/Robot"
     )
     contact_sensor: ContactSensorCfg = ContactSensorCfg(

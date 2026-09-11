@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from numbers import Real
 
 import torch
@@ -281,6 +281,18 @@ class TerrainCommandManager:
         self.current_terrain_key_indices[env_ids_t] = key_indices
         self.current_profile_ids[env_ids_t] = profile_ids
         return env_ids_t[changed_mask]
+
+    def set_base_height_range(self, height_range: RangeSpec) -> None:
+        """运行时更新 base profile 的高度指令采样范围（供课程学习使用）。
+
+        flat 任务的 ``sample_height`` 走 fallback 分支时使用
+        ``self._base_profile.height_range``（初始化时缓存），只改 ``cfg.height_range``
+        不会生效，因此课程需要调用本方法同步。
+        """
+        self._base_profile = replace(
+            self._base_profile,
+            height_range=self._normalize_range_spec(height_range, "height_range"),
+        )
 
     def sample_height(self, env_ids: Sequence[int] | torch.Tensor | None) -> torch.Tensor:
         """Sample height commands for the currently active terrain profile of each env."""
