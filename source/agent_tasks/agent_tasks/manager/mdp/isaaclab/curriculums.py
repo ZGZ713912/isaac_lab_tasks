@@ -29,6 +29,7 @@ __all__ = [
     "BaseVerticalAssistForceProgression",
     "JointFrictionScaleProgression",
     "RewardWeightProgression",
+    "PerturbationScaleProgression",
 ]
 
 
@@ -161,6 +162,7 @@ class CommandVelocityProgression(ManagerTermBase):
         stages=None,
         initial_stage=None,
         disable_special_modes=None,
+        advance_policy=None,
     ):
         episode_ids = self._normalize_env_ids(env_ids)
         if not episode_ids:
@@ -595,6 +597,64 @@ class HeightRangeProgression(ManagerTermBase):
                 self._min_episodes_per_stage[self._stage] / self.num_steps_per_env
             )
         return state
+
+
+class PerturbationScaleProgression(ManagerTermBase):
+    """按训练轮次分档设置扰动缩放系数 ``env._perturbation_scale``.
+
+    推速度/外力事件（``push_by_setting_velocity_scaled`` /
+    ``apply_external_force_torque_xyz_scaled``）会按该系数缩放采样范围，
+    实现"先站稳、再逐步加扰动"的课程。stages 每档提供 ``scale``（0~1）
+    与可选 ``min_iterations``（到达该轮次后进入本档）。
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+
+        params = dict(cfg.params) if cfg.params is not None else {}
+        stages = params.get("stages")
+        if not stages or not isinstance(stages, Sequence):
+            raise ValueError("PerturbationScaleProgression 需要在 params['stages'] 中提供至少一档配置。")
+
+        self._stage_scales: list[float] = []
+        self._stage_min_iterations: list[int] = []
+        for idx, stage_cfg in enumerate(stages):
+            if not isinstance(stage_cfg, dict) or "scale" not in stage_cfg:
+                raise ValueError(f"PerturbationScaleProgression 阶段 {idx} 必须提供 'scale'。")
+            self._stage_scales.append(max(float(stage_cfg["scale"]), 0.0))
+            self._stage_min_iterations.append(max(int(stage_cfg.get("min_iterations", 0)), 0))
+
+        self._num_stages = len(self._stage_scales)
+        self._stage = 0
+        self._apply_scale()
+
+    def _get_training_iteration(self) -> int:
+        get_iteration = getattr(self._env, "_get_training_iteration", None)
+        if callable(get_iteration):
+            return max(int(get_iteration()), 0)
+        return max(int(getattr(self._env, "_training_iteration", 0)), 0)
+
+    def _apply_scale(self) -> None:
+        self._env._perturbation_scale = float(self._stage_scales[self._stage])
+
+    def __call__(self, env, env_ids, stages=None):
+        iteration = self._get_training_iteration()
+        stage = 0
+        for idx, min_iter in enumerate(self._stage_min_iterations):
+            if iteration >= min_iter:
+                stage = idx
+        if stage != self._stage:
+            self._stage = stage
+            self._apply_scale()
+        return {
+            "stage": float(self._stage),
+            "stage_count": float(self._num_stages),
+            "scale": float(self._stage_scales[self._stage]),
+        }
+
+    def reset(self, env_ids: Sequence[int] | None = None):
+        # 课程档位由轮次决定，重置环境不影响档位；保留接口兼容性。
+        return None
 
 
 class ActuatorGainsProgression(ManagerTermBase):

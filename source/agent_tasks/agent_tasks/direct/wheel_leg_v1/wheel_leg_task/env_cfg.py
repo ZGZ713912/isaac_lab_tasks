@@ -369,11 +369,27 @@ class EventCfgV14(EventCfg):
             "velocity_range": {},     # 初速度不加扰动
         },
     )
-    # 纯自稳起步阶段：关闭随机推力/推送扰动。
-    # 注意：托举力课程注释后，__post_init__ 不再自动屏蔽 base_external_force_torque_xyz，
-    # 必须在此显式置 None，否则它会复活。
-    base_external_force_torque_xyz = None
-    push_robot = None
+    # ★恢复训练 + 长时鲁棒性：随机推速度 / 随机外力矩（按 env._perturbation_scale 课程缩放）。
+    #   scale 由 PerturbationScaleProgression 按轮次设置：站立阶段 0（不扰动）→ 逐渐 0.5 → 1.0。
+    #   Play 模式无课程时 env._perturbation_scale=1.0（见 base/env.py 初始化）。
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity_scaled,
+        mode="interval",
+        interval_range_s=(5.0, 10.0),
+        params={
+            "velocity_range": {"x": (-0.25, 0.25), "y": (-0.25, 0.25)},
+        },
+    )
+    base_external_force_torque_xyz = EventTerm(
+        func=mdp.apply_external_force_torque_xyz_scaled,
+        mode="interval",
+        interval_range_s=(5.0, 10.0),
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+            "force_range": ((-10.0, 10.0), (-10.0, 10.0), (-10.0, 10.0)),
+            "torque_range": ((-1.0, 1.0), (-1.0, 1.0), (-1.0, 1.0)),
+        },
+    )
 
 
 @configclass
@@ -533,6 +549,9 @@ class CurriculumCfgV14Stand:
     #     },
     # )
 
+    # ★高度指令课程：从 tanh 初始位形附近（≈0.30m）开始，逐步收紧到目标区间，
+    #   避免一上来就要求 0.26~0.28 导致策略卡在低姿态局部最优。
+    #   晋级阈值按 σ_tight=0.005 折算：0.60≈3.2cm，0.70≈2.7cm。
     height_range_progression = CurrTerm(
         func=mdp.HeightRangeProgression,
         params={
@@ -542,15 +561,12 @@ class CurriculumCfgV14Stand:
             "min_stage_episodes": 64,
             "normalize_by_episode_length": True,
             "stages": [
-                {"height_range": (0.30, 0.32), "threshold": 0.50, "min_episodes": 200},
-                {"height_range": (0.28, 0.34), "threshold": 0.55, "min_episodes": 200},
-                {"height_range": (0.26, 0.37), "threshold": 0.55, "min_episodes": 200},
-                {"height_range": (0.25, 0.39)},
+                {"height_range": (0.28, 0.30), "threshold": 0.60, "min_episodes": 200},
+                {"height_range": (0.26, 0.29), "threshold": 0.70, "min_episodes": 200},
+                {"height_range": (0.26, 0.28)},
             ],
         },
     )
-    # 临时关闭：先降高度目标站稳；后续按验证过的可达高度重设 stages 再开
-    height_range_progression = None
 
     leg_osc_progression = CurrTerm(
         func=mdp.RewardWeightProgression,
@@ -616,7 +632,7 @@ class CurriculumCfgV14Stand:
                     "min_iterations": 800,
                     "min_episodes": 64,
                     "min_episode_time_s": 8.0,
-                    "threshold": 0.4,
+                    "threshold": 0.7,
                 },
                 {
                     "rel_standing_envs": 0.5,
@@ -656,6 +672,19 @@ class CurriculumCfgV14Stand:
         },
     )
 
+    # ★扰动课程：站立阶段关闭随机推速度/外力（scale=0），速度课程开始后按轮次逐步加码，
+    #   让策略在长时运行里学会从"被踢/被推"状态恢复。事件端按 env._perturbation_scale 缩放。
+    perturbation_scale_progression = CurrTerm(
+        func=mdp.PerturbationScaleProgression,
+        params={
+            "stages": [
+                {"scale": 0.0, "min_iterations": 0},     # 与 stage0 纯站立同步：完全不扰动
+                {"scale": 0.5, "min_iterations": 900},   # 速度课程初期：半幅扰动
+                {"scale": 1.0, "min_iterations": 1600},  # 全幅：push ±0.25m/s、外力 ±10N/±1Nm
+            ],
+        },
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # V14 平地基类：所有 V14 任务的"默认参数"都在这里，其它任务类继承后只改差异项。
@@ -676,6 +705,8 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # 其它任务（v1/v2/Rough/Play）在各自类里显式 curriculum = None，不受影响。
     curriculum = CurriculumCfgV14Stand()
     play_keep_done_reset = True       # Play 模式下"到时重置"照常执行（保持演示节奏）
+    # 本轮回到 20s：60s 从零开跑会把早期坏姿态的罚分累积成 -400 并让 PPO 卡死（见 2026-09-12 run）。
+    episode_length_s = 20.0
     # reset_heading_axis_aligned_only = True
     robot_cfg: ArticulationCfg = WheelLegV1_CFG.replace(prim_path="/World/envs/env_.*/Robot").copy()  # ★用哪台机器人：V14 二代，挂到每个环境自己的路径下
     # robot_cfg: ArticulationCfg = WheelLegV1_CFG.replace(prim_path="/World/envs/env_.*/Robot").copy()  # （备选：无云台版）
@@ -985,16 +1016,13 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         "stop_s": 1.0,             # 急停保持时长（秒）
         "speed_range": (0.8, 1.2), # 前进目标速度采样范围（m/s）
     }
-    brake_stop_sigma = 0.05            # 急停奖励 σ：exp(-v_fwd²/σ)，越小越强调完全停住
-    brake_leg_forward_deadband = 0.0   # 前伸死区（m）：delta_x 超出该值才奖励
-    brake_leg_forward_cap = 0.15       # 前伸奖励上限（m）
-    stand_wheel_x_ref_ema_tau = 1.0    # "静止站立轮心前后参考" EMA 时间常数（秒）
+    brake_stop_sigma = 0.15             # 急停奖励 σ：exp(-v_fwd²/σ)，越小越强调完全停住（0.15 兼顾梯度与"停住"）
 
     # —— 底盘/腿杆接触惩罚（按向上法向力 -F_z 连续，越压越痛）——
     undesired_contact_ref_force = 1.0         # 死区参考力：1N 以下忽略传感器噪声
     undesired_contact_penalty_cap = 5.0       # 单根连杆惩罚上限（防数值爆炸）
     # —— 底盘/腿杆承重终止（leaky-bucket：接触 +1 / 脱离 -1，累计到阈值即 reset）——
-    base_contact_force_threshold = 30.0       # 单杆向上法向力 > 30N（≈24% 体重）才算"承重"
+    base_contact_force_threshold = 20.0       # 单杆向上法向力 > 20N（≈16% 体重）才算"承重"（收紧，轻靠地也判失败）
     base_contact_min_steps = 4                # 漏水桶累计 ≥4 步终止（可容忍单次瞬碰）
     base_contact_bucket_cap = 10              # 漏水桶上限
 
@@ -1018,9 +1046,9 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     height_upright_gate_sigma: float = 0.1
     stand_still_deadzone_enabled: bool = True       # "站住"死区：指令速度≈0 时按站住判定
     stand_still_deadzone_threshold: float = 0.1     # 死区阈值 0.1 m/s
-    stand_drift_deadband: float = 0.1               # ★净位移惩罚死区（m）：小于该漂移不罚，允许平衡微动
-    stand_drift_sigma: float = 1.0                  # ★净位移惩罚缩放（1/m）：越大罚得越陡
-    stand_drift_max_dist: float = 0.3               # ★净位移惩罚距离封顶（m）：防早期大漂移把二次项放大到炸 critic
+    stand_drift_deadband: float = 0.15              # ★净位移惩罚死区（m）：允许轮子做平衡修正的短距离往返
+    stand_drift_sigma: float = 2.0                  # ★净位移惩罚缩放（1/m）：放缓，避免抑制轮子滚动修正
+    stand_drift_max_dist: float = 0.5               # ★净位移惩罚距离封顶（m）：放大到 0.5m，避免“漂出去后梯度饱和不回来”
     # —— 轮电机轴对齐奖励参数（保持轮轴水平=身体不歪）——
     wheel_motor_z_axis_align_ref_y_offset: float = 0.20855  # 参考点 y 偏移
     wheel_motor_z_axis_align_tolerance: float = 0.0         # 容差
@@ -1029,6 +1057,12 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     play_wheel_motor_z_axis_align_debug: bool = False       # Play 调试打印开关
     play_wheel_motor_z_axis_align_debug_interval: int = 50  # 打印间隔(步)
     play_wheel_motor_z_axis_align_debug_env_id: int = 0     # 打印哪个环境
+    # —— 轮子平衡塑造奖励：让轮速跟随"俯仰角/角速度"的 LQR 式目标 ——
+    #   ω_des = kp·pgb[0] + kd·root_ang_vel_b[1]（正=向前滚；+q3=前进，已由 URDF FK 确认）
+    #   reward = exp(-(ω_meas - ω_des)² / sigma)，ω_meas 为两轮平均角速度（rad/s）
+    wheel_balance_kp: float = 3.0      # 俯仰角比例增益（1/s）
+    wheel_balance_kd: float = 0.4      # 俯仰角速度微分增益（无量纲）
+    wheel_balance_sigma: float = 1.0   # 误差平方的 σ（(rad/s)²）
     play_wheel_material_debug: bool = True                  # Play 时打印轮子摩擦参数
     play_wheel_material_debug_interval: int = 50
     play_wheel_material_debug_env_id: int = 0
@@ -1132,7 +1166,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     height_sigma = 0.025             # 身高追踪 σ=2.5cm
     height_tight_sigma = 0.005       # 严格版 σ（原继承 0.001 太窄 → 几乎恒 0、无梯度）
     height_square_sigma = 10.
-    base_height_bound = 0.22         # 身高下限 0.22m（低于 0.26 目标区间就罚）
+    base_height_bound = 0.24         # 身高下限 0.24m（低于 0.26 目标区间就罚；收紧后底盘余量更足）
     pen_base_too_low_sigma = 10.
     orientation_y_exp_sigma = 0.02
     orientation_x_exp_sigma = 0.01
@@ -1148,15 +1182,19 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         leg_len_osc=0.0,             # 临时回滚（原 -0.5，先站稳再加）
         leg_joint_osc=0.0,           # 临时回滚（原 -1.0e-2，先站稳再加）
         leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
+        leg_joint_limit_margin=-0.5, # ★关节限位余量惩罚：靠近机械限位（band=0.05rad）连续罚，防止把限位当支点
+        leg_action_l2=-1e-3,         # ★腿原始动作幅度惩罚：给饱和通道回拉梯度（防再次夹死在限位）
         joint_torque=-5e-5,          # 力矩惩罚（省电+保护电机；调小以不禁锢快速移动/刹车力矩）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
         wheel_vel=-1e-5,             # 轮速惩罚
         wheel_power=-1e-4,           # 轮功率惩罚（直接对应电池功耗）
         wheel_air_spin=0.0,          # 临时回滚（原 -1e-3）
         wheel_hop=-2.0,              # ★弹跳惩罚：轮心离地高度超 (r+tol) 部分的平方（只抓离地，不限制前后摆腿）
-        wheel_slip=-0.5,             # ★打滑惩罚（方案A）：轮底接触点切向滑移速度²，仅触地轮累计；纯滚动=0
-        brake_stop=1.0,              # ★刹车奖励：急停相 exp(-v_fwd²/σ)，越快停累计奖励越高
-        brake_leg_forward=0.5,       # ★刹车奖励：急停相奖励轮心相对"静止站立参考"前伸
+        wheel_slip=-0.25,            # ★打滑惩罚（方案A）：轮底接触点切向滑移速度²；学习期放缓，避免抑制轮子滚动修正
+        wheel_balance_response=0.5,  # ★轮子平衡塑造：轮速跟随 kp·pitch + kd·pitch_rate（正收益，教它用轮子接住倾倒）
+        wheel_motor_z_axis_align_exp=0.1,        # ★腿前后对齐：轮心保持在车身正下方（正收益）
+        wheel_motor_z_axis_align_exp_tight=0.05, # ★同上严格版（小权重）
+        brake_stop=2.0,              # ★刹车奖励：急停相 exp(-v_fwd²/σ)，越快停累计奖励越高
         lin_vel_z=-0.5,              # 竖直速度惩罚（别上下颠簸/蹦跳）
         ang_vel_xy=-0.02,            # 横滚/俯仰角速度惩罚（调小以允许快速移动/刹车的俯仰动态）
         action_smoothness_leg=-0.005, # 腿动作平滑性惩罚（调小以允许腿快速前伸）
@@ -1179,8 +1217,8 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         track_ang_vel_z=1.0,         # ★追踪偏航角速度指令（转向控制）
         track_ang_vel_z_square=-1.0, # 转向误差平方惩罚
         # track_ang_vel_z_square=-0.1,
-        stand_still_lin_vel=-3.0,    # 指令为零时乱动惩罚（站着别晃；临时加强压漂移）
-        stand_drift=0.0,             # 临时禁用（原 -2.0，尺度会炸 value function；后续用封顶版课程引入）
+        stand_still_lin_vel=-1.0,    # 指令为零时乱动惩罚（wheelbipe 同值；不压制轮子平衡修正产生的速度）
+        stand_drift=-2.0,            # ★静止时净位移惩罚（仅 |cmd_x|≈0 且 |cmd_z|≈0 时生效，封顶 0.5m）
         # stand_still=-2.0,
         stand_still=-0.3,            # 站住奖励（含 yaw 项，临时开启压自旋）
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）
@@ -1285,7 +1323,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
             special_modes={                   # 特殊训练模式表（按比例分配给环境）
                 # 模式0 — 纯自旋：20% 非站立环境
                 "spin_low": mdp.SpecialModeEntryCfg(   # 低速自旋：原地打转（小陀螺入门）
-                    rel_envs=0.15,              # 15% 的环境练这个
+                    rel_envs=0.0,               # 临时全关（原 0.15）：先确认移动课程/刹车可用
                     iteration_start=3000,       # 第 3000 轮后才启用（先学会走再学转）
                     iteration_end=-1,      # 永不过期
                     disable_jump_takeoff=False,
@@ -1297,7 +1335,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                     ),
                 ),
                 "spin_mid": mdp.SpecialModeEntryCfg(   # 中速自旋（更快）
-                    rel_envs=0.15,
+                    rel_envs=0.0,               # 临时全关（原 0.15）
                     iteration_start=4000,
                     iteration_end=-1,      # 永不过期
                     disable_jump_takeoff=False,
@@ -1319,9 +1357,9 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                 #         ang_vel_z=[(4.5*torch.pi, 5.5*torch.pi), (-4.5*torch.pi, -5.5*torch.pi)],
                 #     ),
                 # ),
-                # 模式1 — 高速前冲/后退：15% 非站立环境
+                # 模式1 — 高速前冲/后退：临时全关（原 15% 非站立环境）
                 "dash": mdp.SpecialModeEntryCfg(       # 冲刺：±2~3 m/s 的高速机动
-                    rel_envs=0.15,
+                    rel_envs=0.0,
                     iteration_start=2600,
                     iteration_end=-1,
                     disable_jump_takeoff=True,   # 冲刺时禁止触发跳跃

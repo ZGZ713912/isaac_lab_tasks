@@ -50,6 +50,12 @@ parser.add_argument("--checkpoint", type=str, required=True, help="Path to model
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument("--episodes", type=int, default=200, help="Total episodes to evaluate")
 parser.add_argument("--max_steps", type=int, default=0, help="Cap steps per episode (0 = env max length)")
+parser.add_argument(
+    "--episode_length_s",
+    type=float,
+    default=None,
+    help="Override episode length in seconds (e.g. 600 for long-horizon eval); default keeps task play config.",
+)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--csv", type=str, default=None, help="CSV output path (default: logs/debug/eval_<ts>.csv)")
 AppLauncher.add_app_launcher_args(parser)
@@ -85,6 +91,8 @@ def main():
     env_cfg.play = True
     if args_cli.seed is not None:
         env_cfg.seed = args_cli.seed
+    if args_cli.episode_length_s is not None:
+        env_cfg.episode_length_s = float(args_cli.episode_length_s)
 
     ns = argparse.Namespace(
         task=args_cli.task,

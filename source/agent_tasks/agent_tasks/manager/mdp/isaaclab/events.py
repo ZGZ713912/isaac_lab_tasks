@@ -26,6 +26,7 @@ from isaaclab.terrains import TerrainImporter
 from typing import  Literal
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.utils.math import quat_apply
+from isaaclab.envs.mdp.events import push_by_setting_velocity
 
 
 def _sample_event_distribution(
@@ -486,6 +487,50 @@ def apply_external_force_torque_xyz(
     # set the forces and torques into the buffers
     # note: these are only applied when you call: `asset.write_data_to_sim()`
     asset.set_external_force_and_torque(forces, torques, env_ids=env_ids, body_ids=asset_cfg.body_ids)
+
+
+def _get_perturbation_scale(env: ManagerBasedEnv) -> float:
+    """读取扰动课程缩放系数；未设置时默认 0（训练启动即无扰动，由课程逐档打开）。"""
+    return max(float(getattr(env, "_perturbation_scale", 0.0)), 0.0)
+
+
+def push_by_setting_velocity_scaled(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    velocity_range: dict[str, tuple[float, float]],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """按 ``env._perturbation_scale`` 缩放推速度幅度后的随机推力事件。"""
+    scale = _get_perturbation_scale(env)
+    if scale <= 0.0:
+        return
+    scaled_range = {
+        key: (float(value[0]) * scale, float(value[1]) * scale)
+        for key, value in velocity_range.items()
+    }
+    push_by_setting_velocity(env, env_ids, velocity_range=scaled_range, asset_cfg=asset_cfg)
+
+
+def apply_external_force_torque_xyz_scaled(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    force_range: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+    torque_range: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """按 ``env._perturbation_scale`` 缩放外力/力矩幅度后的随机外力事件。"""
+    scale = _get_perturbation_scale(env)
+    if scale <= 0.0:
+        return
+    scaled_force = tuple((float(lo) * scale, float(hi) * scale) for lo, hi in force_range)
+    scaled_torque = tuple((float(lo) * scale, float(hi) * scale) for lo, hi in torque_range)
+    apply_external_force_torque_xyz(
+        env,
+        env_ids,
+        force_range=scaled_force,
+        torque_range=scaled_torque,
+        asset_cfg=asset_cfg,
+    )
 
 
 class randomize_joint_parameters_v1(ManagerTermBase):

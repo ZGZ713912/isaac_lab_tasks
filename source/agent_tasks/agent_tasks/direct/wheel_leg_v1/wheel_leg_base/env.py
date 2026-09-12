@@ -2050,6 +2050,14 @@ class WheelLegBaseEnv(DirectRLEnv):
         self._actuate_idx = self._legs_act_idx + self._wheel_idx
         # 关节位置限位：把 cfg 中按关节名的限位写入物理引擎（如 joint2 = [-0.90, 0.10] rad）
         self._leg_joint_lower_limit, self._leg_joint_upper_limit = self._setup_leg_joint_pos_limits()
+        # tanh 动作解码的每关节映射中心/半宽：把 [-1,1] action 平滑映到 [lower+margin, upper-margin]，
+        # 保证任意 action 都对关节目标有非零梯度（避免线性 scale 造成的限位 clamp 死区）。
+        self._leg_action_tanh_mid = 0.5 * (self._leg_joint_lower_limit + self._leg_joint_upper_limit)
+        tanh_half = (
+            0.5 * (self._leg_joint_upper_limit - self._leg_joint_lower_limit)
+            - float(getattr(self.cfg, "leg_action_tanh_margin", 0.02))
+        )
+        self._leg_action_tanh_half = torch.clamp(tanh_half, min=1.0e-3)
         self._front1_joint_idx, _ = self.robot.find_joints("(L_joint1|R_joint1)")
         self._rear1_joint_idx, _ = self.robot.find_joints("(L_joint2|R_joint2)")
         self._legs_front_idx = self._front1_joint_idx
@@ -2139,6 +2147,38 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.height_cmd.fill_(self.cfg.default_height_cmd)
         self._init_special_height_wave_state()
 
+        # 扰动缩放系数：训练默认 0（由 PerturbationScaleProgression 逐档打开）；
+        # Play/无课程时默认 1.0（评估/演示按配置的完整扰动幅度）。
+        self._perturbation_scale = 1.0 if bool(getattr(self.cfg, "play", False)) else 0.0
+
+        # 诊断统计缓冲：按 rollout 步累积，reset 时按 episode 平均后清零。
+        # 旧实现是在 reset 瞬间（从 0.35m 下落中）采样，测到的是投放高度而不是站立姿态。
+        self._debug_stat_sums: dict[str, torch.Tensor] = {}
+        self._debug_stat_counts = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self._debug_stat_names = [
+            "Wheel/ActionAbsMean",
+            "Wheel/VelMean",
+            "Wheel/PowerMean",
+            "Wheel/ContactFrac",
+            "Orientation/PitchMean",
+            "Orientation/RollMean",
+            "Height/BaseMean",
+            "Height/CmdMean",
+            "Drift/DistMean",
+        ]
+        for stat_name in self._debug_stat_names:
+            self._debug_stat_sums[stat_name] = torch.zeros(
+                self.num_envs, dtype=torch.float, device=self.device
+            )
+        for joint_name in self._legs_act_idx_name:
+            self._debug_stat_sums[f"Leg/ActionMean/{joint_name}"] = torch.zeros(
+                self.num_envs, dtype=torch.float, device=self.device
+            )
+            self._debug_stat_sums[f"Leg/NearLimitFrac/{joint_name}"] = torch.zeros(
+                self.num_envs, dtype=torch.float, device=self.device
+            )
+        self._debug_pitch_absmax = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
         # 弹跳抑制：腿长/腿关节速度的 EMA（交流分量惩罚用）
         self._leg_osc_ema_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._leg_len_dot_ema = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device)
@@ -2156,9 +2196,6 @@ class WheelLegBaseEnv(DirectRLEnv):
         # 首次激活即从 move 相开始（计时器预置为 move_s）
         _brake_cfg_init = getattr(self.cfg, "brake_training_cfg", None) or {}
         self._brake_timer.fill_(max(float(_brake_cfg_init.get("move_s", 1.2)), 1e-3))
-        # "静止站立"时的轮心前向参考偏移（刹车期腿前伸奖励基准；只在静止时 EMA 更新）
-        self._stand_wheel_x_ref = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        self._stand_wheel_x_ref_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # initial obs buffers
         self.joint_pos = self.robot.data.joint_pos
@@ -2845,11 +2882,21 @@ class WheelLegBaseEnv(DirectRLEnv):
         encoding = str(getattr(self.cfg, "leg_action_encoding", "raw")).lower()
         default_leg_pos = self.robot.data.default_joint_pos[:, self._legs_act_idx]
         if encoding in ("raw", "none", ""):
-            return (
-                self.leg_action_scale * leg_policy_actions
-                + default_leg_pos
-                + self.leg_joint_zero_offset
-            )
+            decode_mode = str(getattr(self.cfg, "leg_action_decode_mode", "tanh")).lower()
+            if decode_mode in ("tanh", "squash", "smooth"):
+                # 平滑映射到关节限位内：mid + half*tanh(a)，消除线性 scale 的 clamp 死区
+                return (
+                    self._leg_action_tanh_mid
+                    + self._leg_action_tanh_half * torch.tanh(leg_policy_actions)
+                    + self.leg_joint_zero_offset
+                )
+            if decode_mode in ("linear_legacy", "legacy", "linear"):
+                return (
+                    self.leg_action_scale * leg_policy_actions
+                    + default_leg_pos
+                    + self.leg_joint_zero_offset
+                )
+            raise RuntimeError(f"Unsupported leg_action_decode_mode: {decode_mode}")
         if encoding == "sincos_abs":
             leg_sin = torch.nan_to_num(
                 leg_policy_actions[:, : self._leg_action_dim], nan=0.0, posinf=0.0, neginf=0.0
@@ -3582,6 +3629,57 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         return pos_penalty, torque_penalty, vel_penalty
 
+    def _accumulate_debug_stats(self) -> None:
+        """按控制步累积诊断量（轮子使用/姿态/高度/漂移），reset 时输出 episode 均值。"""
+        with torch.no_grad():
+            pgb = self.robot.data.projected_gravity_b
+            wheel_vel = self.joint_vel[:, self._wheel_idx]
+            wheel_torque = self.robot.data.applied_torque[:, self._wheel_idx]
+            wheel_link_idx = getattr(self, "_wheel_link_idx", None)
+            if wheel_link_idx is not None:
+                wheel_height = self.robot.data.body_pos_w[:, wheel_link_idx, 2]
+                wheel_radius = self._get_height_measure_wheel_radius()
+                wheel_contact = (wheel_height < wheel_radius + 0.02).float().mean(dim=-1)
+            else:
+                wheel_contact = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            height = self.robot.data.root_pos_w[:, 2]
+            height_cmd = self._get_effective_height_cmd()
+
+            self._debug_stat_sums["Wheel/ActionAbsMean"].add_(
+                self._actions[:, -self._wheel_action_dim :].abs().mean(dim=-1)
+            )
+            self._debug_stat_sums["Wheel/VelMean"].add_(wheel_vel.mean(dim=-1))
+            self._debug_stat_sums["Wheel/PowerMean"].add_(
+                torch.abs(wheel_torque * wheel_vel).mean(dim=-1)
+            )
+            self._debug_stat_sums["Wheel/ContactFrac"].add_(wheel_contact)
+            self._debug_stat_sums["Orientation/PitchMean"].add_(pgb[:, 0])
+            self._debug_stat_sums["Orientation/RollMean"].add_(pgb[:, 1])
+            self._debug_stat_sums["Height/BaseMean"].add_(height)
+            self._debug_stat_sums["Height/CmdMean"].add_(height_cmd)
+            stand_ref_xy = getattr(self, "_stand_ref_pos_w", None)
+            if stand_ref_xy is not None:
+                drift = torch.norm(self.robot.data.root_pos_w[:, :2] - stand_ref_xy, dim=-1)
+            else:
+                drift = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            self._debug_stat_sums["Drift/DistMean"].add_(drift)
+            self._debug_pitch_absmax = torch.maximum(self._debug_pitch_absmax, pgb[:, 0].abs())
+
+            if self._actions is not None:
+                raw_leg = self._actions[:, : self._leg_action_dim]
+                for j, joint_name in enumerate(self._legs_act_idx_name):
+                    self._debug_stat_sums[f"Leg/ActionMean/{joint_name}"].add_(raw_leg[:, j])
+            if self.leg_actions is not None:
+                near_limit = torch.minimum(
+                    self.leg_actions - self._leg_joint_lower_limit,
+                    self._leg_joint_upper_limit - self.leg_actions,
+                )
+                for j, joint_name in enumerate(self._legs_act_idx_name):
+                    self._debug_stat_sums[f"Leg/NearLimitFrac/{joint_name}"].add_(
+                        (near_limit[:, j] < 0.01).float()
+                    )
+            self._debug_stat_counts.add_(1.0)
+
     def _get_rewards(self) -> torch.Tensor:
         self._update_ground_height_estimate()
         # prepare
@@ -3659,6 +3757,23 @@ class WheelLegBaseEnv(DirectRLEnv):
         #     rew_lin_vel_z = torch.square(left_leg_length_dot+right_leg_length_dot)
         # else:
         rew_leg_len_vel = torch.square(left_leg_length_dot) + torch.square(right_leg_length_dot)
+        # ★机械限位余量惩罚：关节角接近上下限位时连续惩罚，避免策略把机械限位当支点长期顶着
+        leg_joint_margin_band = max(float(getattr(self.cfg, "leg_joint_limit_margin_band", 0.05)), 0.0)
+        leg_q = self.joint_pos[:, self._legs_act_idx]
+        leg_limit_margin = torch.minimum(
+            leg_q - self._leg_joint_lower_limit,
+            self._leg_joint_upper_limit - leg_q,
+        )
+        rew_leg_joint_limit_margin = torch.sum(
+            torch.square(torch.clamp(leg_joint_margin_band - leg_limit_margin, min=0.0)), dim=-1
+        )
+        # ★腿原始动作幅度惩罚：给贴近限位/饱和的动作通道提供额外回拉梯度
+        if self._actions is not None:
+            rew_leg_action_l2 = torch.sum(
+                torch.square(self._actions[:, : self._leg_action_dim]), dim=-1
+            )
+        else:
+            rew_leg_action_l2 = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         # 弹跳 vs 抬升区分：腿长/腿关节速度的交流分量（EMA 高通）
         if bool(getattr(self.cfg, "leg_osc_penalty_enabled", False)):
             ema_tau = max(float(getattr(self.cfg, "leg_osc_ema_tau", 1.0)), 1.0e-3)
@@ -3711,12 +3826,6 @@ class WheelLegBaseEnv(DirectRLEnv):
             tracking_command[stand_still_lin_mask, 0] = 0.0
             tracking_command[stand_still_yaw_mask, 2] = 0.0
 
-        # 刹车期腿前伸奖励的"静止站立"参考：指令≈0 且实际几乎不动时持续 EMA 更新
-        stand_ref_mask = stand_still_lin_mask & (
-            torch.norm(self.robot.data.root_lin_vel_b[:, :2], dim=-1) < 0.1
-        )
-        self._update_stand_wheel_x_ref(stand_ref_mask, wheel_pos_heading_b)
-
         pgb = self.robot.data.projected_gravity_b[:, :2]
         # pgb[:,0] = pgb[:,0]-0.02
         # rew_flat_orientation = torch.sum(torch.square(self.robot.data.projected_gravity_b[:, :2]), dim=1)
@@ -3735,6 +3844,21 @@ class WheelLegBaseEnv(DirectRLEnv):
         )
         rew_flat_orientation_x_v = torch.square((self.cfg.orientation_x_A * torch.exp(-lin_vel_x_cmd/self.cfg.orientation_x_sigma) + self.cfg.orientation_x_bias)*pgb[:,1])
         # rew_flat_orientation = torch.square(self.robot.data.projected_gravity_b[:, 1])
+
+        # ★轮子平衡塑造：轮速应跟随"俯仰角/角速度"的 LQR 式目标（正=向前滚，+q3=前进）。
+        #   前倾(pgb[0]>0)要向前滚去接住 CoM；kp/kd 为配置项，方向不对时可整体改符号。
+        wheel_balance_kp = float(getattr(self.cfg, "wheel_balance_kp", 3.0))
+        wheel_balance_kd = float(getattr(self.cfg, "wheel_balance_kd", 0.4))
+        wheel_balance_sigma = max(float(getattr(self.cfg, "wheel_balance_sigma", 1.0)), 1.0e-6)
+        wheel_vel_joint = self.joint_vel[:, self._wheel_idx]
+        wheel_balance_omega_meas = 0.5 * (wheel_vel_joint[:, 0] + wheel_vel_joint[:, 1])
+        wheel_balance_omega_des = (
+            wheel_balance_kp * pgb[:, 0]
+            + wheel_balance_kd * self.robot.data.root_ang_vel_b[:, 1]
+        )
+        rew_wheel_balance_response = torch.exp(
+            -torch.square(wheel_balance_omega_meas - wheel_balance_omega_des) / wheel_balance_sigma
+        )
 
         # ========== 姿态门控：只有接近水平时速度/角速度 tracking 奖励才高 ==========
         # upright_err: projected_gravity_b 的水平分量平方和，越小越水平
@@ -3855,23 +3979,12 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         forward_lin_vel_horizontal = self.robot.data.root_lin_vel_b[:, 0] * torch.cos(pitch)
 
-        # —— 刹车奖励：仅急停相(braking_mask)生效；不加 brake_pitch ——
+        # —— 刹车奖励：仅急停相(braking_mask)生效 ——
         brake_mask_f = self._braking_mask.to(dtype=torch.float)
-        brake_stop_sigma = max(float(getattr(self.cfg, "brake_stop_sigma", 0.05)), 1e-6)
+        brake_stop_sigma = max(float(getattr(self.cfg, "brake_stop_sigma", 0.15)), 1e-6)
         rew_brake_stop = torch.exp(
             -torch.square(forward_lin_vel_horizontal) / brake_stop_sigma
         ) * brake_mask_f
-        if wheel_pos_heading_b.shape[1] > 0:
-            stand_wheel_x = self._stand_wheel_x_ref
-            wheel_x_now = wheel_pos_heading_b[:, :, 0].mean(dim=-1)
-            delta_x = wheel_x_now - stand_wheel_x
-            brake_fwd_deadband = float(getattr(self.cfg, "brake_leg_forward_deadband", 0.0))
-            brake_fwd_cap = max(float(getattr(self.cfg, "brake_leg_forward_cap", 0.15)), 0.0)
-            rew_brake_leg_forward = torch.clamp(
-                delta_x - brake_fwd_deadband, min=0.0, max=brake_fwd_cap
-            ) * brake_mask_f
-        else:
-            rew_brake_leg_forward = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         lin_vel_err = tracking_command[:, 0] - forward_lin_vel_horizontal
         if self.cfg.lin_vel_err_constraint is not None:
@@ -3904,15 +4017,17 @@ class WheelLegBaseEnv(DirectRLEnv):
         ang_vel_abs_err = torch.abs(tracking_command[:, 2]) - torch.abs(self.robot.data.root_ang_vel_b[:, 2])
         rew_pen_high_angVel = torch.square(torch.clamp(ang_vel_abs_err, max=0.)*self.cfg.high_angVel_pen_sigma)
         
+        # 刹车事件期间临时关闭"站住"惩罚：急停时 command=0，会误判为站立而惩罚刹车动作
+        not_braking_f = (~self._braking_mask).to(dtype=torch.float)
         rew_stand_still = (
             torch.sum(torch.square(self.robot.data.root_lin_vel_b[:, :2]), dim=1)
             * stand_still_lin_mask.float()
             + torch.square(self.robot.data.root_ang_vel_b[:, 2]) * stand_still_yaw_mask.float()
-        )
+        ) * not_braking_f
         rew_stand_still_lin_vel = (
             torch.sum(torch.abs(self.robot.data.root_lin_vel_b[:, :2]), dim=1)
             * stand_still_lin_mask.float()
-        )
+        ) * not_braking_f
         # ★净水平位移惩罚：指令≈0 时，惩罚相对本回合复位参考点的水平漂移。
         #   允许平衡修正带来的来回微动（位移回到参考点则不计），只防慢慢漂走。
         stand_ref_xy = getattr(self, "_stand_ref_pos_w", None)
@@ -3922,13 +4037,16 @@ class WheelLegBaseEnv(DirectRLEnv):
             stand_drift_sigma = max(float(getattr(self.cfg, "stand_drift_sigma", 1.0)), 0.0)
             # 距离封顶：防止早期大漂移把二次惩罚放大到炸掉 value function（后续课程可安全开启）
             stand_drift_max_dist = max(float(getattr(self.cfg, "stand_drift_max_dist", 0.3)), 0.0)
+            # 门控：仅在"线速度≈0 且 角速度≈0"的真站立时生效；
+            # 前进/转向/自旋/平移类模式（至少有一个指令非零）全部豁免，避免运动误罚。
+            stand_drift_mask = (stand_still_lin_mask & stand_still_yaw_mask).float()
             rew_stand_drift = torch.square(
                 torch.clamp(
                     stand_drift_dist - stand_drift_deadband,
                     min=0.0,
                     max=stand_drift_max_dist,
                 ) * stand_drift_sigma
-            ) * stand_still_lin_mask.float()
+            ) * stand_drift_mask
         else:
             rew_stand_drift = torch.zeros(self.num_envs, device=self.device)
 
@@ -4200,6 +4318,8 @@ class WheelLegBaseEnv(DirectRLEnv):
         #     rew_standup_wheel_power = torch.zeros(self.num_envs, device=self.device)
         #     rew_standup_leg_joint_acc = torch.zeros(self.num_envs, device=self.device)
         #     rew_standup_wheel_vel = torch.zeros(self.num_envs, device=self.device)
+
+        self._accumulate_debug_stats()
 
         reward_terms = {k[4:]: v for k, v in locals().items() if k.startswith("rew_")}
         reward_terms = self._postprocess_reward_terms(reward_terms)
@@ -5360,6 +5480,24 @@ class WheelLegBaseEnv(DirectRLEnv):
         extras = dict()
         extras["Episode/Reset/terminate"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
         extras["Episode/Reset/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
+        # ★诊断统计（episode 内按步平均后再记录，避免在下落瞬间采样到投放高度）
+        counts = self._debug_stat_counts[env_ids].clamp(min=1.0)
+        height_base_mean = float(
+            torch.mean(self._debug_stat_sums["Height/BaseMean"][env_ids] / counts)
+        )
+        height_cmd_mean = float(
+            torch.mean(self._debug_stat_sums["Height/CmdMean"][env_ids] / counts)
+        )
+        for stat_name, stat_sum in self._debug_stat_sums.items():
+            log_key = stat_name.replace("/", "_", 1).replace("/", "_")
+            extras["Debug/" + log_key] = float(torch.mean(stat_sum[env_ids] / counts))
+            stat_sum[env_ids] = 0.0
+        extras["Debug/Height_err_mean"] = height_base_mean - height_cmd_mean
+        extras["Debug/Orientation_PitchAbsMax"] = float(
+            torch.max(self._debug_pitch_absmax[env_ids])
+        )
+        self._debug_pitch_absmax[env_ids] = 0.0
+        self._debug_stat_counts[env_ids] = 0.0
         # 仅日志：本回合腿前后行程（m），用于判断策略是否在用腿前后摆平衡
         if getattr(self, "_leg_swing_travel_sums", None) is not None:
             extras["Episode/Debug/leg_swing_travel_m"] = float(
@@ -5975,25 +6113,6 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.command[active, 0] = fwd[active]
         self.command[active, 1] = 0.0
         self.command[active, 2] = 0.0
-
-    def _update_stand_wheel_x_ref(self, stand_mask: torch.Tensor, wheel_pos_heading_b: torch.Tensor) -> None:
-        """仅"静止站立"（指令≈0 且不在刹车）时，EMA 更新轮心前向参考偏移。"""
-        if wheel_pos_heading_b.shape[1] == 0:
-            return
-        current = wheel_pos_heading_b[:, :, 0].mean(dim=-1)
-        tau = max(float(getattr(self.cfg, "stand_wheel_x_ref_ema_tau", 1.0)), 1e-3)
-        alpha = math.exp(-float(self.step_dt) / tau)
-        fresh = ~self._stand_wheel_x_ref_valid
-        update = stand_mask & ~self._braking_mask
-        if torch.any(fresh & update):
-            self._stand_wheel_x_ref[fresh & update] = current[fresh & update]
-            self._stand_wheel_x_ref_valid[fresh & update] = True
-        ema_update = update & self._stand_wheel_x_ref_valid
-        if torch.any(ema_update):
-            self._stand_wheel_x_ref[ema_update] = (
-                alpha * self._stand_wheel_x_ref[ema_update]
-                + (1.0 - alpha) * current[ema_update]
-            )
 
     def _value_constrain(self,tar,cur,c_value):
         up_constrain_idx = torch.nonzero((tar-cur)>abs(c_value))

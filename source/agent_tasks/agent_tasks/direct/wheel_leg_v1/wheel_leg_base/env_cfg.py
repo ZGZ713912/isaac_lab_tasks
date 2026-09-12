@@ -392,7 +392,10 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     # wheels joints
     wheel_name = robot_cfg.actuators["wheel"].joint_names_expr
     # action scale
-    leg_action_scale = 0.5
+    leg_action_scale = 0.5                 # 仅 linear_legacy 模式使用（旧行为）
+    leg_action_decode_mode = "tanh"        # 腿动作解码：tanh=按关节限位平滑映射（无 clamp 死区，推荐）；linear_legacy=旧线性
+    leg_action_tanh_margin = 0.02          # tanh 模式距机械限位的安全余量（rad）
+    leg_joint_limit_margin_band = 0.05     # 关节限位余量惩罚区间（rad）：距限位小于该值开始罚
     wheel_action_scale = 1.0
     # obs scale
     lin_vel_scale = 1.0
