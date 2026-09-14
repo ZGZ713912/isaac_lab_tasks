@@ -4160,7 +4160,46 @@ class WheelLegBaseEnv(DirectRLEnv):
         #     rew_standup_leg_joint_acc = torch.zeros(self.num_envs, device=self.device)
         #     rew_standup_wheel_vel = torch.zeros(self.num_envs, device=self.device)
 
+        # The V40 profile uses only command tracking, posture, and regularization.
+        # Keep the legacy calculations above for diagnostics, but exclude their
+        # V1-specific terms from the final weighted reward.
+        effort_caps = torch.tensor(
+            [40.0] * len(self._legs_act_idx) + [5.0] * len(self._wheel_idx),
+            dtype=applied_torque.dtype,
+            device=self.device,
+        )
+        rew_velocity = rew_track_lin_vel_xy
+        rew_yaw = rew_track_ang_vel_z
+        rew_height = rew_track_height_exp
+        rew_upright = rew_flat_orientation
+        rew_lateral_velocity = torch.square(self.robot.data.root_lin_vel_b[:, 1])
+        rew_vertical_velocity = rew_lin_vel_z
+        rew_zero_command_translation = rew_stand_still_lin_vel
+        rew_effort = torch.sum(
+            torch.square(applied_torque[:, self._actuate_idx] / effort_caps), dim=-1
+        )
+        knee_local_idx = [
+            local_idx
+            for local_idx, joint_idx in enumerate(self._legs_act_idx)
+            if joint_idx in self._rear1_joint_idx
+        ]
+        if knee_local_idx:
+            knee_q = self.joint_pos[:, knee_local_idx]
+            knee_lo = self._leg_joint_lower_limit[knee_local_idx]
+            knee_hi = self._leg_joint_upper_limit[knee_local_idx]
+            knee_margin = (knee_hi - knee_lo) * (1.0 - 0.97) / 2.0
+            rew_knee_soft_limit = (
+                torch.clamp(knee_lo + knee_margin - knee_q, min=0.0)
+                + torch.clamp(knee_q - knee_hi + knee_margin, min=0.0)
+            ).sum(dim=-1)
+        else:
+            rew_knee_soft_limit = torch.zeros(self.num_envs, device=self.device)
         reward_terms = {k[4:]: v for k, v in locals().items() if k.startswith("rew_")}
+        reward_terms = {
+            key: reward_terms[key]
+            for key in self.cfg.rewards.keys()
+            if key in reward_terms
+        }
         reward_terms = self._postprocess_reward_terms(reward_terms)
 
         # gather rewards

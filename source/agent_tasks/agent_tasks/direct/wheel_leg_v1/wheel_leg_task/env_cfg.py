@@ -1160,6 +1160,29 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         pen_base_too_low=-50.0,      # ★底盘过低惩罚 (σ·(bound−h))²：贴地/塌腿重罚
     )
 
+    # V40 reward profile: the legacy V1 terms above are intentionally not
+    # enabled. The environment maps these names to the V40-equivalent kernels.
+    rewards = OrderedDict(
+        alive=0.0,
+        velocity=2.0,
+        yaw=1.0,
+        height=2.0,
+        upright=-4.0,
+        lateral_velocity=0.0,
+        vertical_velocity=-0.5,
+        action_rate=-0.01,
+        effort=-0.02,
+        knee_soft_limit=-2.0,
+        zero_command_translation=0.0,
+        termination=0.0,
+    )
+    lin_vel_xy_sigma = 0.25
+    ang_vel_z_sigma = 0.25
+    height_sigma = 0.0009
+    lin_vel_err_constraint = None
+    ang_vel_err_constraint = None
+    height_err_constraint = None
+
     def __post_init__(self):
         # __post_init__：配置对象构造完成后的"最后一道加工"——
         # 根据开关的组合关系修正其它参数（如关掉不兼容的传感器、扩观测维度、搭命令生成器）。
