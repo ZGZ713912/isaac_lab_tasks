@@ -395,7 +395,6 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     leg_action_scale = 0.5                 # 仅 linear_legacy 模式使用（旧行为）
     leg_action_decode_mode = "tanh"        # 腿动作解码：tanh=按关节限位平滑映射（无 clamp 死区，推荐）；linear_legacy=旧线性
     leg_action_tanh_margin = 0.02          # tanh 模式距机械限位的安全余量（rad）
-    leg_joint_limit_margin_band = 0.05     # 关节限位余量惩罚区间（rad）：距限位小于该值开始罚
     wheel_action_scale = 1.0
     # obs scale
     lin_vel_scale = 1.0
@@ -602,9 +601,6 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     height_upright_gate_sigma: float = 0.5
     stand_still_deadzone_enabled: bool = False
     stand_still_deadzone_threshold: float = 0.2
-    # 弹跳抑制：腿长/腿关节速度的 EMA 交流分量惩罚（只罚振荡，不罚单向抬升）
-    leg_osc_penalty_enabled: bool = True
-    leg_osc_ema_tau: float = 1.0   # EMA 时间常数(s)，越大越宽松（抬升时 AC 更小）
     # lin_vel_z 抬升豁免：离目标高度远且正在朝目标方向移动时，不罚竖直速度
     lin_vel_z_height_gate_enabled: bool = True
     lin_vel_z_height_gate_band: float = 0.02   # m，进入该带内后所有竖直速度都罚

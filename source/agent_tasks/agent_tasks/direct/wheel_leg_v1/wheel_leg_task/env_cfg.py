@@ -369,11 +369,9 @@ class EventCfgV14(EventCfg):
             "velocity_range": {},     # 初速度不加扰动
         },
     )
-    # ★恢复训练 + 长时鲁棒性：随机推速度 / 随机外力矩（按 env._perturbation_scale 课程缩放）。
-    #   scale 由 PerturbationScaleProgression 按轮次设置：站立阶段 0（不扰动）→ 逐渐 0.5 → 1.0。
-    #   Play 模式无课程时 env._perturbation_scale=1.0（见 base/env.py 初始化）。
+    # 随机推速度 / 随机外力矩（对齐 wheelbipe：始终保持配置的完整幅度）
     push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity_scaled,
+        func=mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(5.0, 10.0),
         params={
@@ -381,7 +379,7 @@ class EventCfgV14(EventCfg):
         },
     )
     base_external_force_torque_xyz = EventTerm(
-        func=mdp.apply_external_force_torque_xyz_scaled,
+        func=mdp.apply_external_force_torque_xyz,
         mode="interval",
         interval_range_s=(5.0, 10.0),
         params={
@@ -480,217 +478,7 @@ class CurriculumCfgV14:
         },
     )
 
-    base_vertical_assist_force_progression = CurrTerm(  # 课程项2：给车体一个向上的"助力托举力"
-        func=mdp.BaseVerticalAssistForceProgression,    # 按身高追踪表现逐步撤掉助力
-        params={
-            "reward_key": "track_height_exp",           # 同样以身高追踪表现为准
-            "num_steps_per_env": 24,
-            "window_size": 64,
-            "min_stage_episodes": 64,
-            "normalize_by_episode_length": True,
-            "apply_on_compute": True,                   # 在奖励计算前施加力
-            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),  # 力作用在车体上
-            "stages": [                                 # 三阶段：托举力 160N → 80N → 0N
-                {                                       # 初期像"扶着学步车"，让机器人先学会平衡
-                    "force_z": 160.0,
-                    "threshold": 0.4,
-                    "min_episodes": 500,
-                },
-                {
-                    "force_z": 80.0,                    # 减半
-                    "threshold": 0.4,
-                    "min_episodes": 500,
-                },
-                {
-                    "force_z": 0.0,                     # 最终完全靠自己站立
-                },
-            ],
-        },
-    )
 
-
-@configclass
-class CurriculumCfgV14Stand:
-    """Wheel_leg_V1 站立起步课程：托举力 + 高度范围自动展宽 + 振荡惩罚自动收紧。
-
-    - 托举力：60N→30N→0N，按 track_height_exp_tight 晋级；
-    - 高度范围：先在窄区间 [0.30,0.32] 站稳，达到阈值后逐级放宽到 [0.25,0.39]；
-    - 振荡惩罚（leg_len_osc / leg_joint_osc / action_smoothness_leg）：从轻到重，
-      只针对弹跳/抖动，不针对单向抬升。
-    """
-
-    # ── 托举力课程已注释：60N 托举会让机器人学不会用腿支撑（全程 stage0 卡死），
-    #    改为纯自稳起步，让策略自己承担全部体重。需要恢复时取消下面注释即可。
-    # base_vertical_assist_force_progression = CurrTerm(
-    #     func=mdp.BaseVerticalAssistForceProgression,
-    #     params={
-    #         "reward_key": "track_height_exp_tight",
-    #         "num_steps_per_env": 24,
-    #         "window_size": 64,
-    #         "min_stage_episodes": 64,
-    #         "normalize_by_episode_length": True,
-    #         "apply_on_compute": True,
-    #         "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
-    #         "stages": [
-    #             {
-    #                 "force_z": 60.0,
-    #                 "threshold": 0.4,
-    #                 "min_episodes": 200,
-    #             },
-    #             {
-    #                 "force_z": 30.0,
-    #                 "threshold": 0.4,
-    #                 "min_episodes": 200,
-    #             },
-    #             {
-    #                 "force_z": 0.0,
-    #             },
-    #         ],
-    #     },
-    # )
-
-    # ★高度指令课程：从 tanh 初始位形附近（≈0.30m）开始，逐步收紧到目标区间，
-    #   避免一上来就要求 0.26~0.28 导致策略卡在低姿态局部最优。
-    #   晋级阈值按 σ_tight=0.005 折算：0.60≈3.2cm，0.70≈2.7cm。
-    height_range_progression = CurrTerm(
-        func=mdp.HeightRangeProgression,
-        params={
-            "reward_key": "track_height_exp_tight",
-            "num_steps_per_env": 24,
-            "window_size": 64,
-            "min_stage_episodes": 64,
-            "normalize_by_episode_length": True,
-            "stages": [
-                {"height_range": (0.28, 0.30), "threshold": 0.60, "min_episodes": 200},
-                {"height_range": (0.26, 0.29), "threshold": 0.70, "min_episodes": 200},
-                {"height_range": (0.26, 0.28)},
-            ],
-        },
-    )
-
-    leg_osc_progression = CurrTerm(
-        func=mdp.RewardWeightProgression,
-        params={
-            "reward_key": "track_height_exp_tight",
-            "num_steps_per_env": 24,
-            "window_size": 64,
-            "min_stage_episodes": 64,
-            "normalize_by_episode_length": True,
-            "stages": [
-                {
-                    "reward_weights": {
-                        "leg_len_osc": -0.2,
-                        "leg_joint_osc": -5.0e-3,
-                        "action_smoothness_leg": -0.1,
-                    },
-                    "threshold": 0.50,
-                    "min_episodes": 200,
-                },
-                {
-                    "reward_weights": {
-                        "leg_len_osc": -0.35,
-                        "leg_joint_osc": -8.0e-3,
-                        "action_smoothness_leg": -0.125,
-                    },
-                    "threshold": 0.65,
-                    "min_episodes": 200,
-                },
-                {
-                    "reward_weights": {
-                        "leg_len_osc": -0.5,
-                        "leg_joint_osc": -1.0e-2,
-                        "action_smoothness_leg": -0.15,
-                    },
-                },
-            ],
-        },
-    )
-    # 临时关闭：避免运行时把 leg osc/平滑惩罚覆盖回激进值（奖励表已回滚）
-    leg_osc_progression = None
-
-    # ★站立优先速度指令课程：先全体零指令练站住，再分档放开运动指令。
-    #   advance_policy=reward_or_iterations：表现达标可提前晋级，否则到 min_iterations
-    #   强制晋级（避免像之前那样永远卡在 stage0、策略见不到非零指令）。
-    #   s0 纯站立(保底800) → s1 ±0.2 → s2 ±0.4 → s3 ±0.8 → s4 ±1.2 m/s。
-    #   disable_special_modes：新的课程接管零指令阶段，关闭旧的写死窗口 zero_cmd。
-    command_velocity_progression = CurrTerm(
-        func=mdp.CommandVelocityProgression,
-        params={
-            "reward_key": "track_height_exp_tight",
-            "num_steps_per_env": 24,
-            "window_size": 64,
-            "min_stage_episodes": 64,
-            "normalize_by_episode_length": True,
-            "advance_policy": "reward_or_iterations",
-            "disable_special_modes": ("zero_cmd",),
-            "stages": [
-                {
-                    "rel_standing_envs": 1.0,
-                    "lin_vel_x": (0.0, 0.0),
-                    "lin_vel_y": (0.0, 0.0),
-                    "ang_vel_z": (0.0, 0.0),
-                    "min_iterations": 800,
-                    "min_episodes": 64,
-                    "min_episode_time_s": 8.0,
-                    "threshold": 0.7,
-                },
-                {
-                    "rel_standing_envs": 0.5,
-                    "lin_vel_x": (-0.2, 0.2),
-                    "lin_vel_y": (0.0, 0.0),
-                    "ang_vel_z": (-0.4, 0.4),
-                    "min_iterations": 400,
-                    "min_episodes": 64,
-                    "min_episode_time_s": 6.0,
-                    "threshold": 0.3,
-                },
-                {
-                    "rel_standing_envs": 0.3,
-                    "lin_vel_x": (-0.4, 0.4),
-                    "lin_vel_y": (0.0, 0.0),
-                    "ang_vel_z": (-0.6, 0.6),
-                    "min_iterations": 400,
-                    "min_episodes": 64,
-                    "threshold": 0.3,
-                },
-                {
-                    "rel_standing_envs": 0.2,
-                    "lin_vel_x": (-0.8, 0.8),
-                    "lin_vel_y": (0.0, 0.0),
-                    "ang_vel_z": (-0.8, 0.8),
-                    "min_iterations": 400,
-                    "min_episodes": 64,
-                    "threshold": 0.3,
-                },
-                {
-                    "rel_standing_envs": 0.1,
-                    "lin_vel_x": (-1.2, 1.2),
-                    "lin_vel_y": (0.0, 0.0),
-                    "ang_vel_z": (-1.0, 1.0),
-                },
-            ],
-        },
-    )
-
-    # ★扰动课程：站立阶段关闭随机推速度/外力（scale=0），速度课程开始后按轮次逐步加码，
-    #   让策略在长时运行里学会从"被踢/被推"状态恢复。事件端按 env._perturbation_scale 缩放。
-    perturbation_scale_progression = CurrTerm(
-        func=mdp.PerturbationScaleProgression,
-        params={
-            "stages": [
-                {"scale": 0.0, "min_iterations": 0},     # 与 stage0 纯站立同步：完全不扰动
-                {"scale": 0.5, "min_iterations": 900},   # 速度课程初期：半幅扰动
-                {"scale": 1.0, "min_iterations": 1600},  # 全幅：push ±0.25m/s、外力 ±10N/±1Nm
-            ],
-        },
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# V14 平地基类：所有 V14 任务的"默认参数"都在这里，其它任务类继承后只改差异项。
-# 属性分几大类：机器人与执行器 / 观测（噪声、延迟、维度）/ 动作延迟 /
-# 弹簧悬挂 / 高度指令 / 状态机 / 奖励权重表(rewards) / __post_init__ 里的运行时调整。
-# ─────────────────────────────────────────────────────────────────────────────
 @configclass
 class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     """Configuration for the WheelLeg V14 direct RL environment with flat terrain."""
@@ -700,10 +488,9 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
 
     # V14 域随机化事件表（质量/COM/惯量/摩擦/增益/力矩 + 关节零位偏置；当前启用）
     events = EventCfgV14()            # 换用上面定义的 V14 域随机化事件表
-    # curriculum = CurriculumCfgV14()
-    # ★站立起步：托举力 + 高度范围自动展宽 + 振荡惩罚自动收紧（见 CurriculumCfgV14Stand）。
-    # 其它任务（v1/v2/Rough/Play）在各自类里显式 curriculum = None，不受影响。
-    curriculum = CurriculumCfgV14Stand()
+    # ★课程学习对齐 wheelbipe V14 Flat：身高奖励权重渐进（不含竖直托举力）。
+    # 所有 Flat 变体统一启用；Play 变体保持 curriculum=None。
+    curriculum = CurriculumCfgV14()
     play_keep_done_reset = True       # Play 模式下"到时重置"照常执行（保持演示节奏）
     # 本轮回到 20s：60s 从零开跑会把早期坏姿态的罚分累积成 -400 并让 PPO 卡死（见 2026-09-12 run）。
     episode_length_s = 20.0
@@ -996,28 +783,6 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     undesired_contact_force_threshold = 3.0   # "乱接触"的判定力阈值 3N
     desired_contact_force_threshold = 5.0     # "正常接触"(轮子)的判定阈值 5N
 
-    # —— 弹跳惩罚（轮心离地高度判据）——
-    # 平地接触时轮心离地高度≈轮半径，且与腿部前后摆无关；因此该惩罚只抓跳起/离地，
-    # 不限制"大小腿配合前后摆"的平衡动作。
-    wheel_hop_reference_radius = 0.06         # 轮半径参考（实际轮半径 0.06m）
-    wheel_hop_clearance_tolerance = 0.01      # 离地容差：轮心离地 > r+tol 才开始罚
-
-    # —— 打滑惩罚（方案A）参考轮半径：轮底接触点 = 轮心 + (0,0,-r) ——
-    wheel_slip_reference_radius = 0.06        # 轮半径（m）
-
-    # —— 刹车课程（保底 iteration_start）：前进 T_move → 急停 T_stop 循环 ——
-    #   命中环境在 stop 相把前向速度指令置 0，并打开 braking_mask 供刹车奖励使用。
-    #   刹车期 wheel_slip 临时置 0（见 base/env.py），避免与"必须快速降轮速"对冲。
-    brake_training_cfg = {
-        "enabled": True,
-        "iteration_start": 3500,   # 保底：移动达标后（s4 全速约 2000 轮）才开刹车
-        "rel_envs": 0.25,          # 命中刹车课程的 env 比例
-        "move_s": 1.2,             # 前进保持时长（秒）
-        "stop_s": 1.0,             # 急停保持时长（秒）
-        "speed_range": (0.8, 1.2), # 前进目标速度采样范围（m/s）
-    }
-    brake_stop_sigma = 0.15             # 急停奖励 σ：exp(-v_fwd²/σ)，越小越强调完全停住（0.15 兼顾梯度与"停住"）
-
     # —— 底盘/腿杆接触惩罚（按向上法向力 -F_z 连续，越压越痛）——
     undesired_contact_ref_force = 1.0         # 死区参考力：1N 以下忽略传感器噪声
     undesired_contact_penalty_cap = 5.0       # 单根连杆惩罚上限（防数值爆炸）
@@ -1046,9 +811,6 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     height_upright_gate_sigma: float = 0.1
     stand_still_deadzone_enabled: bool = True       # "站住"死区：指令速度≈0 时按站住判定
     stand_still_deadzone_threshold: float = 0.1     # 死区阈值 0.1 m/s
-    stand_drift_deadband: float = 0.15              # ★净位移惩罚死区（m）：允许轮子做平衡修正的短距离往返
-    stand_drift_sigma: float = 2.0                  # ★净位移惩罚缩放（1/m）：放缓，避免抑制轮子滚动修正
-    stand_drift_max_dist: float = 0.5               # ★净位移惩罚距离封顶（m）：放大到 0.5m，避免“漂出去后梯度饱和不回来”
     # —— 轮电机轴对齐奖励参数（保持轮轴水平=身体不歪）——
     wheel_motor_z_axis_align_ref_y_offset: float = 0.20855  # 参考点 y 偏移
     wheel_motor_z_axis_align_tolerance: float = 0.0         # 容差
@@ -1057,12 +819,6 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     play_wheel_motor_z_axis_align_debug: bool = False       # Play 调试打印开关
     play_wheel_motor_z_axis_align_debug_interval: int = 50  # 打印间隔(步)
     play_wheel_motor_z_axis_align_debug_env_id: int = 0     # 打印哪个环境
-    # —— 轮子平衡塑造奖励：让轮速跟随"俯仰角/角速度"的 LQR 式目标 ——
-    #   ω_des = kp·pgb[0] + kd·root_ang_vel_b[1]（正=向前滚；+q3=前进，已由 URDF FK 确认）
-    #   reward = exp(-(ω_meas - ω_des)² / sigma)，ω_meas 为两轮平均角速度（rad/s）
-    wheel_balance_kp: float = 3.0      # 俯仰角比例增益（1/s）
-    wheel_balance_kd: float = 0.4      # 俯仰角速度微分增益（无量纲）
-    wheel_balance_sigma: float = 1.0   # 误差平方的 σ（(rad/s)²）
     play_wheel_material_debug: bool = True                  # Play 时打印轮子摩擦参数
     play_wheel_material_debug_interval: int = 50
     play_wheel_material_debug_env_id: int = 0
@@ -1174,55 +930,36 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     ang_vel_err_constraint = 0.8
     height_err_constraint = 0.15
     no_fork_square_sigma = 5.        # 防"劈叉"（两腿岔开）奖励参数
-    rewards = OrderedDict(
+    rewards = OrderedDict(          # ★权重表对齐 Wheelbipe-V14-Flat-v0（wheelbipe_V14/env_cfg.py:926）
         termination = -200.,         # ★摔倒终止：一次 -200（最大的罚，让策略极度怕摔）
         leg_joint_acc=-5e-7,         # 腿关节加速度惩罚（动作要柔，别猛甩腿）
-        leg_joint_vel = 0.0,         # 临时禁用关节速度惩罚：腿平衡本身需要来回动，弹跳改用 wheel_hop 抓离地
-        leg_len_vel=0.0,             # 临时回滚（原 -0.2）
-        leg_len_osc=0.0,             # 临时回滚（原 -0.5，先站稳再加）
-        leg_joint_osc=0.0,           # 临时回滚（原 -1.0e-2，先站稳再加）
-        leg_joint_pair_pos_diff=-1.0, # ★左右腿镜像对称惩罚 Σwrap(q_L-q_R)²（资产已统一两侧正方向，同号=对称）
-        leg_joint_limit_margin=-0.5, # ★关节限位余量惩罚：靠近机械限位（band=0.05rad）连续罚，防止把限位当支点
-        leg_action_l2=-1e-3,         # ★腿原始动作幅度惩罚：给饱和通道回拉梯度（防再次夹死在限位）
-        joint_torque=-5e-5,          # 力矩惩罚（省电+保护电机；调小以不禁锢快速移动/刹车力矩）
+        leg_joint_vel = -5.0e-3,     # 腿关节速度惩罚
+        leg_joint_pair_pos_diff=-0.0, # 左右腿对称性惩罚（wheelbipe 关闭）
+        joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
         wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
         wheel_vel=-1e-5,             # 轮速惩罚
         wheel_power=-1e-4,           # 轮功率惩罚（直接对应电池功耗）
-        wheel_air_spin=0.0,          # 临时回滚（原 -1e-3）
-        wheel_hop=-2.0,              # ★弹跳惩罚：轮心离地高度超 (r+tol) 部分的平方（只抓离地，不限制前后摆腿）
-        wheel_slip=-0.25,            # ★打滑惩罚（方案A）：轮底接触点切向滑移速度²；学习期放缓，避免抑制轮子滚动修正
-        wheel_balance_response=0.5,  # ★轮子平衡塑造：轮速跟随 kp·pitch + kd·pitch_rate（正收益，教它用轮子接住倾倒）
-        wheel_motor_z_axis_align_exp=0.1,        # ★腿前后对齐：轮心保持在车身正下方（正收益）
-        wheel_motor_z_axis_align_exp_tight=0.05, # ★同上严格版（小权重）
-        brake_stop=2.0,              # ★刹车奖励：急停相 exp(-v_fwd²/σ)，越快停累计奖励越高
+        wheel_air_spin=0.,           # 腾空时轮子空转惩罚（当前关闭）
         lin_vel_z=-0.5,              # 竖直速度惩罚（别上下颠簸/蹦跳）
-        ang_vel_xy=-0.02,            # 横滚/俯仰角速度惩罚（调小以允许快速移动/刹车的俯仰动态）
-        action_smoothness_leg=-0.005, # 腿动作平滑性惩罚（调小以允许腿快速前伸）
-        action_rate = -0.005,        # 动作变化率惩罚（调小以允许快速动作变化）
-        action_smoothness_wheel=-0.003, # 轮动作平滑性惩罚（调小以允许轮速快速变化/刹车）
+        ang_vel_xy=-0.05,            # 横滚/俯仰角速度惩罚（车身要稳）
+        action_smoothness_leg=-0.05, # 腿动作平滑性惩罚
+        action_rate = -0.01,         # 动作变化率惩罚
+        action_smoothness_wheel=-0.01, # 轮动作平滑性惩罚
         flat_orientation_y=-0.0,     # 俯仰保持水平奖励（当前关闭）
         flat_orientation_y_v=-2.0,   # 俯仰角速度惩罚
         flat_orientation_y_exp = 1.0,  # 俯仰 exp 奖励（越平越好）
-        # flat_pitch_l1 = -1.0,
-        # flat_pitch_tanh = 1.0,
         flat_orientation_x=-0.0,     # 横滚保持水平奖励（当前关闭）
         flat_orientation_x_v=-2.0,   # 横滚角速度惩罚
         flat_orientation_x_exp = 1.0,  # 横滚 exp 奖励
-        # flat_roll_l1 = -1.0,
-        # flat_roll_tanh = 1.0,
         track_lin_vel_xy=1.0,        # ★追踪平移速度指令（主线任务：让走哪就走哪）
         track_lin_vel_xy_tight=0.0,  # 严格版速度追踪（当前关闭）
         track_lin_vel_xy_square=-1.0,  # 速度误差平方惩罚（跟得不准就罚）
-        # track_lin_vel_xy_square=-0.1,
         track_ang_vel_z=1.0,         # ★追踪偏航角速度指令（转向控制）
         track_ang_vel_z_square=-1.0, # 转向误差平方惩罚
-        # track_ang_vel_z_square=-0.1,
-        stand_still_lin_vel=-1.0,    # 指令为零时乱动惩罚（wheelbipe 同值；不压制轮子平衡修正产生的速度）
-        stand_drift=-2.0,            # ★静止时净位移惩罚（仅 |cmd_x|≈0 且 |cmd_z|≈0 时生效，封顶 0.5m）
-        # stand_still=-2.0,
-        stand_still=-0.3,            # 站住奖励（含 yaw 项，临时开启压自旋）
+        stand_still_lin_vel=-1.0,    # 指令为零时乱动惩罚（站着别晃）
+        stand_still=-0.0,            # 站住奖励（当前关闭）
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）
-        track_height_exp_soft=0.0,   # 临时回滚（原 1.0）
+        track_height_exp_soft=0.0,   # 宽松版身高追踪（关闭）
         track_height_exp_tight=1.0,  # ★严格版身高追踪（打开：身高要准）
         track_height_square=-1.0,    # 身高误差平方惩罚
         track_height_exp_both_wheels_contact=0.0,  # 双轮着地时的身高追踪（关闭）
@@ -1230,8 +967,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         no_fork_square = -1.0,       # 防劈叉平方惩罚
         no_fork_exp=-0.0,            # 防劈叉 exp（关闭）
         no_fork_z_exp=-0.0,          # 防劈叉 z 向 exp（关闭）
-        undesired_contact=-20.0,     # ★不该碰的部件碰地惩罚（按 -F_z 连续，越压越痛）
-        pen_base_too_low=-50.0,      # ★底盘过低惩罚 (σ·(bound−h))²：贴地/塌腿重罚
+        undesired_contact=-2.0,      # ★不该碰的部件碰地惩罚（车体/腿蹭地）
     )
 
     def __post_init__(self):
@@ -1312,18 +1048,15 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
             special_mode_stable_projected_gravity_xy_norm_max=0.5,   # 稳定判据：重力投影 xy 范数
             special_mode_stable_root_lin_vel_b_abs_max=3.0,          # 稳定判据：线速度上限
             special_mode_stable_root_ang_vel_b_abs_max=10.0,         # 稳定判据：角速度上限
-            ranges=mdp.SpecialModeUniformVelocityCommandCfg.Ranges(  # 普通指令的采样范围
-                # ★平地自稳起步：先小速度学会"站住+慢走"，特殊模式（自旋/冲刺）后置；
-                # 大速度/大角速度会让新机器人来不及学平衡就摔（原 ±2.7 / ±2π 太激进）。
-                lin_vel_x=(-1.2, 1.2),        # x 速度 ±1.2 m/s
+            ranges=mdp.SpecialModeUniformVelocityCommandCfg.Ranges(  # 普通指令的采样范围（对齐 wheelbipe V14 Flat-v0）
+                lin_vel_x=(-2.7, 2.7),        # x 速度 ±2.7 m/s
                 lin_vel_y=(0.0, 0.0),         # y 速度 0（轮腿机器人横移靠平移模式）
-                ang_vel_z=(-1.0, 1.0),        # 偏航角速度 ±1 rad/s（自旋由 special_modes 后置加入）
+                ang_vel_z=(-2.*torch.pi, 2.*torch.pi),  # 偏航角速度 ±2π
                 heading=(-torch.pi, torch.pi),  # 目标朝向范围
             ),
             special_modes={                   # 特殊训练模式表（按比例分配给环境）
-                # 模式0 — 纯自旋：20% 非站立环境
                 "spin_low": mdp.SpecialModeEntryCfg(   # 低速自旋：原地打转（小陀螺入门）
-                    rel_envs=0.0,               # 临时全关（原 0.15）：先确认移动课程/刹车可用
+                    rel_envs=0.15,              # 15% 的环境练这个
                     iteration_start=3000,       # 第 3000 轮后才启用（先学会走再学转）
                     iteration_end=-1,      # 永不过期
                     disable_jump_takeoff=False,
@@ -1331,11 +1064,11 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                     ranges=mdp.SpecialModeEntryCfg.Ranges(
                         lin_vel_x=(-0.1, 0.1),  # 几乎不平移
                         lin_vel_y=(0.0, 0.0),
-                        ang_vel_z=[(2.*torch.pi, 3.25*torch.pi), (-3.25*torch.pi, -2.*torch.pi)],  # 自旋 2~3.25π（正反两方向）
+                        ang_vel_z=[(2.*torch.pi, 3.25*torch.pi), (-3.25*torch.pi, -2.*torch.pi)],
                     ),
                 ),
                 "spin_mid": mdp.SpecialModeEntryCfg(   # 中速自旋（更快）
-                    rel_envs=0.0,               # 临时全关（原 0.15）
+                    rel_envs=0.15,
                     iteration_start=4000,
                     iteration_end=-1,      # 永不过期
                     disable_jump_takeoff=False,
@@ -1343,24 +1076,12 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                     ranges=mdp.SpecialModeEntryCfg.Ranges(
                         lin_vel_x=(-0.1, 0.1),
                         lin_vel_y=(0.0, 0.0),
-                        ang_vel_z=[(3.25*torch.pi, 4.5*torch.pi), (-4.5*torch.pi, -3.25*torch.pi)],  # 自旋 3.25~4.5π
+                        ang_vel_z=[(3.25*torch.pi, 4.5*torch.pi), (-4.5*torch.pi, -3.25*torch.pi)],
                     ),
                 ),
-                # "spin_high": mdp.SpecialModeEntryCfg(  # （注释掉：高速自旋模式）
-                #     rel_envs=0.1,
-                #     iteration_start=5000,
-                #     iteration_end=-1,      # 永不过期
-                #     debug_print=False,
-                #     ranges=mdp.SpecialModeEntryCfg.Ranges(
-                #         lin_vel_x=(-0.1, 0.1),
-                #         lin_vel_y=(0.0, 0.0),
-                #         ang_vel_z=[(4.5*torch.pi, 5.5*torch.pi), (-4.5*torch.pi, -5.5*torch.pi)],
-                #     ),
-                # ),
-                # 模式1 — 高速前冲/后退：临时全关（原 15% 非站立环境）
                 "dash": mdp.SpecialModeEntryCfg(       # 冲刺：±2~3 m/s 的高速机动
-                    rel_envs=0.0,
-                    iteration_start=2600,
+                    rel_envs=0.3,
+                    iteration_start=2000,
                     iteration_end=-1,
                     disable_jump_takeoff=True,   # 冲刺时禁止触发跳跃
                     debug_print=False,
@@ -1372,22 +1093,6 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                 ),
             },
         )
-        # ★先纯站立（0~400 轮）：所有环境零指令，只练"定高 + 轮子平衡 + 腿保持不动"；
-        # 400 轮后自动回到普通速度指令（自旋/冲刺分别 2000/3000 轮后才开）。
-        self.commands.special_modes["zero_cmd"] = mdp.SpecialModeEntryCfg(
-            rel_envs=1.0,
-            iteration_start=0,
-            iteration_end=400,
-            disable_jump_takeoff=True,
-            debug_print=False,
-            ranges=mdp.SpecialModeEntryCfg.Ranges(
-                lin_vel_x=(0.0, 0.0),
-                lin_vel_y=(0.0, 0.0),
-                ang_vel_z=(0.0, 0.0),
-            ),
-        )
-        # 特殊模式开局即可进入（否则每局前 5s 仍是随机指令，纯站立阶段会被打断）
-        self.commands.special_mode_min_episode_time = 0.0
         self.height_command_special_modes_cfg = {   # 身高指令的特殊模式（正弦/阶跃变高训练），当前关闭
             "enabled": False,
             "min_episode_time": 0.0,
@@ -1430,16 +1135,6 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         self.decimation = 4              # 每个策略步内跑 4 次物理仿真
         self.sim.dt = 1 / 200.0          # 物理仿真步长 1/200 秒 → 策略频率 = 200/4 = 50Hz
         self.max_wheel_torque = 20.0     # 轮电机最大力矩 20 N·m
-
-        # 启用"竖直托举力"课程时必须关掉随机外力事件：
-        # base_external_force_torque_xyz（interval、base_link ±10N）用
-        # set_external_force_and_torque 覆盖同一个外力缓冲区，会周期性把托举力冲掉。
-        if (
-            self.curriculum is not None
-            and hasattr(self.curriculum, "base_vertical_assist_force_progression")
-        ):
-            self.events = copy.deepcopy(self.events)
-            self.events.base_external_force_torque_xyz = None
 
     def _apply_ctrl_mode_obs_cfg(self, enabled: bool | None = None):
         # 把"控制模式观测"(7维)并入观测维度：维护 num_single_obs / 空间维度的一致性
@@ -1546,7 +1241,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
 class WheelLegV1FlatEnvCfg_v2(WheelLegV1FlatEnvCfg):
     """Flat V14 with gimbal-heading PD and gimbal-frame spin/translation commands."""
 
-    curriculum = None  # 小陀螺平移任务不启用站立托举力课程（保持原行为）
+    curriculum = CurriculumCfgV14()  # 对齐 wheelbipe V14 Flat 课程（身高权重渐进 + 竖直托举力）
 
     # —— 云台航向锁定 PD 控制参数 ——
     gimbal_heading_control_cfg = {
@@ -1622,13 +1317,6 @@ class WheelLegV1FlatEnvCfg_v2(WheelLegV1FlatEnvCfg):
         gimbal_yaw_actuator = self.robot_cfg.actuators.get("gimbal_yaw", None)  # 找到 yaw 执行器
         if gimbal_yaw_actuator is not None:
             gimbal_yaw_actuator.effort_limit = float(self.gimbal_heading_control_cfg.get("max_effort", 5.0))  # 执行器力矩上限对齐 PD 限幅
-        # 自旋/冲刺模式提前开练（去掉基类设的 iteration 门槛）
-        self.commands.special_modes['spin_low'].iteration_start = 0   # 低速自旋从第 0 轮就练
-        self.commands.special_modes['spin_low'].rel_envs = 0.1        # 占 10%
-        self.commands.special_modes['spin_mid'].iteration_start = 0   # 中速自旋同上
-        self.commands.special_modes['spin_mid'].rel_envs = 0.1
-        self.commands.special_modes['dash'].iteration_start = 0       # 冲刺同上
-        self.commands.special_modes['dash'].rel_envs = 0.2            # 占 20%
         # 给命令生成器添加 PD 增益随机化事件 + 新特殊模式
         heading_cfg = dict(self.gimbal_heading_control_cfg)
         kp_range = heading_cfg.get("kp_range", None) if bool(heading_cfg.get("randomize_gains", False)) else None  # 开随机才取范围
@@ -1841,7 +1529,7 @@ def _apply_v14_airborne_landing_precontact_cfg(cfg) -> None:
 @configclass
 class WheelLegV1FlatEnvCfg_v1(WheelLegV1FlatEnvCfg):
     # ★腾空落地预训练任务：把机器人从空中随机扔下来，学会"安全落地"
-    curriculum = None  # 腾空落地预训练不启用站立托举力课程（保持原行为）
+    curriculum = CurriculumCfgV14()  # 对齐 wheelbipe V14 Flat 课程（身高权重渐进 + 竖直托举力）
     termination_duration_steps = 10   # 摔倒判定放宽到连续 10 步（落地瞬间姿态本来就不稳）
     ctrl_mode_obs_enabled = True
     ctrl_mode_obs_dim = 7
@@ -1909,22 +1597,6 @@ class WheelLegV1FlatEnvCfg_v1(WheelLegV1FlatEnvCfg):
         self.airborne_state_machine_cfg["enabled"] = True   # ★打开腾空状态机
         _enable_v14_body_height_scanner(self)   # 开车身高度扫描仪
         _enable_v14_wheel_height_scanners(self) # 开轮子高度扫描仪（腾空判定要测轮离地）
-        self.commands.special_modes['spin_low'].iteration_start = 0   # 自旋/冲刺提前开练
-        self.commands.special_modes['spin_mid'].iteration_start = 0
-        self.commands.special_modes['dash'].iteration_start = 0
-        self.commands.special_modes['dash'].rel_envs = 0.2
-        self.commands.special_modes["zero_cmd"] = mdp.SpecialModeEntryCfg(  # 新模式：完全零指令（纯练落地）
-            rel_envs=0.1,                     # 10% 环境
-            iteration_start=0,
-            iteration_end=-1,
-            disable_jump_takeoff=True,
-            debug_print=False,
-            ranges=mdp.SpecialModeEntryCfg.Ranges(
-                lin_vel_x=(0.0, 0.0),
-                lin_vel_y=(0.0, 0.0),
-                ang_vel_z=(0.0, 0.0),
-            ),
-        )
         self.predefined_reset_ground["modes"]["positive"]["prob"] = 0.2   # 地面重置姿势概率微调
         self.predefined_reset_ground["modes"]["negative"]["prob"] = 0.1
         # —— 腾空状态的奖励覆盖 ——
@@ -2261,7 +1933,7 @@ class WheelLegV1FlatDreamWaqEnvCfg(WheelLegV1FlatEnvCfg):
     # dims (otherwise obs_history init 28D vs appended 35D -> torch.stack crash).
     ctrl_mode_obs_enabled = False    # 关 7 维模式观测（否则维度与算法声明对不上会崩溃）
     # curriculum = CurriculumCfgV14()
-    curriculum = None                # 无课程
+    curriculum = CurriculumCfgV14()  # 对齐 wheelbipe V14 Flat 课程（身高权重渐进 + 竖直托举力）
     use_frame_stack = False
     num_obs_hist = V14_DREAMWAQ_POLICY_HIST        # 策略观测历史长度（DreamWaQ 需要长历史）
     num_privileged_obs_hist = 1
@@ -2403,8 +2075,7 @@ class WheelLegV1FlatNP3OBarlowEnvCfg(WheelLegV1FlatEnvCfg):
 
     # NP3O：PPO + 安全约束(cost channels) + BarlowTwins 自监督历史编码
     ctrl_mode_obs_enabled = False
-    # curriculum = CurriculumCfgV14()
-    curriculum = None
+    curriculum = CurriculumCfgV14()  # 对齐 wheelbipe V14 Flat 课程（身高权重渐进 + 竖直托举力）
     np3o_barlow_enabled = True       # 打开 BarlowTwins 分支
     use_frame_stack = False
     num_obs_hist = V14_NP3O_POLICY_HIST           # 策略历史长度
