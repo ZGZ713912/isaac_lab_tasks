@@ -5,15 +5,15 @@
 # Part of the wheeled-legged_RL project.
 # See LICENSE for full license terms.
 #
-# Wheel_leg_V1 (轮腿 V1) asset configuration —— 结构镜像 wheelbipe_V14_2.py，
-# 但去云台(gimbal)/弹簧(spring)/被动腿(legs_inact)（本机无这些部件）。
+# Wheel_leg_V1 (轮腿 V1) asset configuration.
+# This is a normal two-link serial leg, not wheelbipe's closed chain.
 #
 # USD：assets/usd_files/Wheel_leg_V1/Wheel_leg_V1.usd
 #   （由 urdf_V4.0.urdf 经 Isaac Lab UrdfConverter 转换，joint drive: force / target none）
 # 6 DOF（URDF 顺序）：L_joint1/L_joint2/L_joint3, R_joint1/R_joint2/R_joint3 —— 全 continuous。
-# 角色映射（与 wheelbipe 同构，动作 6 维）：
-#   legs_act = L/R_joint1 + L/R_joint2   （腿关节，位置 PD，kp/kd/effort 暂用 wheelbipe legs_act 值）
-#   wheel    = L/R_joint3                （末端轮，速度伺服，同 wheelbipe wheel 组）
+# 角色映射（动作 6 维）：
+#   legs_act = L/R_joint1 + L/R_joint2   （两杆关节，位置 PD）
+#   wheel    = L/R_joint3                （末端轮，速度伺服）
 # 无被动关节（legs_inact 为空）—— 相应事件表/索引在 env 侧已适配。
 #
 # 名义站姿：URDF 零位（q=0，SolidWorks 装配位形）；spawn z 按几何粗估，视检后调整。
@@ -71,12 +71,12 @@ WheelLegV1_CFG = ArticulationCfg(
             velocity_limit=17.0,
             armature=DM8009_ARMATURE,
         ),
-        # 轮：速度伺服（damping 0.2/effort 5/vel 60 —— wheelbipe wheel 同值）
+        # 轮：速度伺服（轮腿 V1 需要足够力矩完成平衡与滚动）
         "wheel": IdealPDActuatorCfg(
             joint_names_expr=["L_joint3", "R_joint3"],
             stiffness=0.0,
-            damping=0.2,
-            effort_limit=5.0,
+            damping=1.0,
+            effort_limit=20.0,
             velocity_limit=60.0,
             armature=0.0,
         ),

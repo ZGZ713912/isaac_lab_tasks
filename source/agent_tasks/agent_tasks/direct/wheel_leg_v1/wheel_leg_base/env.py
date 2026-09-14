@@ -2134,6 +2134,18 @@ class WheelLegBaseEnv(DirectRLEnv):
 
         # initial static index
         self._init_static_index_layouts()
+        expected_action_dim = self._leg_action_dim + self._wheel_action_dim
+        if expected_action_dim != int(self.cfg.action_space):
+            raise RuntimeError(
+                "WheelLegV1 action contract mismatch: "
+                f"legs={self._leg_action_dim}, wheels={self._wheel_action_dim}, "
+                f"configured={self.cfg.action_space}"
+            )
+        if (self._leg_action_dim, self._wheel_action_dim) != (4, 2):
+            raise RuntimeError(
+                "WheelLegV1 requires exactly four serial-leg joints and two wheel joints; "
+                f"discovered legs={self._leg_action_dim}, wheels={self._wheel_action_dim}"
+            )
 
         # X/Y linear velocity and yaw angular velocity commands
         self.command_generator = self.cfg.commands.class_type(cfg=self.cfg.commands, env=self)
@@ -3638,7 +3650,9 @@ class WheelLegBaseEnv(DirectRLEnv):
         #     in_standup_phase = (self._standup_phase == 0) | (self._standup_phase == 1)
         #     self.command[in_standup_phase, :3] = 0.0
 
-        # alive
+        # Dense survival signal is essential for the unstable two-wheel body.
+        # Termination is kept as a separate event penalty below.
+        rew_alive = torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         rew_termination = self.reset_terminated
         rew_epi_len = self.episode_length_buf
 
@@ -3653,6 +3667,9 @@ class WheelLegBaseEnv(DirectRLEnv):
         rew_wheel_diff_acc = torch.square(0.5*(joint_acc[:,self._wheel_idx[0]]-joint_acc[:,self._wheel_idx[1]]))
         rew_joint_vel = torch.sum(torch.square(self.joint_vel[:,self._actuate_idx]), dim=1)
         rew_leg_joint_vel = torch.sum(torch.square(self.joint_vel[:,self._legs_act_idx]), dim=1)
+        rew_leg_action_l2 = torch.sum(
+            torch.square(self._actions[:, : self._leg_action_dim]), dim=-1
+        )
         rew_leg_joint_com_vel = torch.sum(torch.square(0.5*(self.joint_vel[:,self._legs_front_idx]+self.joint_vel[:,self._legs_rear_idx])), dim=1)
         rew_leg_joint_diff_vel = torch.sum(torch.square(0.5*(self.joint_vel[:,self._legs_front_idx]-self.joint_vel[:,self._legs_rear_idx])), dim=1)
         left_leg_pair_idx, right_leg_pair_idx = self._left_right_leg_joint_pair_idx
@@ -3835,6 +3852,29 @@ class WheelLegBaseEnv(DirectRLEnv):
             relative_obs_height = obs_height - self.ground_z_est
         wheel_relative_ground_heights = self._get_wheel_relative_ground_heights_raw()
         self.wheel_relative_ground_heights = wheel_relative_ground_heights
+        # Keep the flat, no-jump task from solving balance by repeatedly
+        # launching both wheels. V0 enables this; jump/recovery tasks can
+        # leave it disabled.
+        if bool(getattr(self.cfg, "wheel_hop_penalty_enabled", False)):
+            wheel_radius = max(float(getattr(self.cfg, "wheel_hop_reference_radius", 0.06)), 1.0e-6)
+            clearance_tolerance = max(
+                float(getattr(self.cfg, "wheel_hop_clearance_tolerance", 0.015)), 0.0
+            )
+            hop_sigma = max(float(getattr(self.cfg, "wheel_hop_sigma", 0.03)), 1.0e-6)
+            hop_start_time = max(float(getattr(self.cfg, "wheel_hop_start_time_s", 0.15)), 0.0)
+            both_wheels_clearance = torch.clamp(
+                torch.amin(wheel_relative_ground_heights, dim=-1)
+                - wheel_radius
+                - clearance_tolerance,
+                min=0.0,
+            )
+            hop_active = (
+                self.episode_length_buf.to(dtype=torch.float) * self.step_dt
+                >= hop_start_time
+            )
+            rew_wheel_hop = torch.square(both_wheels_clearance / hop_sigma) * hop_active.float()
+        else:
+            rew_wheel_hop = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         wheel_height_w = self.robot.data.body_pos_w[:, self._wheel_link_idx, 2]
         height_reward_ref = self._get_height_reward_reference_height(relative_obs_height, wheel_height_w)
         # print(height_reward_ref)
@@ -4058,6 +4098,10 @@ class WheelLegBaseEnv(DirectRLEnv):
         rew_track_height_exp_soft = rew_track_height_exp_soft * height_upright_gate
         rew_track_height_exp_tight = rew_track_height_exp_tight * height_upright_gate
         rew_track_height_huge_gap = height_reward_target - obs_height > self.cfg.height_torlarance_gap
+        # Apply the same height gate to body-pose rewards. Without this, a
+        # permanent crouch still scores full pose reward.
+        rew_flat_orientation_x_exp = rew_flat_orientation_x_exp * vel_height_gate
+        rew_flat_orientation_y_exp = rew_flat_orientation_y_exp * vel_height_gate
         # print(torch.abs(wheel_pos_b[:,0,0]-wheel_pos_b[:,1,0]))
         # print('tar',self.height_cmd)
         # print('cur',obs_height)
@@ -4078,6 +4122,55 @@ class WheelLegBaseEnv(DirectRLEnv):
             wheel_contact_force_peaks,
             desired_contact_force_threshold,
         )
+        # Wheel shaping is contact-gated so it teaches rolling during normal
+        # locomotion without competing with an intentional airborne phase.
+        if wheel_contact_force_peaks.shape[1] >= 2 and len(self._wheel_idx) >= 2:
+            wheel_radius = max(float(getattr(self.cfg, "wheel_balance_radius", 0.06)), 1.0e-6)
+            wheel_track_width = max(float(getattr(self.cfg, "wheel_track_width", 0.4)), 1.0e-6)
+            wheel_balance_kp = float(getattr(self.cfg, "wheel_balance_kp", 3.0))
+            wheel_balance_kd = float(getattr(self.cfg, "wheel_balance_kd", 0.4))
+            wheel_balance_sigma = max(float(getattr(self.cfg, "wheel_balance_sigma", 1.0)), 1.0e-6)
+            wheel_vel = self.joint_vel[:, self._wheel_idx[:2]]
+            commanded_wheel_speed = tracking_command[:, 0] / wheel_radius
+            balance_correction = (
+                wheel_balance_kp * self.robot.data.projected_gravity_b[:, 0]
+                + wheel_balance_kd * self.robot.data.root_ang_vel_b[:, 1]
+            )
+            wheel_balance_error = wheel_vel.mean(dim=-1) - (
+                commanded_wheel_speed + balance_correction
+            )
+            rew_wheel_balance_response = (
+                torch.exp(-torch.square(wheel_balance_error) / wheel_balance_sigma)
+                * both_wheels_contact.float()
+            )
+
+            wheel_roll_sigma = max(float(getattr(self.cfg, "wheel_roll_sigma", 10.0)), 1.0e-6)
+            yaw_wheel_speed = tracking_command[:, 2] * wheel_track_width / (2.0 * wheel_radius)
+            wheel_roll_target = torch.stack(
+                (commanded_wheel_speed - yaw_wheel_speed, commanded_wheel_speed + yaw_wheel_speed),
+                dim=-1,
+            )
+            wheel_roll_target_limit = max(float(getattr(self.cfg, "max_wheel_vel", 100.0)), 1.0)
+            wheel_roll_target = torch.clamp(
+                wheel_roll_target,
+                -wheel_roll_target_limit,
+                wheel_roll_target_limit,
+            )
+            wheel_roll_error = wheel_vel - wheel_roll_target
+            rew_wheel_roll_response = (
+                torch.exp(
+                    -torch.sum(torch.square(wheel_roll_error), dim=-1)
+                    / (2.0 * wheel_roll_sigma**2)
+                )
+                * both_wheels_contact.float()
+            )
+        else:
+            rew_wheel_balance_response = torch.zeros(self.num_envs, device=self.device)
+            rew_wheel_roll_response = torch.zeros(self.num_envs, device=self.device)
+        # Height gate also applies to wheel shaping, so a permanent crouch
+        # cannot collect these rewards either.
+        rew_wheel_balance_response = rew_wheel_balance_response * vel_height_gate
+        rew_wheel_roll_response = rew_wheel_roll_response * vel_height_gate
         rew_track_height_exp_both_wheels_contact = (
             rew_track_height_exp_soft * both_wheels_contact.float()
         )

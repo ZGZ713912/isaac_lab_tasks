@@ -252,7 +252,7 @@ class WheelLegBaseEnvCfg(DirectRLEnvCfg):
     play_terrain_debug_vis: bool = False
     play_ang_vel_z_debug_vis: bool = True
     use_spring: bool = False          # Wheel_leg_V1 无弹簧（NS 版本）：禁用虚拟弹簧分支（base/env.py 默认 True，需显式关闭）
-    enable_state_machines: bool = True
+    enable_state_machines: bool = False
     airborne_state_machine_cfg: dict = field(default_factory=lambda: {
         "enabled": False,
         "enter": {
@@ -392,8 +392,9 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     # wheels joints
     wheel_name = robot_cfg.actuators["wheel"].joint_names_expr
     # action scale
-    leg_action_scale = 0.5                 # 仅 linear_legacy 模式使用（旧行为）
-    leg_action_decode_mode = "tanh"        # 腿动作解码：tanh=按关节限位平滑映射（无 clamp 死区，推荐）；linear_legacy=旧线性
+    leg_action_scale = 0.35
+    # Relative position targets keep zero action at the URDF zero pose.
+    leg_action_decode_mode = "linear_legacy"
     leg_action_tanh_margin = 0.02          # tanh 模式距机械限位的安全余量（rad）
     wheel_action_scale = 1.0
     # obs scale
@@ -467,7 +468,7 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     # True: 轮速控制（policy 输出目标角速度，对目标位置做 damping）
     # False: 力矩控制（policy 输出目标力矩，默认行为）
     use_wheel_vel_control: bool = True
-    wheel_vel_action_scale: float = 10.0  # 轮速模式的 action scale（rad/s per unit）
+    wheel_vel_action_scale: float = 20.0  # 覆盖 1.2m/s 前进所需约 20rad/s 轮速
     max_wheel_vel: float = 100.0           # 轮速模式最大轮速限制（rad/s）
 
     ''' action filter '''
@@ -479,7 +480,7 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     events: EventCfg = EventCfg()
 
     # randomly spesify leg lengths and leg angles while reseting 
-    use_leg_random_start = True 
+    use_leg_random_start = False
     links_length = [0.1,0.11814,0.215]
     alpha_offset = [7.48/180.*torch.pi,
                     torch.pi,
@@ -500,9 +501,9 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     )
 
     # randomly spesify leg and wheel wheels while reseting
-    use_joint_vel_random_start = True
-    leg_joint_vel_range = [-torch.pi/2.,torch.pi/2.]
-    wheel_joint_vel_range = [-50.,50.]
+    use_joint_vel_random_start = False
+    leg_joint_vel_range = [0., 0.]
+    wheel_joint_vel_range = [0., 0.]
 
     # sim2real：腿关节零位标定误差 DR（per-episode 常值偏置，同时加在观测与位置目标上）
     use_leg_joint_zero_offset = False
@@ -703,4 +704,3 @@ class WheelLegFlatEnvCfg(WheelLegBaseFlatEnvCfg):
     
 
 # ==================== RMUC Terrain Configuration ====================
-

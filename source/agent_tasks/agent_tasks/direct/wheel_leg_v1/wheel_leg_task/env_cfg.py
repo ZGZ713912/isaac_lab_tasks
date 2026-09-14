@@ -490,7 +490,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     events = EventCfgV14()            # 换用上面定义的 V14 域随机化事件表
     # ★课程学习对齐 wheelbipe V14 Flat：身高奖励权重渐进（不含竖直托举力）。
     # 所有 Flat 变体统一启用；Play 变体保持 curriculum=None。
-    curriculum = CurriculumCfgV14()
+    curriculum = None
     play_keep_done_reset = True       # Play 模式下"到时重置"照常执行（保持演示节奏）
     # 本轮回到 20s：60s 从零开跑会把早期坏姿态的罚分累积成 -400 并让 PPO 卡死（见 2026-09-12 run）。
     episode_length_s = 20.0
@@ -522,7 +522,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # sim2real：真车腿关节存在 1-2° 零位标定误差。
     # 训练时每个 episode 为 4 个腿关节采样一个常值偏置，同时叠加到 joint_pos 观测和位置目标上，
     # 让策略对"编码器零位/机械零位不一致"鲁棒；轮子不受影响（无位置观测、连续旋转）。
-    use_leg_joint_zero_offset = True
+    use_leg_joint_zero_offset = False
     leg_joint_zero_offset_range = [-0.02, 0.02]  # rad（≈±1.15°）；跑稳后可放宽到 ±0.035（±2°）
 
     # ★临时 joint1 训练限位（-0.2 ~ 1.0 rad），写入物理引擎并参与动作裁剪。
@@ -551,7 +551,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     # }
     obs_history_len = 10             # 观测历史堆叠 10 帧（可从短历史推断速度/趋势）
     obs_default_time_lag = 1         # 默认时间错位 1 步
-    use_obs_delay = True             # 开启观测延迟
+    use_obs_delay = False
 
     # —— 动作延迟模拟（真机电机响应滞后）——
     act_delay_cfg = {
@@ -562,7 +562,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     #     "leg_actions": [1, 4],
     #     "wheel_actions": [1, 4],
     # }
-    use_act_delay = True             # 开启动作延迟
+    use_act_delay = False
 
     # 观测噪声（当前启用，各分量幅度见下表；joint_pos ±0.025 rad ≈ ±1.4°）
     ''' noise '''
@@ -634,7 +634,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     reset_heading_target_terminate_enabled = False   # 朝向偏离是否终止（关闭）
     reset_heading_target_terminate_threshold_deg = 20.0
     # —— 控制模式观测：7 维槽位告诉策略"当前模式/指令"（平移/爬梯/跳跃/身高目标等）——
-    ctrl_mode_obs_enabled = True          # 启用该 7 维额外观测
+    ctrl_mode_obs_enabled = False
     ctrl_mode_obs_dim = 7                 # 维度 7
     ctrl_mode_obs_layout = (              # 每一维的含义（普通模式布局）
         "normal",        # 0: 普通模式标志
@@ -802,15 +802,28 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     vel_orientation_y_gate_enabled: bool = False    # 俯仰门控
     vel_orientation_y_gate_full_deg: float = 5.0    # 偏离 5° 内奖励全额
     vel_orientation_y_gate_zero_deg: float = 20.0   # 偏离 20° 以上奖励归零
-    vel_height_gate_enabled: bool = False           # 身高门控
+    vel_height_gate_enabled: bool = True            # ★身高门控：身高没跟住时速度/姿态/轮响应奖励大幅衰减，堵住"蹲姿不动"作弊
     vel_height_gate_mode: str = "linear_band"       # 线性带状衰减
-    vel_height_gate_full_error: float = 0.05        # 误差 5cm 内全额
-    vel_height_gate_zero_error: float = 0.1         # 误差 10cm 归零
+    vel_height_gate_full_error: float = 0.03        # 误差 3cm 内全额
+    vel_height_gate_zero_error: float = 0.08        # 误差 8cm 归零（蹲到 0.18m 时门控≈0）
     vel_height_gate_tracker_sigma: float = 0.02
     height_upright_gate_enabled: bool = False       # 身高奖励的站姿门控
     height_upright_gate_sigma: float = 0.1
     stand_still_deadzone_enabled: bool = True       # "站住"死区：指令速度≈0 时按站住判定
     stand_still_deadzone_threshold: float = 0.1     # 死区阈值 0.1 m/s
+    # V0 is the no-jump locomotion baseline. Keep the anti-hop term isolated
+    # here so jump/recovery variants can explicitly disable it.
+    wheel_hop_penalty_enabled: bool = True
+    wheel_hop_reference_radius: float = 0.06
+    wheel_hop_clearance_tolerance: float = 0.015
+    wheel_hop_sigma: float = 0.02
+    wheel_hop_start_time_s: float = 0.15
+    wheel_balance_radius: float = 0.06
+    wheel_track_width: float = 0.40
+    wheel_balance_kp: float = 3.0
+    wheel_balance_kd: float = 0.4
+    wheel_balance_sigma: float = 100.0
+    wheel_roll_sigma: float = 20.0
     # —— 轮电机轴对齐奖励参数（保持轮轴水平=身体不歪）——
     wheel_motor_z_axis_align_ref_y_offset: float = 0.20855  # 参考点 y 偏移
     wheel_motor_z_axis_align_tolerance: float = 0.0         # 容差
@@ -920,7 +933,7 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     ang_vel_z_square_sigma = 0.5
     high_angVel_pen_sigma = 1.0      # 高角速度惩罚 σ
     height_sigma = 0.025             # 身高追踪 σ=2.5cm
-    height_tight_sigma = 0.005       # 严格版 σ（原继承 0.001 太窄 → 几乎恒 0、无梯度）
+    height_tight_sigma = 0.02        # 严格版 σ：给 2~10cm 误差留有梯度（原 0.005 在 9cm 处几乎无梯度）
     height_square_sigma = 10.
     base_height_bound = 0.24         # 身高下限 0.24m（低于 0.26 目标区间就罚；收紧后底盘余量更足）
     pen_base_too_low_sigma = 10.
@@ -931,12 +944,17 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
     height_err_constraint = 0.15
     no_fork_square_sigma = 5.        # 防"劈叉"（两腿岔开）奖励参数
     rewards = OrderedDict(          # ★权重表对齐 Wheelbipe-V14-Flat-v0（wheelbipe_V14/env_cfg.py:926）
+        alive=1.0,
         termination = -200.,         # ★摔倒终止：一次 -200（最大的罚，让策略极度怕摔）
         leg_joint_acc=-5e-7,         # 腿关节加速度惩罚（动作要柔，别猛甩腿）
-        leg_joint_vel = -5.0e-3,     # 腿关节速度惩罚
-        leg_joint_pair_pos_diff=-0.0, # 左右腿对称性惩罚（wheelbipe 关闭）
+        leg_joint_vel = -5.0e-3,     # 温和抑制腿部高频动作，保留平衡余量
+        leg_joint_pair_pos_diff=-0.5, # 左右腿对称性，避免单腿支撑诱发跳动
+        leg_action_l2=-0.002,         # 腿优先保持名义姿态，运动由轮子完成
         joint_torque=-1e-4,          # 力矩惩罚（省电+保护电机）
-        wheel_acc=-1e-8,             # 轮加速度惩罚（轮子转得平顺）
+        wheel_balance_response=1.5,  # 俯仰误差由轮速及时接住
+        wheel_roll_response=1.0,     # 前后/旋转指令由轮速完成
+        wheel_hop=-5.0,              # V0 仅惩罚双轮同时离地
+        wheel_acc=-2e-9,             # 轮加速度轻惩罚，避免压制滚动平衡
         wheel_vel=-1e-5,             # 轮速惩罚
         wheel_power=-1e-4,           # 轮功率惩罚（直接对应电池功耗）
         wheel_air_spin=0.,           # 腾空时轮子空转惩罚（当前关闭）
@@ -961,8 +979,9 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         track_height_exp=0.0,        # 身高追踪 exp 奖励（基础版关闭，课程任务里开）
         track_height_exp_soft=0.0,   # 宽松版身高追踪（关闭）
         track_height_exp_tight=1.0,  # ★严格版身高追踪（打开：身高要准）
-        track_height_square=-1.0,    # 身高误差平方惩罚
+        track_height_square=-2.0,    # 身高误差平方惩罚（加重：蹲低不再划算）
         track_height_exp_both_wheels_contact=0.0,  # 双轮着地时的身高追踪（关闭）
+        pen_base_too_low=-8.0,        # V0 不允许长期蹲低逃避高度目标
         no_fork = -1.0,              # 防劈叉惩罚
         no_fork_square = -1.0,       # 防劈叉平方惩罚
         no_fork_exp=-0.0,            # 防劈叉 exp（关闭）
@@ -974,6 +993,24 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
         # __post_init__：配置对象构造完成后的"最后一道加工"——
         # 根据开关的组合关系修正其它参数（如关掉不兼容的传感器、扩观测维度、搭命令生成器）。
         super().__post_init__()      # 先执行父类(25v3)的后处理
+        # Flat-v0 is the clean two-link baseline. Disable wheelbipe-specific
+        # disturbances and special modes until nominal balance is verified.
+        if type(self).__name__ == "WheelLegV1FlatEnvCfg":
+            special_modes = getattr(self.commands, "special_modes", None)
+            if special_modes is not None:
+                special_modes.clear()
+            self.events.push_robot = None
+            self.events.base_external_force_torque_xyz = None
+            self.events.robot_joint_stiffness_and_damping = None
+            self.events.leg_effort_noise = None
+            self.events.wheel_effort_noise = None
+            self.use_obs_delay = False
+            self.use_act_delay = False
+            self.self_obs_noise_cfg = None
+            self.ctrl_mode_obs_enabled = False
+            self.enable_state_machines = False
+            self.airborne_state_machine_cfg = copy.deepcopy(self.airborne_state_machine_cfg)
+            self.airborne_state_machine_cfg["enabled"] = False
         _apply_v14_flat_runtime_optimizations(self)   # 应用 V14 平地任务的性能优化（cfg_utils 里定义）
         # if getattr(self.terrain, "terrain_type", None) == "plane":
         #     self.terrain = copy.deepcopy(self.terrain)
@@ -1043,15 +1080,15 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
             heading_command=True,             # 启用朝向命令模式
             heading_control_stiffness=5.0,    # 朝向跟踪的 P 增益
             debug_vis=False,                  # 不画指令箭头
-            special_mode_min_episode_time=5.0,   # 进特殊模式前本局至少已进行 5 秒
+            special_mode_min_episode_time=0.0,   # 允许开局进入纯站立阶段
             special_mode_require_stable=False,   # 进入特殊模式是否要求机身先稳定
             special_mode_stable_projected_gravity_xy_norm_max=0.5,   # 稳定判据：重力投影 xy 范数
             special_mode_stable_root_lin_vel_b_abs_max=3.0,          # 稳定判据：线速度上限
             special_mode_stable_root_ang_vel_b_abs_max=10.0,         # 稳定判据：角速度上限
             ranges=mdp.SpecialModeUniformVelocityCommandCfg.Ranges(  # 普通指令的采样范围（对齐 wheelbipe V14 Flat-v0）
-                lin_vel_x=(-2.7, 2.7),        # x 速度 ±2.7 m/s
+                lin_vel_x=(-1.2, 1.2),        # 先用可控的前后速度范围
                 lin_vel_y=(0.0, 0.0),         # y 速度 0（轮腿机器人横移靠平移模式）
-                ang_vel_z=(-2.*torch.pi, 2.*torch.pi),  # 偏航角速度 ±2π
+                ang_vel_z=(-1.0, 1.0),        # 先用可控的旋转速度范围
                 heading=(-torch.pi, torch.pi),  # 目标朝向范围
             ),
             special_modes={                   # 特殊训练模式表（按比例分配给环境）
@@ -1092,6 +1129,20 @@ class WheelLegV1FlatEnvCfg(WheelLegFlatEnvCfg):
                     ),
                 ),
             },
+        )
+        # Short warm-up only: a long forced zero-command phase teaches
+        # "stand frozen" and starves locomotion training.
+        self.commands.special_modes["zero_cmd"] = mdp.SpecialModeEntryCfg(
+            rel_envs=1.0,
+            iteration_start=0,
+            iteration_end=80,
+            disable_jump_takeoff=True,
+            debug_print=False,
+            ranges=mdp.SpecialModeEntryCfg.Ranges(
+                lin_vel_x=(0.0, 0.0),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(0.0, 0.0),
+            ),
         )
         self.height_command_special_modes_cfg = {   # 身高指令的特殊模式（正弦/阶跃变高训练），当前关闭
             "enabled": False,
@@ -1590,6 +1641,16 @@ class WheelLegV1FlatEnvCfg_v1(WheelLegV1FlatEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        # V1 includes intentional airborne recovery, so inherit the wheel
+        # shaping but disable V0's no-jump anti-hop penalty.
+        self.wheel_hop_penalty_enabled = False
+        self.rewards["wheel_hop"] = 0.0
+        self.rewards["pen_base_too_low"] = 0.0
+        self.rewards["leg_action_l2"] = 0.0
+        self.rewards["leg_joint_pair_pos_diff"] = 0.0
+        # Airborne target height is overridden per-state; the flat height gate
+        # would fight that logic, so keep it off for this task.
+        self.vel_height_gate_enabled = False
         # —— 核心改动：切到相对高度口径 + 打开腾空状态机 ——
         self.use_absolute_height = False      # 改用相对地面高度（要开扫描仪）
         self.enable_state_machines = True     # 状态机总开关打开
