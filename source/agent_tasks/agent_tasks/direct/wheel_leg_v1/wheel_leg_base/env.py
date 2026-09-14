@@ -2029,7 +2029,10 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.use_wheel_vel_control = getattr(self.cfg, 'use_wheel_vel_control', False)
         if self.use_wheel_vel_control:
             self.wheel_action_scale = getattr(self.cfg, 'wheel_vel_action_scale', 10.0)
-            self.max_wheel_vel = getattr(self.cfg, 'max_wheel_vel', 60.0)*1.5
+            # Use the configured/asset limit directly. Hidden scaling here
+            # made the policy believe it could command 90 rad/s while the
+            # WheelLegV1 actuator is limited to 60 rad/s.
+            self.max_wheel_vel = getattr(self.cfg, 'max_wheel_vel', 60.0)
             print(f'[WheelCtrl] 轮速控制模式已启用: scale={self.wheel_action_scale}, max_vel={self.max_wheel_vel} rad/s')
         else:
             self.wheel_action_scale = self.cfg.wheel_action_scale
@@ -2583,6 +2586,12 @@ class WheelLegBaseEnv(DirectRLEnv):
         # 仅用于日志：腿前后行程统计（每步轮心 heading 系 x 变化量累加），判断策略是否在用腿平衡
         self._leg_swing_travel_sums = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self._prev_wheel_fore_aft_heading = None
+        self._previous_base_roll_abs = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device
+        )
+        self._previous_base_pitch_abs = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device
+        )
 
         # Curriculum manager (optional)
         self.curriculum_manager: CurriculumManager | None = None
@@ -2998,10 +3007,9 @@ class WheelLegBaseEnv(DirectRLEnv):
                     wheel_actions_deal = self.act_delay['wheel_actions'].compute(wheel_actions_deal)
                 # 设置速度目标
                 self.robot.set_joint_velocity_target(wheel_actions_deal[enable_env_ids], joint_ids=self._wheel_idx, env_ids=enable_env_ids)
-                # 对目标位置做 damping：将当前轮位置作为位置目标，
-                # 使执行器在速度为 0 时产生阻尼保持效果（actuator stiffness > 0 时生效）
-                current_wheel_pos = self.joint_pos[enable_env_ids][:, self._wheel_idx]
-                self.robot.set_joint_position_target(current_wheel_pos, joint_ids=self._wheel_idx, env_ids=enable_env_ids)
+                # Do not write a position target for a continuously rotating
+                # wheel. A second target silently makes the velocity contract
+                # dependent on actuator implementation details.
             else:
                 # 力矩控制模式（默认）：直接输出力矩，夹紧到 ±max_wheel_torque
                 wheel_actions_deal = torch.clamp(
@@ -3725,6 +3733,11 @@ class WheelLegBaseEnv(DirectRLEnv):
         # tasks
         reward_command = self.command
         tracking_command = reward_command
+        # WheelLeg V1 has no mechanical attitude offset in the RL contract:
+        # these are the actual base_link Euler angles and their target is zero.
+        root_rpy = euler_xyz_from_quat(self.robot.data.root_quat_w)
+        base_roll = wrap_to_pi(root_rpy[0])
+        base_pitch = wrap_to_pi(root_rpy[1])
         stand_still_lin_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         stand_still_yaw_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if bool(getattr(self.cfg, "stand_still_deadzone_enabled", False)):
@@ -3738,23 +3751,64 @@ class WheelLegBaseEnv(DirectRLEnv):
             tracking_command[stand_still_lin_mask, 0] = 0.0
             tracking_command[stand_still_yaw_mask, 2] = 0.0
 
+        # Body posture is strongly rewarded only while standing still. During
+        # acceleration and locomotion the robot may lean; hard fall limits in
+        # _get_dones remain active as the safety boundary.
+        if bool(getattr(self.cfg, "static_posture_enabled", False)):
+            posture_sigma = max(float(getattr(self.cfg, "static_posture_gate_sigma", 1.0)), 1.0e-6)
+            command_speed_threshold = max(
+                float(getattr(self.cfg, "static_posture_command_speed_threshold", 0.12)),
+                1.0e-6,
+            )
+            body_speed_threshold = max(
+                float(getattr(self.cfg, "static_posture_body_speed_threshold", 0.12)),
+                1.0e-6,
+            )
+            yaw_threshold = max(float(getattr(self.cfg, "static_posture_yaw_threshold", 0.12)), 1.0e-6)
+            command_speed = torch.linalg.vector_norm(reward_command[:, :2], dim=-1)
+            body_speed = torch.linalg.vector_norm(self.robot.data.root_lin_vel_b[:, :2], dim=-1)
+            command_gate = torch.exp(
+                -posture_sigma
+                * (
+                    torch.square(command_speed / command_speed_threshold)
+                    + torch.square(reward_command[:, 2] / yaw_threshold)
+                )
+            )
+            body_gate = torch.exp(
+                -posture_sigma
+                * (
+                    torch.square(body_speed / body_speed_threshold)
+                    + torch.square(self.robot.data.root_ang_vel_b[:, 2] / yaw_threshold)
+                )
+            )
+            static_posture_gate = command_gate * body_gate
+        else:
+            static_posture_gate = torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+
         pgb = self.robot.data.projected_gravity_b[:, :2]
         # pgb[:,0] = pgb[:,0]-0.02
         # rew_flat_orientation = torch.sum(torch.square(self.robot.data.projected_gravity_b[:, :2]), dim=1)
         rew_flat_orientation = torch.sum(torch.square(pgb), dim=-1)
-        rew_flat_orientation_y = torch.square(self.cfg.orientation_y_square_sigma*pgb[:,0])
-        rew_flat_orientation_x = torch.square(self.cfg.orientation_x_square_sigma*pgb[:,1])
-        rew_flat_orientation_y_exp = torch.exp(-torch.square(pgb[:,0]) / self.cfg.orientation_y_exp_sigma)
-        rew_flat_orientation_x_exp = torch.exp(-torch.square(pgb[:,1]) / self.cfg.orientation_x_exp_sigma)
+        rew_flat_orientation_y = torch.square(self.cfg.orientation_y_square_sigma * base_pitch)
+        rew_flat_orientation_x = torch.square(self.cfg.orientation_x_square_sigma * base_roll)
+        rew_flat_orientation_y_exp = torch.exp(-torch.square(base_pitch) / self.cfg.orientation_y_exp_sigma)
+        rew_flat_orientation_x_exp = torch.exp(-torch.square(base_roll) / self.cfg.orientation_x_exp_sigma)
         lin_vel_x_cmd = torch.square(reward_command[:,0])
         rew_flat_orientation_y_v = torch.square(
             (
                 self.cfg.orientation_y_A * torch.exp(-lin_vel_x_cmd / self.cfg.orientation_y_sigma)
                 + self.cfg.orientation_y_bias
             )
-            * pgb[:, 0]
+            * base_pitch
         )
-        rew_flat_orientation_x_v = torch.square((self.cfg.orientation_x_A * torch.exp(-lin_vel_x_cmd/self.cfg.orientation_x_sigma) + self.cfg.orientation_x_bias)*pgb[:,1])
+        rew_flat_orientation_x_v = torch.square(
+            (self.cfg.orientation_x_A * torch.exp(-lin_vel_x_cmd / self.cfg.orientation_x_sigma)
+             + self.cfg.orientation_x_bias) * base_roll
+        )
+        rew_flat_orientation_x_exp = rew_flat_orientation_x_exp * static_posture_gate
+        rew_flat_orientation_y_exp = rew_flat_orientation_y_exp * static_posture_gate
+        rew_flat_orientation_x_v = rew_flat_orientation_x_v * static_posture_gate
+        rew_flat_orientation_y_v = rew_flat_orientation_y_v * static_posture_gate
         # rew_flat_orientation = torch.square(self.robot.data.projected_gravity_b[:, 1])
 
         # ========== 姿态门控：只有接近水平时速度/角速度 tracking 奖励才高 ==========
@@ -3880,13 +3934,27 @@ class WheelLegBaseEnv(DirectRLEnv):
         # print(height_reward_ref)
         # 普通速度 tracking 仍按“水平前进速度”计算：
         # 使用机体系前向 x 速度，再通过机身 pitch 投影到水平面，避免直接拿机体系 x 导致冲坡时高估水平速度。
-        root_rpy = euler_xyz_from_quat(self.robot.data.root_quat_w)
-        pitch = wrap_to_pi(root_rpy[1])
-        roll = wrap_to_pi(root_rpy[0])
+        pitch = base_pitch
+        roll = base_roll
         rew_flat_pitch_l1 = torch.abs(pitch*self.cfg.flat_pitch_l1_sigma)
         rew_flat_pitch_tanh = 1 - torch.tanh(torch.abs(pitch)/self.cfg.flat_pitch_tanh_sigma)
         rew_flat_roll_l1 = torch.abs(roll*self.cfg.flat_roll_l1_sigma)
         rew_flat_roll_tanh = 1 - torch.tanh(torch.abs(roll)/self.cfg.flat_roll_tanh_sigma)
+
+        # Leg-mediated Roll correction: unequal wheel heights are the geometric
+        # signature the two serial legs can change to recover base_link Roll.
+        wheel_world_z = self.robot.data.body_pos_w[:, self._wheel_link_idx, 2]
+        wheel_height_diff = wheel_world_z[:, 0] - wheel_world_z[:, 1]
+        roll_height_sigma = max(float(getattr(self.cfg, "roll_wheel_height_sigma", 0.02)), 1.0e-6)
+        rew_roll_wheel_height = torch.square(wheel_height_diff / roll_height_sigma)
+        roll_abs = torch.abs(base_roll)
+        pitch_abs = torch.abs(base_pitch)
+        rew_roll_recovery = torch.clamp(self._previous_base_roll_abs - roll_abs, min=-1.0, max=1.0)
+        rew_pitch_recovery = torch.clamp(self._previous_base_pitch_abs - pitch_abs, min=-1.0, max=1.0)
+        rew_roll_wheel_height = rew_roll_wheel_height * static_posture_gate
+        rew_roll_recovery = rew_roll_recovery * static_posture_gate
+        self._previous_base_roll_abs.copy_(roll_abs.detach())
+        self._previous_base_pitch_abs.copy_(pitch_abs.detach())
 
         forward_lin_vel_horizontal = self.robot.data.root_lin_vel_b[:, 0] * torch.cos(pitch)
 
@@ -4116,8 +4184,16 @@ class WheelLegBaseEnv(DirectRLEnv):
             both_wheels_contact = torch.all(
                 wheel_contact_force_peaks > desired_contact_force_threshold, dim=1
             )
+            # Do not make wheel learning disappear because one contact sample
+            # was missed. Use a per-wheel soft contact confidence for shaping.
+            wheel_contact_gate = torch.clamp(
+                wheel_contact_force_peaks / max(desired_contact_force_threshold, 1.0),
+                min=0.0,
+                max=1.0,
+            ).mean(dim=-1)
         else:
             both_wheels_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            wheel_contact_gate = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         rew_wheel_air_spin = self._get_wheel_air_spin_reward(
             wheel_contact_force_peaks,
             desired_contact_force_threshold,
@@ -4141,7 +4217,7 @@ class WheelLegBaseEnv(DirectRLEnv):
             )
             rew_wheel_balance_response = (
                 torch.exp(-torch.square(wheel_balance_error) / wheel_balance_sigma)
-                * both_wheels_contact.float()
+                * wheel_contact_gate
             )
 
             wheel_roll_sigma = max(float(getattr(self.cfg, "wheel_roll_sigma", 10.0)), 1.0e-6)
@@ -4162,7 +4238,7 @@ class WheelLegBaseEnv(DirectRLEnv):
                     -torch.sum(torch.square(wheel_roll_error), dim=-1)
                     / (2.0 * wheel_roll_sigma**2)
                 )
-                * both_wheels_contact.float()
+                * wheel_contact_gate
             )
         else:
             rew_wheel_balance_response = torch.zeros(self.num_envs, device=self.device)
@@ -5328,6 +5404,8 @@ class WheelLegBaseEnv(DirectRLEnv):
         self.last_actions[env_ids] = 0.0
         self._previous_applied_torque[env_ids] = 0.0
         self._before_previous_applied_torque[env_ids] = 0.0
+        self._previous_base_roll_abs[env_ids] = 0.0
+        self._previous_base_pitch_abs[env_ids] = 0.0
         self.predefined_reset_ground_zero_torque_until_time[env_ids] = 0.0
         self._clear_predefined_reset_ground_command_override(env_ids)
         self.obs[env_ids] = 0.0

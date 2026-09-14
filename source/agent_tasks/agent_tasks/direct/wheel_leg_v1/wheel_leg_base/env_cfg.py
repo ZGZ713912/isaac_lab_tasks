@@ -469,7 +469,17 @@ class WheelLegBaseFlatEnvCfg(WheelLegBaseEnvCfg):
     # False: 力矩控制（policy 输出目标力矩，默认行为）
     use_wheel_vel_control: bool = True
     wheel_vel_action_scale: float = 20.0  # 覆盖 1.2m/s 前进所需约 20rad/s 轮速
-    max_wheel_vel: float = 100.0           # 轮速模式最大轮速限制（rad/s）
+    # Keep the policy/action limit identical to the asset actuator limit.
+    max_wheel_vel: float = 60.0            # 轮速模式最大轮速限制（rad/s）
+
+    # Body-level posture is a standing objective, not a locomotion objective.
+    # The reward code uses these thresholds to smoothly gate posture rewards.
+    static_posture_enabled: bool = True
+    static_posture_command_speed_threshold: float = 0.12
+    static_posture_body_speed_threshold: float = 0.12
+    static_posture_yaw_threshold: float = 0.12
+    static_posture_gate_sigma: float = 1.0
+    roll_wheel_height_sigma: float = 0.02
 
     ''' action filter '''
     use_action_low_pass_filter: bool = False
