@@ -1,0 +1,975 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="狗v3">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.007245 0.067234 -0.004868"
+        rpy="0 0 0" />
+      <mass
+        value="16.230" />
+      <inertia
+        ixx="0.278513538"
+        ixy="0.011104600"
+        ixz="-0.005569907"
+        iyy="0.441130770"
+        iyz="0.003177947"
+        izz="0.288386773" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="leg_1">
+    <inertial>
+      <origin
+        xyz="0.010222 -0.000945 -0.067228"
+        rpy="0 0 0" />
+      <mass
+        value="0.435" />
+      <inertia
+        ixx="0.001628948"
+        ixy="0.000003921"
+        ixz="-0.000164164"
+        iyy="0.001162255"
+        iyz="-0.000004188"
+        izz="0.000638084" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_leg_1"
+    type="revolute">
+    <origin
+      xyz="0.12921 0.054 0.12921"
+      rpy="-1.5708 -0.7854 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg_1" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_set_1">
+    <inertial>
+      <origin
+        xyz="0.031269 0.001755 0.044151"
+        rpy="0 0 0" />
+      <mass
+        value="1.292" />
+      <inertia
+        ixx="0.002815165"
+        ixy="0.000050138"
+        ixz="-0.000060193"
+        iyy="0.002225276"
+        iyz="0.000004305"
+        izz="0.003085880" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_set_1"
+    type="revolute">
+    <origin
+      xyz="0.029108 0 -0.13694"
+      rpy="0 0 0" />
+    <parent
+      link="leg_1" />
+    <child
+      link="wheel_set_1" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_1">
+    <inertial>
+      <origin
+        xyz="-0.006625 -0.000085 -0.000085"
+        rpy="0 0 0" />
+      <mass
+        value="0.585" />
+      <inertia
+        ixx="0.002092387"
+        ixy="0.000000709"
+        ixz="0.000000709"
+        iyy="0.001103663"
+        iyz="0.000000604"
+        izz="0.001103663" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_1"
+    type="revolute">
+    <origin
+      xyz="0.09092 0 0.02795"
+      rpy="1.5708 0 0" />
+    <parent
+      link="wheel_set_1" />
+    <child
+      link="wheel_1" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="1000"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="leg_2">
+    <inertial>
+      <origin
+        xyz="0.010222 -0.000945 -0.067228"
+        rpy="0 0 0" />
+      <mass
+        value="0.435" />
+      <inertia
+        ixx="0.001628948"
+        ixy="0.000003921"
+        ixz="-0.000164164"
+        iyy="0.001162255"
+        iyz="-0.000004188"
+        izz="0.000638084" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_leg_2"
+    type="revolute">
+    <origin
+      xyz="0.12921 0.054 -0.12921"
+      rpy="-1.5708 0.7854 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg_2" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_set_2">
+    <inertial>
+      <origin
+        xyz="0.031269 0.001755 0.044151"
+        rpy="0 0 0" />
+      <mass
+        value="1.292" />
+      <inertia
+        ixx="0.002815165"
+        ixy="0.000050138"
+        ixz="-0.000060193"
+        iyy="0.002225276"
+        iyz="0.000004305"
+        izz="0.003085880" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_set_2"
+    type="revolute">
+    <origin
+      xyz="0.029108 0 -0.13694"
+      rpy="0 0 0" />
+    <parent
+      link="leg_2" />
+    <child
+      link="wheel_set_2" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_2">
+    <inertial>
+      <origin
+        xyz="-0.006625 -0.000085 -0.000085"
+        rpy="0 0 0" />
+      <mass
+        value="0.585" />
+      <inertia
+        ixx="0.002092387"
+        ixy="0.000000709"
+        ixz="0.000000709"
+        iyy="0.001103663"
+        iyz="0.000000604"
+        izz="0.001103663" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_2"
+    type="revolute">
+    <origin
+      xyz="0.09092 0 0.02795"
+      rpy="1.5708 0 0" />
+    <parent
+      link="wheel_set_2" />
+    <child
+      link="wheel_2" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="1000"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="leg_3">
+    <inertial>
+      <origin
+        xyz="0.010222 -0.000945 -0.067228"
+        rpy="0 0 0" />
+      <mass
+        value="0.435" />
+      <inertia
+        ixx="0.001628948"
+        ixy="0.000003921"
+        ixz="-0.000164164"
+        iyy="0.001162255"
+        iyz="-0.000004188"
+        izz="0.000638084" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_leg_3"
+    type="revolute">
+    <origin
+      xyz="-0.12921 0.054 -0.12921"
+      rpy="1.5708 0.7854 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg_3" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_set_3">
+    <inertial>
+      <origin
+        xyz="0.031269 0.001755 0.044151"
+        rpy="0 0 0" />
+      <mass
+        value="1.292" />
+      <inertia
+        ixx="0.002815165"
+        ixy="0.000050138"
+        ixz="-0.000060193"
+        iyy="0.002225276"
+        iyz="0.000004305"
+        izz="0.003085880" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_set_3"
+    type="revolute">
+    <origin
+      xyz="0.029108 0 -0.13694"
+      rpy="0 0 0" />
+    <parent
+      link="leg_3" />
+    <child
+      link="wheel_set_3" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_3">
+    <inertial>
+      <origin
+        xyz="-0.006625 -0.000085 -0.000085"
+        rpy="0 0 0" />
+      <mass
+        value="0.585" />
+      <inertia
+        ixx="0.002092387"
+        ixy="0.000000709"
+        ixz="0.000000709"
+        iyy="0.001103663"
+        iyz="0.000000604"
+        izz="0.001103663" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_3"
+    type="revolute">
+    <origin
+      xyz="0.09092 0 0.02795"
+      rpy="1.5708 0 0" />
+    <parent
+      link="wheel_set_3" />
+    <child
+      link="wheel_3" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="1000"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="leg_4">
+    <inertial>
+      <origin
+        xyz="0.010222 -0.000945 -0.067228"
+        rpy="0 0 0" />
+      <mass
+        value="0.435" />
+      <inertia
+        ixx="0.001628948"
+        ixy="0.000003921"
+        ixz="-0.000164164"
+        iyy="0.001162255"
+        iyz="-0.000004188"
+        izz="0.000638084" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/leg_4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_leg_4"
+    type="revolute">
+    <origin
+      xyz="-0.12921 0.054 0.12921"
+      rpy="1.5708 -0.7854 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg_4" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_set_4">
+    <inertial>
+      <origin
+        xyz="0.031269 0.001755 0.044151"
+        rpy="0 0 0" />
+      <mass
+        value="1.292" />
+      <inertia
+        ixx="0.002815165"
+        ixy="0.000050138"
+        ixz="-0.000060193"
+        iyy="0.002225276"
+        iyz="0.000004305"
+        izz="0.003085880" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_set_4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_set_4"
+    type="revolute">
+    <origin
+      xyz="0.029108 0 -0.13694"
+      rpy="0 0 0" />
+    <parent
+      link="leg_4" />
+    <child
+      link="wheel_set_4" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="1.36"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="wheel_4">
+    <inertial>
+      <origin
+        xyz="-0.006625 -0.000085 -0.000085"
+        rpy="0 0 0" />
+      <mass
+        value="0.585" />
+      <inertia
+        ixx="0.002092387"
+        ixy="0.000000709"
+        ixz="0.000000709"
+        iyy="0.001103663"
+        iyz="0.000000604"
+        izz="0.001103663" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.898039215686275 0.917647058823529 0.929411764705882 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/wheel_4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_wheel_4"
+    type="revolute">
+    <origin
+      xyz="0.09092 0 0.02795"
+      rpy="1.5708 0 0" />
+    <parent
+      link="wheel_set_4" />
+    <child
+      link="wheel_4" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="1000"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="upper_leg_1">
+    <inertial>
+      <origin
+        xyz="6.9389E-17 -0.03766 0.0080049"
+        rpy="0 0 0" />
+      <mass
+        value="0.21463" />
+      <inertia
+        ixx="0.00012649"
+        ixy="5.9841E-20"
+        ixz="-6.7763E-21"
+        iyy="1.7264E-05"
+        iyz="2.1684E-05"
+        izz="0.00011467" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_upper_leg_1"
+    type="revolute">
+    <origin
+      xyz="0.12921 0.109 0.12921"
+      rpy="0 0.7854 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="upper_leg_1" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.36"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="upper_leg_2">
+    <inertial>
+      <origin
+        xyz="0 -0.0376600073617246 0.00800488167727476"
+        rpy="0 0 0" />
+      <mass
+        value="0.214633741875655" />
+      <inertia
+        ixx="0.000126494780153576"
+        ixy="6.153518429658E-20"
+        ixz="-1.35525271560688E-20"
+        iyy="1.72644050153657E-05"
+        iyz="2.16835658163609E-05"
+        izz="0.000114668577441226" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_upper_leg_2"
+    type="revolute">
+    <origin
+      xyz="0.12921 0.109 -0.12921"
+      rpy="3.1416 0.7854 -3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="upper_leg_2" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.36"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="upper_leg_3">
+    <inertial>
+      <origin
+        xyz="-2.77555756156289E-17 -0.0376599956740312 0.00800493666335175"
+        rpy="0 0 0" />
+      <mass
+        value="0.214633741875655" />
+      <inertia
+        ixx="0.000126494780153576"
+        ixy="-1.0542400751117E-19"
+        ixz="2.37169225231204E-20"
+        iyy="1.72644683344353E-05"
+        iyz="2.1683708032761E-05"
+        izz="0.000114668514122157" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_upper_leg_3"
+    type="revolute">
+    <origin
+      xyz="-0.12921 0.109 -0.12921"
+      rpy="-3.1416 -0.7854 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="upper_leg_3" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.36"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="upper_leg_4">
+    <inertial>
+      <origin
+        xyz="1.38777878078145E-17 -0.0376600073617246 0.00800488167727481"
+        rpy="0 0 0" />
+      <mass
+        value="0.214633741875655" />
+      <inertia
+        ixx="0.000126494780153576"
+        ixy="5.63954503943649E-20"
+        ixz="6.7762635780344E-21"
+        iyy="1.72644050153657E-05"
+        iyz="2.16835658163609E-05"
+        izz="0.000114668577441226" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://狗v3/meshes/upper_leg_4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="joint_upper_leg_4"
+    type="revolute">
+    <origin
+      xyz="-0.12921 0.109 0.12921"
+      rpy="0 -0.7854 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="upper_leg_4" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.36"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+</robot>
