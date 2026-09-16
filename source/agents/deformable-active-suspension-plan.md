@@ -237,7 +237,7 @@ TerrainCommandManager 式地形命令覆盖、速度轨迹录制（悬挂 trace�
 | # | 问题 | 建议（默认） | 备注 |
 |---|---|---|---|
 | D1 | 资产模块命名 | 机器人名 `deformable_infantry.py`（+CFG 同名），任务目录/experiment 保留 `deformable_suspension` | 资产=机器人、任务=能力，命名分离更清晰 |
-| D2 | 平四耦合实现 | 保持**虚拟弹簧**（k=1000/d=10，与部署同构），不换 rigid 约束 | 改刚性约束会偏离部署合同 |
+| D2 | 平四耦合实现 | **URDF `<mimic>` → `PhysxMimicJointAPI` 硬约束**：`joint_wheel_set_N` gearing=+1、`joint_upper_leg_N` gearing=−1、offset=0 | 2026-09-16 定案（推翻原“虚拟弹簧”默认）：实机为**刚性**（θ_ws 严格相等）；几何实测严格平行四边形（wheel_set 相对 base 姿态恒 45°），故约束是精确线性；硬约束比软弹簧更忠实，虚拟弹簧弃用 |
 | D3 | effort 上限 | 资产 cfg `effort_limit` 覆盖为部署标定值（legs 40 N·m），**不以 URDF 的 10 为准** | G3 |
 | D4 | policy obs | 22 维**冻结**；新信息只进 critic/aux | 红线 |
 | D5 | 高度-角度几何 | 首版用查表近似 `height ≈ h(q)`（smoke 实测 2~3 个 q 标定），合同里的 0.05~0.17 范围语义以部署文档为准 | G5，需实机侧确认 |
@@ -442,26 +442,42 @@ wheelbipe 每侧是**闭链五连杆 + 2 个电机 + 弹性弹簧**，URDF 开�
 
 1. **关节分工**（与部署合同一致）：
    - `joint_leg_*`：唯一被驱动关节，手工位置 PD（kp=200 kd=4，`set_joint_effort_target`，与 rmcs_rl 同构）；
-   - `joint_wheel_set_*`：**永不设位置目标**，只受力矩（耦合约束力）；
+   - `joint_wheel_set_*` / `joint_upper_leg_*`：由 mimic 硬约束跟随，**不设任何驱动/力矩**；
    - `joint_wheel_*`：零驱动自由滚动（全向轮）。
-2. **约束实现（虚拟刚弹簧 = wheelbipe"被动跟随 + 弹性约束"的集中化）**：
+2. **约束实现（2026-09-16 定案：URDF `<mimic>` → `PhysxMimicJointAPI` 硬约束）**：
+   几何实测：平四是**严格平行四边形**——`wheel_set` 相对 base 的关节轴共线且姿态恒
+   45°（不随 q 变，纯平移）、`upper_leg` 与 `leg` 始终平行。故闭链约束是**精确线性**的，
+   无需 IK、无需标定拟合：
    ```
-   τ_cpl = k·(θ_leg − θ_ws) + d·(ω_leg − ω_ws)      # 先按同号写，标定后改 f(θ)
-   τ_leg -= τ_cpl        # 电机净力矩 = PD − 耦合反力（= 实机电机力矩）
-   τ_ws  += τ_cpl        # 轮架处约束反力
+   θ_wheel_set_N = +1 · θ_leg_N + 0     # <mimic joint="joint_leg_N" multiplier="1"  offset="0"/>
+   θ_upper_leg_N = −1 · θ_leg_N + 0     # <mimic joint="joint_leg_N" multiplier="-1" offset="0"/>
    ```
-   这就是现骨架 `env.py:135-147` 的做法，方向正确；要按 §10.4 标定/加固的是 k/d 与 f(θ)。
+   与 URDF 限位自洽（leg `[0,1.36]`、ws `[0,1.36]` 同号；upper `[-1.36,0]` 反号）。
+   importer 生成 `PhysxMimicJointAPI(gearing/offset/referenceJoint)`，由求解器作为
+   **硬约束**解算；env 不再计算任何耦合力矩（原虚拟弹簧已从 `env.py` 删除）。
+   - 前置：`prepare_deformable_v2_urdf.py` 写 `<mimic>`；本仓库新增
+     `scripts/tools/convert_urdf_mimic.py` 显式打开 importer 的 `parse_mimic`，并在
+     转换后断言 8 处 mimic 的 gearing/referenceJoint。
+   - **坑 1**：isaaclab `UrdfConverter` 的字段名 `convert_mimic_joints_to_normal_joints`
+     语义是反的（实际传给 `set_parse_mimic`；默认 False 会**静默丢弃** mimic）。
+   - **坑 2**：PhysX mimic 是**弹性耦合**（`naturalFrequency` + `dampingRatio`），没有真正
+     的刚性模式；importer 默认仅 nf=25 / dr=0.005（过软 → 从动边漂移并振荡），且不写
+     `referenceJointAxis`。`convert_urdf_mimic.py` 已改为写 **nf=1000 / dr=1.0** 并补
+     参考轴（`referenceJointAxis`）。importer 会按物理轴方向自动修正 gearing 符号
+     （实测 ws=−1 / upper=+1），不要求等于 URDF multiplier 符号。
+   - 仿真实测（`/tmp/validate_mimic.py`：leg 施加 kp=200/kd=4 PD，从"不一致初值"起步）：
+     耦合把从动边拉回平四构型，稳态 **|θ_ws−θ_leg|≈0.06°、|θ_upper+θ_leg|≈0.02°**
+     → 等效刚性，满足 §10.3-3 验收。
 3. **"力矩符合平四"的物理含义与验收**：
-   - 电机净力矩 `τ_leg = PD − τ_cpl` 必须等于实机电机力矩（同指令下与 rmcs_rl 电流折算曲线对比）；
-   - 轮载传递路径 `wheel → wheel_set → (τ_cpl) → leg → base` 与闭链一致 → 四轮接触力、
+   - 电机力矩 = PD（从动边不外加力矩；约束反力由求解器内部承担）≈ 实机单电机力矩；
+   - 轮载传递路径 `wheel → wheel_set →（约束）→ leg → base` 与闭链一致 → 四轮接触力、
      力矩惩罚项才可信；
-   - 稳态 `|θ_leg − θ_ws|` 必须足够小（目标 < ~1°），否则轮架"松" → 悬挂刚度假性偏低。
+   - 稳态 `|θ_ws − θ_leg|` 与 `|θ_upper + θ_leg|` 必须足够小（目标 < ~0.5°）。
 4. **数值红线**：
-   - k 不是越大越好：200Hz 显式积分下过大 → 高频振荡/发散。k=1000/d=10 起步；
-     若震 → 提 solver position iterations（8→12，资产 cfg 里改）或给 ws 加 armature，
-     而不是继续加 k；
-   - **禁止**把 `joint_wheel_set` 也设位置目标（两伺服互锁 → 高频斗力）；
-   - 重置必须 leg/ws 同角起步（现骨架已做），杜绝初始耦合误差。
+   - 硬约束若在 200Hz 显式积分下变刚/振荡 → 提 solver position iterations（8→12）或给
+     从动关节加 armature，**不要**回退软弹簧；
+   - **禁止**再给 `joint_wheel_set`/`joint_upper_leg` 设位置目标或加力矩（会与硬约束互锁）；
+   - 重置必须保持闭链一致构型：`leg=q, ws=+q, upper=−q`（默认全 0 已满足）。
 5. 若将来需要"更刚的轮架"，可选 wheelbipe 式双臂再开链（轮架另接 base 铰 + 汇聚端打断），
    改动大、首发不做。
 
@@ -484,4 +500,11 @@ wheelbipe 每侧是**闭链五连杆 + 2 个电机 + 弹性弹簧**，URDF 开�
   `_apply_spring` 弹簧力控 / 重置摆位一致）。
 - 2026-09-06：任务定义 v2（§9）：外部轮速伺服 / 任意基准高度单 policy（wheelbipe 模式）/
   均力触地>水平>基准 的优先级奖励 / ≤5° 起步课程渐进 / leg_torque 载荷代理 obs（决策来自用户答复）。
+- 2026-09-16：**平四闭链定案为 mimic 硬约束**（推翻 §10.3 的虚拟弹簧）。几何实测：关节轴
+  `(-.707,-.707,0)` vs `(.707,.707,0)` 反平行、`wheel_set` 相对 base 姿态恒 45°（严格平行四边形）、
+  `upper_leg∥leg`，故 `θ_ws=+1·θ_leg`、`θ_upper=−1·θ_leg`（offset 0，与 URDF 限位自洽）。
+  落地：`prepare_deformable_v2_urdf.py` 写 `<mimic>`；新增 `convert_urdf_mimic.py` 打开
+  importer `parse_mimic`、写入 nf=1000/dr=1.0 与 `referenceJointAxis` 并断言；`env.py` 删除
+  虚拟弹簧只驱动 `joint_leg`。**仿真验证通过**：稳态 |θ_ws−θ_leg|≈0.06°、|θ_upper+θ_leg|≈0.02°，
+  任务注册正常。另：deformable_V2 资产链路（Y-up→Z-up、mesh 相对路径、轮子球体碰撞体）于同日打通。
 - 注意：本仓库文件可能被并发修改；执行前先 `git status` 复核（资产/任务目录正在迁移中）。

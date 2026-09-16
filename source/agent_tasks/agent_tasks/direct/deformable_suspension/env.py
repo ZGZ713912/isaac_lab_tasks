@@ -35,15 +35,17 @@ class DeformableSuspensionEnv(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         # ---- joint indices（按名解析，顺序无关）----
+        # 注意 joint_wheel_(?!set_).* ：纯 "joint_wheel_.*" 会 fullmatch 到
+        # joint_wheel_set_*（轮架从动关节），导致 wheels 索引混入从动边。
         self._legs_idx, _ = self.robot.find_joints("joint_leg_.*")
         self._ws_idx, _ = self.robot.find_joints("joint_wheel_set_.*")
-        self._wheels_idx, _ = self.robot.find_joints("joint_wheel_.*")
+        self._wheels_idx, _ = self.robot.find_joints("joint_wheel_(?!set_).*")
         self._num_joints = self.robot.num_joints
 
         # ---- contact indices（接触传感器 body 顺序与 robot 不一致，需按名映射）----
         self._base_contact_idx = self._find_contact_sensor_indices("base_link")
         self._legs_contact_idx = self._find_contact_sensor_indices(["leg_.*", "wheel_set_.*"])
-        self._wheels_contact_idx = self._find_contact_sensor_indices("wheel_.*")
+        self._wheels_contact_idx = self._find_contact_sensor_indices("wheel_(?!set_).*")
 
         # ---- buffers ----
         self.height_cmd = torch.full(
@@ -132,18 +134,12 @@ class DeformableSuspensionEnv(DirectRLEnv):
         # 腿位置 PD（与部署 kp/kd 一致）
         leg_pd = self.cfg.leg_stiffness * (self.leg_target - joint_pos[:, self._legs_idx]) \
             - self.cfg.leg_damping * joint_vel[:, self._legs_idx]
-        # 平四耦合虚拟弹簧：轮架跟随腿（θ_ws == θ_leg），反作用载荷加载到腿
-        coupling = self.cfg.coupling_stiffness * (
-            joint_pos[:, self._legs_idx] - joint_pos[:, self._ws_idx]
-        ) + self.cfg.coupling_damping * (
-            joint_vel[:, self._legs_idx] - joint_vel[:, self._ws_idx]
-        )
+        # 平四闭链由 URDF <mimic> → PhysxMimicJointAPI 硬约束表达：
+        #   θ_wheel_set = +1·θ_leg, θ_upper_leg = −1·θ_leg
+        # 从动边不施加力矩（耦合力由求解器以约束反力提供），只驱动 joint_leg。
         torques = torch.zeros(self.num_envs, self._num_joints, dtype=torch.float, device=self.device)
         torques[:, self._legs_idx] = torch.clamp(
-            leg_pd - coupling, -self.cfg.max_leg_torque, self.cfg.max_leg_torque
-        )
-        torques[:, self._ws_idx] = torch.clamp(
-            coupling, -self.cfg.max_leg_torque, self.cfg.max_leg_torque
+            leg_pd, -self.cfg.max_leg_torque, self.cfg.max_leg_torque
         )
         # wheels: 零驱动（自由滚动）
         self.robot.set_joint_effort_target(torques)

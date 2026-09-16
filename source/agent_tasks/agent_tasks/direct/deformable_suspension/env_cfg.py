@@ -10,7 +10,8 @@
 # 与 RMCS rmcs_rl 部署合同逐项同构（sim-to-real by construction）：
 #   obs 22: cmd3 | height_cmd1 | ang_vel3 | gravity3 | leg_pos4 | leg_vel4 | act4
 #   act  4: 腿关节位置 PD 目标（action_scale 0.25，kp=200 kd=4）
-# 轮子零驱动（自由滚动）；leg 与 wheel_set 用虚拟刚弹簧模拟平四耦合。
+# 轮子零驱动（自由滚动）；平四闭链由 URDF <mimic> → PhysxMimicJointAPI 硬约束表达
+# （θ_wheel_set=+1·θ_leg、θ_upper_leg=−1·θ_leg），env 只驱动 joint_leg。
 # 控制频率 100Hz（decimation 2 × dt 0.005）== 部署 rl_inference_frequency。
 # =============================================================================
 
@@ -30,7 +31,7 @@ from isaaclab.terrains import (
 )
 from isaaclab.utils import configclass
 
-from agent_world.assets.deformable_infantry import DeformableInfantryCFG
+from agent_world.assets.deformable_V2 import DeformableInfantryCFG
 
 
 @configclass
@@ -56,8 +57,10 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     leg_stiffness = 200.0  # 与部署 position_kp 一致
     leg_damping = 4.0  # 与部署 position_kd 一致
     max_leg_torque = 40.0  # 训练力矩限幅（部署 position_torque_max 按标定收紧）
-    coupling_stiffness = 1000.0  # 平四虚拟弹簧
-    coupling_damping = 10.0
+    # 已弃用：平四闭链改用 URDF <mimic> → PhysxMimicJointAPI 硬约束，env 不再用弹簧。
+    # 保留字段仅为兼容旧配置/文档引用，不再被 env 读取。
+    coupling_stiffness = 1000.0  # (deprecated) 原虚拟弹簧刚度
+    coupling_damping = 10.0  # (deprecated) 原虚拟弹簧阻尼
     undesired_contact_force_threshold = 3.0  # 腿/轮架触地惩罚阈值
     desired_contact_force_threshold = 5.0  # 四轮着地奖励参考力
     orientation_x_exp_sigma = 0.02  # 水平奖励 σ（roll，pgb_y）

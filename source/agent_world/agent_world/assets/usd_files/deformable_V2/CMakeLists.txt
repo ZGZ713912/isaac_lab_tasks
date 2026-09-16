@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.8.3)
 
-project(狗v3)
+project(deformable_V2)
 
 find_package(catkin REQUIRED)
 
