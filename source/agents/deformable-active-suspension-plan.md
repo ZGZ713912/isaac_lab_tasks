@@ -1,34 +1,32 @@
 # Deformable（四平行四边形变轮距全向轮）主动悬挂 RL 训练 — 实施规划
 
-- 日期：2026-09-06
-- 状态：planned
+- 日期：2026-09-16（更新）
+- 状态：in_progress —— 资产链路（Y-up→Z-up、mimic 闭链、球体轮）与**任务单层重写**已完成并通过冒烟；
+  待做：动态运动（底盘伺服）、坡度课程、域随机化
 - 相关代码：
-  - 资产：`source/agent_world/agent_world/assets/usd_files/deformable_infantry/`（新转换，2026-09-06 22:18）
-  - 任务：`source/agent_tasks/agent_tasks/direct/deformable_suspension/`
-  - 参考：`source/agent_tasks/agent_tasks/direct/wheelbipe/`（框架惯例）、`source/agent_world/agent_world/assets/wheelbipe_V14_2.py`（资产惯例）
-  - 工具：`scripts/tools/convert_deformable_urdf.sh`、`scripts/rsl_rl/{train,play}.py`、`scripts/eval_checkpoint.py`、`scripts/view_robot.py`
+  - 资产：`source/agent_world/agent_world/assets/usd_files/deformable_V2/`（`狗v3.urdf` → `deformable_V2.urdf` → `deformable_V2.usd`）
+  - 资产模块：`source/agent_world/agent_world/assets/deformable_V2.py`
+  - 任务：`source/agent_tasks/agent_tasks/direct/deformable_suspension/{env.py,env_cfg.py,cfg_utils.py}`
+  - 工具：`scripts/tools/prepare_deformable_v2_urdf.py`、`scripts/tools/convert_urdf_mimic.py`、`scripts/tools/convert_deformable_v2_urdf.sh`
+  - 参考：`source/agent_tasks/agent_tasks/direct/wheelbipe/`（框架惯例）、`manager/mdp/isaaclab/`（命令/课程/事件函数库）
 
 ---
 
 ## 1. 背景与目标
 
-**机器人**：deformable（变形底盘），**完全不同于 wheelbipe**——
-不是"双腿双轮轮腿"，而是 **4 个平行四边形变形机构 + 4 个全向轮 + 可变的轮距/车高**。
-每个角：`base → leg（平行四边形主动边）→ wheel_set（平行四边形从动边）→ wheel（全向轮）`，
-主动悬挂 = 实时控制 4 个角的平行四边形伸展角，让车体
-① 跟踪高度指令、② 保持水平姿态、③ 四轮着地承重，
-从而在粗糙地形上把车体与地面激励"隔离开"（悬挂功能）；平行四边形同步/差动伸缩还会改变轮距（变轮距），
-影响静态稳定多边形，是控制难点。
+**机器人**：deformable_V2（狗v3 变形底盘），**完全不同于 wheelbipe**——
+不是"双腿双轮轮腿"，而是 **4 个平行四边形变形机构 + 4 个全向轮**。
+每个角：`base → leg（主动边）→ wheel_set（从动边/轮架）→ wheel（全向轮）`，
+另有 `upper_leg`（平四上连杆，与 leg 平行）。4 个腿电机控制 4 个轮子的高度，
+从而在粗糙地形上 ① 四轮贴地承重、② 保持车体水平、③ 跟踪两档基准车高（含 260mm 隧道）。
 
 **任务目标**：沿用本仓库 RL 框架（Isaac Sim 5.1 + Isaac Lab 2.3 DirectRLEnv + RSL-RL），
-**补全并跑通 deformable 主动悬挂训练**：完善 `env.py` / `env_cfg.py` / 资产模块等必要文件，
-按 Isaac Lab 项目规范编写；**sim-to-real 红线 = 与 RMCS `rmcs_rl` 实机部署合同逐项同构**
-（obs 22 / act 4 / 100 Hz / kp=200 kd=4，见 §2.4）。
+**单层重写** `deformable_suspension/` 任务（照 wheelbipe 的工程惯例，但不克隆其 4 层 base）；
+sim-to-real 红线 = 只驱动 `joint_leg_*`、手工 effort PD（kp=200/kd=4）、100 Hz。
 
-**现状一句话**：任务骨架（env/env_cfg/agents/注册）已在 `deformable_suspension/` 存在且基本可用，
-但① 引用的资产模块 `agent_world/assets/deformable_suspension.py` **刚被删除**（git 工作区 D），
-② 新转换的资产落在 `usd_files/deformable_infantry/`（新 URDF，关节角度约定已改），
-③ 因此现在 `Robotics-Deformable-Suspension-*` **一 make 就 ImportError** —— 本规划的第一步就是把链路重新接上，再逐项完善。
+**现状一句话**（2026-09-16）：URDF→USD 链路已打通（Y-up→Z-up、`<mimic>` 闭链、球体轮碰撞体），
+任务已按**两档基准 + 外部底盘速度伺服**单层重写并通过 CPU 冒烟（obs 26/34、四轮均力、
+车身水平、闭链残差 <0.002 rad）。下一步：动态运动、坡度课程、域随机化。
 
 ---
 
@@ -279,7 +277,11 @@ TerrainCommandManager 式地形命令覆盖、速度轨迹录制（悬挂 trace�
 
 ---
 
-## 9. 任务定义 v2：任意基准高度 + 任意朝向小坡上的均力触地与车身水平
+## 9. [历史 · 已取代] 任务定义 v2：任意基准高度 + 任意朝向小坡上的均力触地与车身水平
+
+> ⚠️ 本节（v2）已被 **§9bis（v3，现行）**取代，保留作演进记录。
+> v2 的“任意基准高度 + 外部轮速伺服 + 一个 policy 覆盖全部基准”不再采用；
+> 现行定义为“两档基准 + 外部底盘速度伺服”，见 §9bis。
 
 > 2026-09-06 增补（用户细化 + 三个决策已确认）。**本节为 v2 任务定义**，
 > 取代此前"原地高度跟踪"假设（§2.4 保留作部署合同基线，差异见 §9.9）。
@@ -397,6 +399,136 @@ M2/M3 加）。
 
 ---
 
+## 9bis. 任务定义 v3（现行）：两档基准车高 + 外部底盘速度伺服 + 四轮均力/车身水平
+
+> 2026-09-16 重写，取代 §9(v2)。已确认决策（用户）：
+> ① 球体碰撞轮**无牵引力** → “动态运动（平移/旋转）”用**外部底盘速度伺服**（对 base 施车身系力/力矩跟踪 vx,vy,ωz）；
+> ② **单层重写** `deformable_suspension/`（照 wheelbipe 工程惯例，不克隆其 4 层 base / 云台 / 状态机）；
+> ③ obs 含 cmd/act、**首版不含 wheel obs**；④ 低模式“至少一腿保持低角”改为**软偏好低车高**；
+> ⑤ 基准命令用**连续 q_cmd**（首版取两档）；⑥ 首版只做**平地静态两档**，动态/坡度/DR 后置。
+
+### 9bis.1 目标与优先级
+
+1. **四轮贴地 + 法向载荷尽量平均**（不打滑）——最高优先级；
+2. **base_link 尽量/严格水平**（roll/pitch ≈ 0）——次高；
+3. **跟踪两档基准车高**（低档**软偏好贴地**，保 260mm 隧道通过）；
+4. 常规：力矩/动作/振动小、腿/轮架不拖地、不摔倒。
+
+### 9bis.2 合同（obs 26 / act 4 / 100Hz / kp=200 kd=4）
+
+| 组 | 维 | 内容 | 缩放 |
+|---|---|---|---|
+| q_cmd | 1 | 基准腿角命令（连续；首版取 0 / 1.0563 两档） | ×1 |
+| cmd | 3 | 运动命令 vx,vy,ωz（外部伺服目标；首版全 0） | ×1 |
+| ang_vel | 3 | 车体角速度 body（IMU 陀螺） | ×0.5 |
+| gravity | 3 | 投影重力 body（姿态/水平误差源） | ×1 |
+| leg_pos | 4 | **关节绝对角**（不用相对量：平四 q→车高非线性） | ×1 |
+| leg_vel | 4 | 腿电机速度 | ×0.1 |
+| leg_torque | 4 | 腿电机力矩（= 部署电流代理，均力判据源之一） | ×0.05 |
+| act | 4 | 上一步动作 | ×1 |
+| **policy 合计** | **26** | | |
+
+- **critic 34** = policy 26 + `lin_vel_b 3` + 真实车高 1 + 四轮接触力 4（asymmetric）。
+- **act 4** = `joint_leg_*` 位置 PD 目标（手工 `set_joint_effort_target`，kp=200/kd=4）。
+- 观测逐块 clip/scale，表在 `cfg_utils.OBS_CLIP/OBS_SCALE`。
+
+### 9bis.3 动作与闭链
+
+- 只驱动 `joint_leg_*`：`q_target = clamp(q_cmd + action_scale·a, 0, 1.36)`，`action_scale=0.25`；
+- `joint_wheel_set_*` / `joint_upper_leg_*` 由 URDF `<mimic>` → `PhysxMimicJointAPI` **硬约束**跟随
+  （θ_ws=+1·θ_leg、θ_upper=−1·θ_leg，见 §10），**不下发力矩**；
+- `joint_wheel_*` 零驱动（球体轮自由滚动）。
+- 数值红线：禁止给 ws/upper 设位置目标（会与 mimic 约束互锁）。
+
+### 9bis.4 两档基准车高（几何实测，2026-09-16）
+
+| 模式 | 腿角 q_cmd | base 原点离地 | 底盘网格最低点离地 | 车顶高度 | 260mm 隧道 |
+|---|---|---|---|---|---|
+| 高（初始 0°） | **0.000** | 0.1319 m | 0.1049 m | 0.338 m | ✗ |
+| 低 | **1.0563（60.5°）** | 0.0370 m | **0.0100 m** | **0.243 m** | ✓（余量 1.7cm） |
+
+- 车体网格在 base 系 Z ∈ [-0.027, +0.206]：底盘底 = 离地−0.027，车顶 = 离地+0.206。
+- **重要修正**：低基准不是 base 原点离地 1cm（那对应 q≈1.254，会让底盘插地 1.7cm），
+  而是**底盘网格最低点离地 1cm**（q=1.0563）。q 再大（≈1.30+）base 原点低于轮底接触面，物理不可行。
+- 首版用**两档离散采样**；`q_cmd` 以连续量进 obs，便于后续扩展任意基准。
+
+### 9bis.5 外部底盘速度伺服（运动机制）
+
+球体碰撞轮是旋转对称的，**给 `joint_wheel_*` 施力矩/速度都不产生牵引力**，故“运动工况”由外部伺服代表：
+
+- 每步对 `base_link` 施加车身系力/力矩：`F_xy = M·kp·(v_cmd − v_b)`、`τ_z = I_z·kp_yaw·(ω_z_cmd − ω_z_b)`，
+  限幅后 `set_external_force_and_torque`（作用体 = base_link）。
+- 首版 `enable_chassis_servo=False`（静态），`cmd` 范围全 0；动态阶段打开并给 `(vx,vy,ωz)` 剖面。
+- 服务器只是“运动平台”，不改变“只驱动 joint_leg_*”的部署合同。
+
+### 9bis.6 轮速估计（球体 → 切向投影）
+
+球体轮编码器不反映真实滚动，故由车体运动推算等效轮速（`cfg_utils.sphere_roll_speeds`）：
+
+```
+v_contact_i = v_body + ω_body × r_i          # 轮心处（r_i 取 ±0.2141, ±0.2141, -0.055）
+v_roll_i    = v_contact_i · u_i              # u_i = 地面内滚动方向 (±0.707, ±0.707)
+ω_wheel_i   = v_roll_i / 0.0769
+```
+
+- 与指令轮速之差即**打滑量**；首版仅作诊断/日志，动态阶段进 obs（wheel_vel4）与打滑奖励。
+- 四轮为标准 **X 型布局**（轮轴沿对角线 ±45°/±135°），全向逆运动学 `ω_i=(1/r)(u_i·v_xy + 0.3027·ω_z)`。
+
+### 9bis.7 奖励（v1）
+
+| 优先级 | 项 | 公式 | 权重初值 |
+|---|---|---|---|
+| 1 | `four_wheel_contact` | `mean_i clamp(F_i/F_thr,0,1)`，F_thr=1N | +5.0 |
+| 1 | `wheel_force_balance` | `exp(−var_i(F)/σ)`，σ=50 N² | +4.0 |
+| 2 | `flat_orientation_x_exp` | `exp(−pgb_y²/σ_x)`，σ_x=0.02（roll） | +2.0 |
+| 2 | `flat_orientation_y_exp` | `exp(−pgb_x²/σ_y)`，σ_y=0.02（pitch） | +2.0 |
+| 3 | `track_q_cmd_exp` | `exp(−mean_i(q_i−q_cmd)²/σ_q)`，σ_q=0.02 | +1.5 |
+| 3 | `low_height_pref` | 低模式门控 × `exp(−relu(h−H_LOW)²/σ_h)` | +1.0 |
+| 4 | `torques` | `Σ τ_leg²` | −1e-4 |
+| 4 | `action_rate` | `Σ(a−a_prev)²` | −0.01 |
+| 4 | `leg_joint_vel` / `leg_joint_acc` | `Σ q̇²` / `Σ q̈²` | −5e-3 / −5e-7 |
+| 4 | `ang_vel_xy` / `lin_vel_z` | `ω_xy²` / `v_z²` | −0.05 / −0.2 |
+| 4 | `undesired_contact` | 腿/轮架/上连杆触地 >3N | −10.0 |
+| — | `alive` / `termination` | 生存 / 终止 | +1.0 / −200.0 |
+
+- 不做 yaw/平动速度惩罚（首版静态；动态阶段允许运动）。
+- 低模式“软偏好低车高”：`low_mask = (q_cmd > 0.5(Q_HIGH+Q_LOW))`，**不强制某条腿**。
+
+### 9bis.8 终止 / 重置
+
+- 终止：base 触地（>1N）、`|roll/pitch|>30°`、离地高度 <0.004、NaN/Inf；可选 `terminate_body_top`（260mm，默认关）。
+- 重置：闭链一致位姿 `leg=q_cmd, ws=q_cmd, upper=−q_cmd`；`base 原点 z = q_to_base_height(q_cmd)+0.02`；
+  随机 yaw；`q_cmd` 采样（首版两档）；命令重采样；清 buffer 并写 `extras["log"]`。
+
+### 9bis.9 课程与域随机化（后置）
+
+- 地形：Flat（首版）→ Rough 坡度课程（复用 `mdp` 的 `HfPyramidSlopedTerrainCfg` 等 + `HeightRangeProgression`）。
+- 域随机化：`EventCfg`（质量/摩擦/增益，复用 `manager/mdp/isaaclab/events.py`）；DirectRLEnv 需手工建 EventManager 才生效。
+- 动态运动：打开 §9bis.5 伺服 + `cmd` 剖面（含小陀螺自旋段）。
+
+### 9bis.10 与旧代码的差异
+
+| 项 | 旧（v1 骨架） | 新（v3） |
+|---|---|---|
+| obs | 22（cmd3 全零 + height_cmd1 固定） | **26**（q_cmd1 + cmd3 + 绝对 leg_pos4 + **leg_torque4** + act4…） |
+| 基准高度 | 固定 0.132 | **两档** 0 / 1.0563，连续 q_cmd |
+| 奖励 | 12 项（含固定高度跟踪） | 均力 + 水平（紧 σ）+ q_cmd 跟踪 + 低模式贴地偏好 + 常规 |
+| 结构 | 自包含 289 行 | **单层重写**：`cfg_utils` 标定表 + wheelbipe 惯例（clip/scale、`rew_*`、自检、`extras["log"]`） |
+| 运动 | 无 | 外部底盘速度伺服（首版关） |
+| 闭链 | 虚拟弹簧（已删） | `<mimic>` 硬约束（已实现，见 §10） |
+
+### 9bis.11 几何标定（实测，供 `cfg_utils` 使用）
+
+| 量 | 值 |
+|---|---|
+| q → base 离地 | 5 次多项式（max err 0.0009mm），`q_to_base_height` |
+| 腿限位 | [0, 1.36] rad |
+| 两档基准 | q_high=0.0 (h=0.13189)、q_low=1.0563 (h=0.03700) |
+| 车体网格 | z ∈ [-0.027, +0.206]；隧道上限 0.260 |
+| 轮 | r=0.0769；轮心 (±0.2141, ±0.2141, -0.055)；轴 ±45°；`OMNI_YAW_COEFF=0.3027` |
+
+---
+
 ## 10. 平四闭链力学处理（核心设计，参考 wheelbipe 五连杆）
 
 > 2026-09-06 增补。来源：用户说明（Isaac Lab 无法处理闭链）+ wheelbipe25_v3/env.py、
@@ -507,4 +639,15 @@ wheelbipe 每侧是**闭链五连杆 + 2 个电机 + 弹性弹簧**，URDF 开�
   importer `parse_mimic`、写入 nf=1000/dr=1.0 与 `referenceJointAxis` 并断言；`env.py` 删除
   虚拟弹簧只驱动 `joint_leg`。**仿真验证通过**：稳态 |θ_ws−θ_leg|≈0.06°、|θ_upper+θ_leg|≈0.02°，
   任务注册正常。另：deformable_V2 资产链路（Y-up→Z-up、mesh 相对路径、轮子球体碰撞体）于同日打通。
+- 2026-09-16：**任务定义 v3 与单层重写**（新增 §9bis，v2 标为历史）：
+  - 合同：obs 26（q_cmd1 | cmd3 | ang_vel3 | gravity3 | **绝对 leg_pos4** | leg_vel4 | **leg_torque4** | act4），
+    critic 34，act 4（手工 effort PD，只驱动 joint_leg）。腿位置观测用**绝对角**——平四 q→车高非线性。
+  - 运动机制：球体轮无牵引 → **外部底盘速度伺服**（对 base 施力/力矩跟踪 vx,vy,ωz；首版关闭）；
+    轮速由 `sphere_roll_speeds`（球心速度投影到滚动方向）估计。
+  - 两档基准：q_high=0（离地 0.1319）、**q_low=1.0563**（底盘网格离地 1cm，车顶 0.243≤0.26）。
+    修正：低基准不是 base 原点离地 1cm（q=1.254 会插地 1.7cm）。
+  - 奖励：四轮触地 + 法向力均衡 + 车身水平（紧 σ）+ q_cmd 跟踪 + 低模式软偏好贴地 + 常规。
+  - 代码：新增 `cfg_utils.py`，重写 `env.py`/`env_cfg.py`（修掉地形类名 `Hf*`、`write_root_pose_to_sim`
+    签名、`joint_wheel_.*` 误匹配 wheel_set 等 bug）；CPU 冒烟通过（obs 26/34、四轮力 58~62N、
+    底盘/车顶、闭链残差 <0.002 rad）。待做：动态运动/坡度课程/DR。
 - 注意：本仓库文件可能被并发修改；执行前先 `git status` 复核（资产/任务目录正在迁移中）。

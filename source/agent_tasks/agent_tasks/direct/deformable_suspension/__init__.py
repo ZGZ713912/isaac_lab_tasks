@@ -6,9 +6,12 @@
 # See LICENSE for full license terms.
 #
 # DeformableSuspension 任务注册。
-# 合同（与 RMCS rmcs_rl 部署逐项同构）：
-#   obs 22 = cmd3 | height_cmd1 | ang_vel3 | gravity3 | leg_pos4 | leg_vel4 | act4
-#   act  4 = 腿关节位置 PD 目标
+# 合同（单层重写版）：
+#   obs 26 = q_cmd1 | cmd3(vx,vy,ωz) | ang_vel_b3 | proj_grav_b3
+#            | leg_pos4(绝对角) | leg_vel4 | leg_torque4 | act4
+#   critic 34 = obs26 + lin_vel_b3 + 真实车高1 + 四轮接触力4
+#   act   4 = joint_leg_* 位置 PD 目标（手工 effort PD，kp=200/kd=4）
+# 轮子为球体碰撞（无牵引），运动由外部底盘速度伺服实现（首版静态关闭）。
 # =============================================================================
 
 import gymnasium as gym
