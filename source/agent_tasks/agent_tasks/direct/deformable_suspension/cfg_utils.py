@@ -24,8 +24,12 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
+
+from agent_world.terrains import periodic_slope_angle
 
 # ---------------------------------------------------------------------------
 # 1. 腿角 ↔ 车高标定
@@ -168,3 +172,45 @@ OBS_CLIP = {
     "leg_torque": (-60.0, 60.0),
     "act": (-1.5, 1.5),
 }
+
+
+# ---------------------------------------------------------------------------
+# 4. 周期坡面地形（Torch 版；与 agent_world.terrains.periodic_slope_height 同源）
+# ---------------------------------------------------------------------------
+def build_periodic_slope_angle_table(
+    segment_length: float,
+    angle_range: tuple[float, float],
+    seed: int,
+    num_periods: int,
+    device: torch.device | str = "cpu",
+) -> torch.Tensor:
+    """预生成坡角表（每周期一个角，度），供 torch 求高用。"""
+    return torch.tensor(
+        [periodic_slope_angle(k, angle_range, seed) for k in range(int(num_periods))],
+        dtype=torch.float32,
+        device=device,
+    )
+
+
+def periodic_slope_height_torch(
+    x: torch.Tensor, segment_length: float, angle_table: torch.Tensor
+) -> torch.Tensor:
+    """周期坡面在 world x 处的地面高度（m），与 numpy 版逐点一致。"""
+    seg = float(segment_length)
+    period = 4.0 * seg
+    k = torch.floor(x / period).long().clamp_(0, angle_table.numel() - 1)
+    slope = torch.tan(angle_table[k] * (math.pi / 180.0))
+    s = x - k.to(x.dtype) * period
+    h = torch.zeros_like(x)
+    h = torch.where((s >= 0.0) & (s < seg), slope * s, h)
+    h = torch.where((s >= seg) & (s < 2.0 * seg), slope * seg, h)
+    h = torch.where((s >= 2.0 * seg) & (s < 3.0 * seg), slope * (3.0 * seg - s), h)
+    return h
+
+
+def periodic_slope_flat_mask(x: torch.Tensor, segment_length: float) -> torch.Tensor:
+    """当前位置是否处于平路段（[L,2L) 或 [3L,4L)）。"""
+    seg = float(segment_length)
+    period = 4.0 * seg
+    s = x - torch.floor(x / period) * period
+    return ((s >= seg) & (s < 2.0 * seg)) | (s >= 3.0 * seg)

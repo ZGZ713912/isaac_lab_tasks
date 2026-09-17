@@ -62,8 +62,8 @@ DeformableInfantryCFG = ArticulationCfg(
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             fix_root_link=False,
             enabled_self_collisions=False,
-            solver_position_iteration_count=8,
-            solver_velocity_iteration_count=4,
+            solver_position_iteration_count=12,
+            solver_velocity_iteration_count=6,
         ),
     ),
     # 名义站姿 q=0（base 离地 ~0.132）。spawn z=0.18 略高于接触高度，让车体轻微

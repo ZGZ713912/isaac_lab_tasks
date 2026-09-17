@@ -529,6 +529,71 @@ v_roll_i    = v_contact_i · u_i              # u_i = 地面内滚动方向 (±0
 
 ---
 
+## 9ter. 任务定义 v4（现行，2026-09-17）：腿级联 PID + 两段陡坡 + 奖励重构 + 方向均匀性
+
+> 基于最新 run `2026-09-17_20-09-37`（999 iter, 5–10° 周期坡）的诊断结论重写。
+> 旧 run 参数与当前工作区不一致（PD 扫参 kp: 200→10→20→100→50；权重亦不同），以工作区为准。
+
+### 9ter.1 腿级联 PID（替代单环位置 PD）
+
+单环 `kp=50` 的稳态误差 ≈ τ_load/kp（最大可达 ~0.26 rad），故改双闭环：
+
+| 环 | 形式 | 输出 | 说明 |
+|---|---|---|---|
+| 外环 | 位置 PI | 速度指令 `q̇_cmd` | `kp=6, ki=3`，输出限幅 ±8 rad/s，积分限幅 ±0.4 rad·s |
+| 内环 | 速度 PI | 力矩 `τ` | `kp=2, ki=20`，积分限幅 ±0.5 rad，终力矩 ±13 N·m |
+
+- 100 Hz 前向欧拉；积分器在 `_reset_idx` teleport 时清零（防残留）。
+- 全部增益暴露在 `env_cfg`（`leg_*`），便于与部署 rmcs_rl 对齐；`use_leg_cascade_pid=False` 可回退单环 PD。
+- act 合同不变（仍 4 维位置目标），策略接口不变。
+
+### 9ter.2 坡度课程（两段，取消 5–10°）
+
+| 阶段 | 任务 | θ 范围 | 姿态终止 |
+|---|---|---|---|
+| 一 | `-Rough-v0` | 10–17° | 45° |
+| 二 | `-Rough-Steep-v0` | 17–25° | 60° |
+
+### 9ter.3 奖励 v2（目标载荷分布 + 门控水平）
+
+| 项 | 公式 | 权重 |
+|---|---|---|
+| `four_wheel_contact` | `mean_i clamp(F_i/20N,0,1)`（接地门控） | +4 |
+| `wheel_load_distribution` | `mean_i exp(-(F_i-F_t)²/σ)`，F_t≈mg/4≈62.5N，σ=600 N² | +4 |
+| `wheel_force_balance` | `exp(-Var(F)/(0.10·mean(F)²+ε))`（归一化，替换 σ=50 死区） | +3 |
+| `flat_orientation_x/y` | `gate·exp(-pgb²/0.02)`，gate=`four_wheel_contact`（防翘轮换水平） | +1 / +1 |
+
+### 9ter.4 方向均匀性（各向异性对策）
+
+- **分层/循环 spawn**：`spawn_dir_stratify` 按 (8 个车体系坡度方位 bin × 上/下坡) 循环分配，`combo=(env_id+reset_count)%16`，bin 内抖动；相位上坡 `[0,L)`、下坡 `[2L,3L)`，并保证 world_x 落在本 env 单元内。
+- **对称命令**：`cmd_lin_vel_x_range=cmd_lin_vel_y_range=(-1.25,1.25)`，去掉前向偏置；`ωz=(-1.5,1.5)`。
+- **方向日志**：`dir/az_bin{i}`（仅坡段的重力方位覆盖率）、`dir/contact|balance|trackq_bin{i}`、`dir/slope_up|down|flat_frac`，用于验收均匀性与定位弱方向。
+- 键盘 play 变体关闭分层（`spawn_dir_stratify=False`），保留随机朝向/相位。
+
+### 9ter.5 伺服"托举"悬空修复（2026-09-17）
+
+**根因**：`_apply_chassis_servo` 对 base 施**车身系**力，陡坡/拐点动态倾斜时车身 x/y 带很大世界竖直分量；
+球轮无牵引且伺服无接触/摩擦约束 → 一旦微离地，推力方向更竖直，可反重力托住车体（训练 300 N/轴，
+合力可达 ~424 N；25° 悬停约需 591 N，动态大倾角下可达），命令 3–5 s 重采样 → “静止悬空一会儿再下落”。
+
+**修复**（`env.py`）：
+- 期望力先投影到脚下**地面切平面**（`n_w=normalize([-dh/dx,0,1])`，转到车身系去掉法向分量），消除抬升分量；
+- 库仑**牵引限幅** `|F| ≤ μ·N_total`（μ=0.6，`chassis_servo_friction_coeff`）；离地 `N_total→0` ⇒ 力自动归零；
+- 偏航力矩同限 `≤ min(max_torque, μ·N_total·OMNI_YAW_COEFF)`；
+- 新增 `contact/airborne_frac`（`airborne_force_threshold=5N`）用于验收。
+
+**物理加固**：`deformable_V2.py` solver pos/vel iterations 8/4 → **12/6**。
+**CCD 不可用**：Isaac Sim 5.1 在 GPU 动力学下 CCD 被强制禁用（`physics_context.py:302-307`
+"If GPU is enabled, CCD is not supported"），故不启用。
+
+### 9ter.6 验收
+
+- 静态 import + 150 iter headless 冒烟通过；方向分数 up≈0.31 / down≈0.25 / flat≈0.44（地形本征 25/25/50，符合）。
+- 待办：级联增益整定（悬停稳态误差→0、±0.1 rad 阶跃无超调）；两段坡度顺序训练；play 肉眼验收；
+  `contact/airborne_frac` 应仅拐点瞬时非零。
+
+---
+
 ## 10. 平四闭链力学处理（核心设计，参考 wheelbipe 五连杆）
 
 > 2026-09-06 增补。来源：用户说明（Isaac Lab 无法处理闭链）+ wheelbipe25_v3/env.py、
@@ -650,4 +715,10 @@ wheelbipe 每侧是**闭链五连杆 + 2 个电机 + 弹性弹簧**，URDF 开�
   - 代码：新增 `cfg_utils.py`，重写 `env.py`/`env_cfg.py`（修掉地形类名 `Hf*`、`write_root_pose_to_sim`
     签名、`joint_wheel_.*` 误匹配 wheel_set 等 bug）；CPU 冒烟通过（obs 26/34、四轮力 58~62N、
     底盘/车顶、闭链残差 <0.002 rad）。待做：动态运动/坡度课程/DR。
+- 2026-09-17：**任务定义 v4**（新增 §9ter），依据最新 run 诊断：
+  - 腿控制单环位置 PD → **级联 PID**（外环位置 PI→速度指令，内环速度 PI→力矩），消除稳态误差；
+  - 坡度课程取消 5–10°，改两段 **10–17° → 17–25°**（姿态终止 45°/60°）；
+  - 奖励重构：接地门控 20N + **目标载荷分布**（≈mg/4）+ **归一化均力** + 水平项接地门控并降权；
+  - **方向均匀性**：分层/循环 spawn（8 方位 bin × 上/下坡）、对称命令范围、`dir/*` 覆盖率与分方位指标；
+  - 150 iter headless 冒烟通过；up/down/flat≈0.31/0.25/0.44。
 - 注意：本仓库文件可能被并发修改；执行前先 `git status` 复核（资产/任务目录正在迁移中）。

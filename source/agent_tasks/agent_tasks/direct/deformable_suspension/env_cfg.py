@@ -36,8 +36,6 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import (
-    HfPyramidSlopedTerrainCfg,
-    HfRandomUniformTerrainCfg,
     TerrainGeneratorCfg,
     TerrainImporterCfg,
 )
@@ -45,6 +43,7 @@ from isaaclab.utils import configclass
 
 from agent_tasks.direct.deformable_suspension import cfg_utils as du
 from agent_world.assets.deformable_V2 import DeformableInfantryCFG
+from agent_world.terrains import HfCustomPeriodicSlopeTerrainCfg
 
 
 @configclass
@@ -114,11 +113,20 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     play: bool = False
     training_progress_steps_per_iteration = 24
 
-    # ---- 动作 / PD（与部署 rmcs_rl 同构）----
+    # ---- 动作 / 腿级联 PID（外环位置 PI→速度指令，内环速度 PI→力矩；与部署 rmcs_rl 对齐）----
     leg_action_scale = 0.25  # rad per action unit
-    leg_stiffness = 200.0  # 部署 position_kp
-    leg_damping = 4.0  # 部署 position_kd
-    max_leg_torque = 40.0  # 训练力矩限幅
+    use_leg_cascade_pid = True  # False 回退单环位置 PD（对比/调试）
+    leg_vel_cmd_limit = 8.0  # rad/s，外环速度指令限幅（< 资产 velocity_limit 17）
+    leg_outer_kp = 6.0  # 1/s：位置误差 → 速度指令
+    leg_outer_ki = 3.0  # 1/s²：位置误差积分 → 速度指令
+    leg_inner_kp = 2.0  # N·m/(rad/s)：速度误差 → 力矩
+    leg_inner_ki = 20.0  # N·m/rad：速度误差积分 → 力矩
+    leg_outer_int_limit = 0.4  # rad·s：外环积分限幅（抗积分饱和）
+    leg_inner_int_limit = 0.5  # rad：内环积分限幅（抗积分饱和）
+    max_leg_torque = 13.0  # 训练力矩终限幅
+    # 单环位置 PD 回退参数（use_leg_cascade_pid=False 时使用）
+    leg_stiffness = 50.0
+    leg_damping = 5.0
 
     # ---- 基准车高（两档 q_cmd；首版离散两档，q_cmd 以连续量进 obs）----
     use_continuous_q_cmd = False  # False=每次 reset 从 q_cmd_choices 采样
@@ -126,24 +134,43 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     q_cmd_range = (du.Q_HIGH, du.Q_LOW)
     default_q_cmd = du.Q_HIGH
     init_root_height = 0.18  # spawn 时 base 原点离地高度（略高于接触，轻微下落）
-    reset_height_buffer = 0.02  # reset 时在 q_to_height(q_cmd) 之上留的缓冲
+    reset_height_buffer = 0.10  # reset 时在 q_to_height(q_cmd) 之上的缓冲：≥10cm 自由下落，防出生插地
     low_mode_q_threshold = 0.5 * (du.Q_HIGH + du.Q_LOW)  # q_cmd 高于此角视为“低模式”（q 大=车低）
 
-    # ---- 外部底盘速度伺服（球体轮无牵引力；首版静态关闭）----
-    enable_chassis_servo = False
+    # ---- 外部底盘速度伺服（球体轮无牵引力 → 由伺服代表推行/自旋）----
+    enable_chassis_servo = True
     chassis_total_mass = 25.5  # 整车质量粗估（仅伺服力标定用）
     chassis_yaw_inertia = 1.0  # 偏航惯量粗估
     chassis_servo_kp_lin = 20.0  # 1/s（速度误差 → 加速度）
     chassis_servo_kp_yaw = 10.0  # 1/s
-    chassis_servo_max_force = 300.0  # N
-    chassis_servo_max_torque = 150.0  # N·m
+    chassis_servo_max_force = 300.0  # N（按轴限幅；实际再受 μ·N_total 牵引限幅约束）
+    chassis_servo_max_torque = 150.0  # N·m（实际再受 μ·N_total·L 约束）
+    chassis_servo_friction_coeff = 0.6  # μ：地面可传递牵引力上限 |F| ≤ μ·N_total
+    airborne_force_threshold = 5.0  # N：四轮法向力之和低于此视为悬空（仅用于日志）
 
-    # ---- 运动命令（首版全 0 = 静态；v2 打开伺服并给范围）----
-    cmd_lin_vel_x_range = (0.0, 0.0)
-    cmd_lin_vel_y_range = (0.0, 0.0)
-    cmd_ang_vel_z_range = (0.0, 0.0)
+    # ---- 运动命令（随机推行 + 自旋；x/y 对称以消除各向异性激励偏置）----
+    cmd_lin_vel_x_range = (-1.25, 1.25)
+    cmd_lin_vel_y_range = (-1.25, 1.25)
+    cmd_ang_vel_z_range = (-1.5, 1.5)
     cmd_resample_time_range = (3.0, 5.0)
     cmd_rel_standing_envs = 0.0
+
+    # ---- 方向均匀性：分层/循环 spawn（车体系坡度方位 + 上/下坡相位）----
+    spawn_dir_stratify = True  # True=按 bin 循环精确均匀覆盖各朝向
+    spawn_dir_bins = 8  # 车体系上坡梯度方位 bin 数（需能整除 batch 更均匀）
+    spawn_dir_jitter = True  # bin 内均匀抖动，避免过拟合到轴上
+    spawn_phase_stratify = True  # 上/下坡出生相位分层
+
+    # ---- 越界重置：跑出单位格（env_spacing）即按 time_out 重置 ----
+    boundary_reset_margin = 0.5  # 距单元边界的余量（m）
+    boundary_reset_enabled = True  # 键盘 play 等场景可关闭
+
+    # ---- 外部命令覆盖：True 时不做命令重采样，cmd_buf 完全由外部（键盘）写入 ----
+    external_cmd_override = False
+
+    # ---- 底盘触地两阶段：前 N 轮软惩罚（不死亡），之后死亡 ----
+    base_contact_death_after_iterations = 1000  # 逾期后 base 触地 = 终止
+
 
     # ---- 观测缩放 ----
     q_cmd_scale = 1.0
@@ -159,33 +186,42 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     terminate_base_height_low = 0.004  # 低于此离地高度即终止（防穿透/塌）
     terminate_body_top: float | None = None  # 260mm 隧道约束（None=不启用）
     wheel_contact_force_threshold = 1.0  # 单轮着地判定（N）
-    desired_contact_force_threshold = 20.0  # 均力参考力（N）
+    desired_contact_force_threshold = 20.0  # 接地门控阈值（N，四轮触地项用）
     undesired_contact_force_threshold = 3.0  # 腿/轮架触地惩罚阈值（N）
 
     # ---- 奖励形状参数 ----
     orientation_x_exp_sigma = 0.02  # roll（pgb_y）
     orientation_y_exp_sigma = 0.02  # pitch（pgb_x）
-    wheel_force_balance_sigma = 50.0  # 均力 exp(-var/σ)，σ 单位 N²
+    gate_orientation_by_contact = True  # 水平奖励乘四轮接地门控，防“翘轮换水平”
+    wheel_load_target = 0.0  # ≤0 → 自动取 chassis_total_mass·g/4（N）
+    wheel_load_sigma = 600.0  # N²：单轮目标载荷分布 exp(-(F-Ft)²/σ)
+    wheel_force_balance_sigma_rel = 0.10  # 归一化均力 exp(-Var/(σ_rel·mean²+ε))
     q_track_sigma = 0.02  # 基准角跟踪 σ (rad²)
     low_height_sigma = 3.0e-4  # 低模式贴地偏好 σ (m²)
 
     # ---- 奖励权重（v1；权重为每秒尺度，env 内不额外乘 step_dt）----
     rewards = OrderedDict(
-        alive=1.0,
+        alive=0.01,
         termination=-200.0,
-        four_wheel_contact=5.0,
-        wheel_force_balance=4.0,
-        flat_orientation_x_exp=2.0,
-        flat_orientation_y_exp=2.0,
+        four_wheel_contact=4.0,
+        wheel_load_distribution=4.0,
+        wheel_force_balance=3.0,
+        flat_orientation_x_exp=1.0,
+        flat_orientation_y_exp=1.0,
         track_q_cmd_exp=1.5,
         low_height_pref=1.0,
         torques=-1.0e-4,
-        action_rate=-0.01,
+        action_rate=-0.3,
+        action_rate2=-0.2,
         leg_joint_vel=-5.0e-3,
-        leg_joint_acc=-5.0e-7,
+        leg_joint_acc=-2.5e-5,
+        leg_torque_rate=-5.0e-3,
+        base_ang_acc=-1.0e-3,
+        base_lin_acc_z=-1.0e-2,
         ang_vel_xy=-0.05,
         lin_vel_z=-0.2,
         undesired_contact=-10.0,
+        base_contact=-10.0,
     )
 
     # ---- simulation ----
@@ -241,14 +277,17 @@ class DeformableSuspensionFlatEnvCfg(DeformableSuspensionBaseEnvCfg):
     )
 
 
-@configclass
-class DeformableSuspensionRoughEnvCfg(DeformableSuspensionBaseEnvCfg):
-    """粗糙地形（斜坡 + 随机粗糙 30%/70%）；课程/坡度渐进留待 v2。"""
-
-    terrain = TerrainImporterCfg(
+def _make_periodic_slope_terrain(
+    angle_range: tuple[float, float],
+    seed: int = 0,
+    size: tuple[float, float] = (150.0, 150.0),
+) -> TerrainImporterCfg:
+    """共享大平面周期坡面地形：单 tile，剖面沿 x，每周期独立随机坡角。"""
+    return TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
         collision_group=-1,
+        use_terrain_origins=False,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
@@ -258,21 +297,57 @@ class DeformableSuspensionRoughEnvCfg(DeformableSuspensionBaseEnvCfg):
         ),
         debug_vis=False,
         terrain_generator=TerrainGeneratorCfg(
-            size=(8.0, 8.0),
-            border_width=20.0,
-            num_rows=10,
-            num_cols=20,
-            difficulty_range=(0.4, 1.0),
+            size=size,
+            border_width=2.0,
+            num_rows=1,
+            num_cols=1,
+            horizontal_scale=0.1,
+            vertical_scale=0.005,
+            difficulty_range=(0.5, 0.5),
             sub_terrains={
-                "pyramid_sloped": HfPyramidSlopedTerrainCfg(
-                    proportion=0.3, slope_range=(0.0, 0.3), platform_width=2.0, border_width=0.25
-                ),
-                "random_rough": HfRandomUniformTerrainCfg(
-                    proportion=0.7, noise_range=(0.02, 0.08), noise_step=0.02, border_width=0.25
+                "periodic_slope": HfCustomPeriodicSlopeTerrainCfg(
+                    proportion=1.0,
+                    segment_length=1.0,
+                    angle_range=angle_range,
+                    angle_seed=seed,
                 ),
             },
         ),
     )
+
+
+@configclass
+class DeformableSuspensionRoughEnvCfg(DeformableSuspensionBaseEnvCfg):
+    """周期坡面连续跨越地形（课程第一段）：+θ(1m) → 平(1m) → −θ(1m) → 平(1m)（周期 4m）。
+
+    - 每周期独立随机 θ ∈ [10,17]°（第二段 17–25°，见 Steep 子类），上下坡对称；
+    - 共享大平面：单 tile，env 按 env_spacing 网格铺在同一张面上（env 出生网格在 env 内
+      整体偏移到地形 footprint 内）；
+    - 出生按方位 bin 分层循环（车体系坡度方向）+ 相位分层（上/下坡），10cm 下落；
+      越界按 time_out 重置。
+    - 底盘触地两阶段：<1000 轮软惩罚，之后死亡。
+    """
+
+    # 高低模式随机（低模式靠策略主动抬升过坡）
+    q_cmd_choices = (du.Q_HIGH, du.Q_LOW)
+    default_q_cmd = du.Q_HIGH
+
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=512, env_spacing=6.0, replicate_physics=True
+    )
+
+    terrain = _make_periodic_slope_terrain(angle_range=(10.0, 17.0), seed=0)
+    termination_roll_deg = 45.0
+    termination_pitch_deg = 45.0
+
+
+@configclass
+class DeformableSuspensionRoughSteepEnvCfg(DeformableSuspensionRoughEnvCfg):
+    """课程第二段：坡度 17–25°，放宽姿态终止（允许“尽力而为”）。"""
+
+    terrain = _make_periodic_slope_terrain(angle_range=(17.0, 25.0), seed=0)
+    termination_roll_deg = 60.0
+    termination_pitch_deg = 60.0
 
 
 @configclass
@@ -283,3 +358,70 @@ class DeformableSuspensionFlatPlayEnvCfg(DeformableSuspensionFlatEnvCfg):
 @configclass
 class DeformableSuspensionRoughPlayEnvCfg(DeformableSuspensionRoughEnvCfg):
     play: bool = True
+
+
+@configclass
+class DeformableSuspensionRoughSteepPlayEnvCfg(DeformableSuspensionRoughSteepEnvCfg):
+    play: bool = True
+
+
+@configclass
+class DeformableSuspensionRoughKeyboardPlayEnvCfg(DeformableSuspensionRoughEnvCfg):
+    """键盘遥控 play（第一段地形 10–17°）。
+
+    单 env、底盘伺服开、命令完全由键盘写入（不做随机重采样）、关越界/终止/域随机化。
+    关分层 spawn：手动观察时用随机朝向与相位。
+    """
+
+    play: bool = True
+    spawn_dir_stratify = False
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=1, env_spacing=6.0, replicate_physics=True
+    )
+    episode_length_s = 1.0e6  # 不因超时重置（键盘观察）
+    external_cmd_override = True
+    cmd_lin_vel_x_range = (0.0, 0.0)
+    cmd_lin_vel_y_range = (0.0, 0.0)
+    cmd_ang_vel_z_range = (0.0, 0.0)
+    cmd_resample_time_range = (1.0e9, 1.0e9)
+    boundary_reset_enabled = False
+    events = None  # 关域随机化，play 时确定性
+    termination_roll_deg = 90.0  # sin(90°)=1 → 实际不触发
+    termination_pitch_deg = 90.0
+    terminate_base_height_low = -1.0e9
+    base_contact_death_after_iterations = 1_000_000_000
+    # 键盘 play 专用伺服增益（克服球轮静摩擦，仅影响 play；训练用基类默认值）
+    chassis_servo_kp_lin = 80.0
+    chassis_servo_max_force = 1600.0
+    chassis_yaw_inertia = 15.0
+    chassis_servo_kp_yaw = 20.0
+    chassis_servo_max_torque = 900.0
+
+
+@configclass
+class DeformableSuspensionRoughSteepKeyboardPlayEnvCfg(DeformableSuspensionRoughSteepEnvCfg):
+    """键盘遥控 play（第二段地形 17–25°）。"""
+
+    play: bool = True
+    spawn_dir_stratify = False
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=1, env_spacing=6.0, replicate_physics=True
+    )
+    episode_length_s = 1.0e6
+    external_cmd_override = True
+    cmd_lin_vel_x_range = (0.0, 0.0)
+    cmd_lin_vel_y_range = (0.0, 0.0)
+    cmd_ang_vel_z_range = (0.0, 0.0)
+    cmd_resample_time_range = (1.0e9, 1.0e9)
+    boundary_reset_enabled = False
+    events = None
+    termination_roll_deg = 90.0
+    termination_pitch_deg = 90.0
+    terminate_base_height_low = -1.0e9
+    base_contact_death_after_iterations = 1_000_000_000
+    # 键盘 play 专用伺服增益（同上）
+    chassis_servo_kp_lin = 80.0
+    chassis_servo_max_force = 1600.0
+    chassis_yaw_inertia = 15.0
+    chassis_servo_kp_yaw = 20.0
+    chassis_servo_max_torque = 900.0

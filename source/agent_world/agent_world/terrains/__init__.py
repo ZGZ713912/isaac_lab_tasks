@@ -16,10 +16,13 @@ from .height_field import (
     HfCustomDirectionalWaveTerrainCfg,
     HfCustomGridBarsTerrainCfg,
     HfCustomNpyTerrainCfg,
+    HfCustomPeriodicSlopeTerrainCfg,
     HfCustomRaisedInvertedPyramidSlopedTerrainCfg,
     HfCustomTruncatedSlopedTerrainCfg,
     MeshCustomGridBarsTerrainCfg,
     MeshCustomSplitGridBarsTerrainCfg,
+    periodic_slope_angle,
+    periodic_slope_height,
 )
 
 __all__ = [
@@ -28,8 +31,11 @@ __all__ = [
     "HfCustomDirectionalWaveTerrainCfg",
     "HfCustomGridBarsTerrainCfg",
     "HfCustomNpyTerrainCfg",
+    "HfCustomPeriodicSlopeTerrainCfg",
     "HfCustomRaisedInvertedPyramidSlopedTerrainCfg",
     "HfCustomTruncatedSlopedTerrainCfg",
     "MeshCustomGridBarsTerrainCfg",
     "MeshCustomSplitGridBarsTerrainCfg",
+    "periodic_slope_angle",
+    "periodic_slope_height",
 ]
