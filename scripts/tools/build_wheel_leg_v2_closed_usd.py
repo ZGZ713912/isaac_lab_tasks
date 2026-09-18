@@ -77,6 +77,19 @@ GAS_SPRINGS = (
 GAS_MIN_LENGTH = 0.109
 GAS_MAX_LENGTH = 0.172
 
+LINK_COLORS = {
+    "base_link": (0.60, 0.65, 0.74),
+    "L_link1": (0.48, 0.54, 0.57), "R_link1": (0.48, 0.54, 0.57),
+    "L_link2": (0.10, 0.40, 0.90), "R_link2": (0.10, 0.40, 0.90),
+    "L_link3": (0.08, 0.10, 0.14), "R_link3": (0.08, 0.10, 0.14),
+    "LL_link1": (0.57, 0.23, 0.78), "RR_link1": (0.57, 0.23, 0.78),
+    "LL_link2": (0.85, 0.60, 0.10), "RR_link2": (0.85, 0.60, 0.10),
+    "LL_link3": (0.08, 0.66, 0.38), "RR_link3": (0.08, 0.66, 0.38),
+    "LL_link4": (0.95, 0.30, 0.06), "RR_link4": (0.95, 0.30, 0.06),
+    "LLL_link1": (0.62, 0.62, 0.62), "RRR_link1": (0.62, 0.62, 0.62),
+    "LLL_link2": (0.34, 0.34, 0.34), "RRR_link2": (0.34, 0.34, 0.34),
+}
+
 
 # --------------------------------------------------------------------------
 # URDF parsing and kinematics
@@ -302,12 +315,22 @@ def build_usd(output, links, joints, frames, four_bar, gas_springs):
             return None
         relative = geometry.split("meshes/")[-1]
         records = read_stl(MESH_DIR / relative)
+        triangle_count = len(records)
         vertices = np.ascontiguousarray(records["vertices"].reshape(-1, 3), dtype=np.float32)
+        # one faceVertexCount entry per triangle; three indices per triangle
+        counts = np.full(triangle_count, 3, dtype=np.int32)
+        indices = np.arange(triangle_count * 3, dtype=np.int32)
+        assert int(counts.sum()) == len(indices), "invalid triangle topology"
+        normals = np.ascontiguousarray(records["normal"].repeat(3, axis=0), dtype=np.float32)
+
         mesh = UsdGeom.Mesh.Define(stage, path)
         mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(vertices))
-        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(len(vertices), 3, dtype=np.int32)))
-        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(np.arange(len(vertices), dtype=np.int32)))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(counts))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(indices))
         mesh.CreateSubdivisionSchemeAttr("none")
+        mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(normals))
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
+        mesh.CreateExtentAttr(Vt.Vec3fArray.FromNumpy(np.stack([vertices.min(0), vertices.max(0)])))
         return mesh
 
     for name, link in links.items():
@@ -326,11 +349,16 @@ def build_usd(output, links, joints, frames, four_bar, gas_springs):
         mass_api.CreateDiagonalInertiaAttr(Gf.Vec3f(*values))
         mass_api.CreatePrincipalAxesAttr(quatf(principal))
 
-        mesh_prim(f"/Robot/{name}/Visual", link)
+        visual = mesh_prim(f"/Robot/{name}/Visual", link)
+        if visual is not None:
+            visual.CreateDoubleSidedAttr(True)
+            visual.CreateDisplayColorAttr([Gf.Vec3f(*LINK_COLORS.get(name, (0.78, 0.80, 0.86)))])
+
         collision = mesh_prim(f"/Robot/{name}/Collision", link)
         if collision is not None:
             UsdPhysics.MeshCollisionAPI.Apply(collision.GetPrim()).CreateApproximationAttr("convexHull")
             UsdPhysics.CollisionAPI.Apply(collision.GetPrim()).CreateCollisionEnabledAttr(True)
+            UsdGeom.Imageable(collision.GetPrim()).CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
 
         others = [f"/Robot/{other}" for other in links if other != name]
         UsdPhysics.FilteredPairsAPI.Apply(body).CreateFilteredPairsRel().SetTargets(others)
@@ -381,11 +409,13 @@ def build_usd(output, links, joints, frames, four_bar, gas_springs):
 
 
 def validate(output):
-    from pxr import Usd, UsdPhysics
+    from pxr import Usd, UsdGeom, UsdPhysics
 
     stage = Usd.Stage.Open(str(output))
     rigid = revolute = spherical = prismatic = 0
     excluded_ok = True
+    meshes = 0
+    invalid_meshes = []
     for prim in stage.Traverse():
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             rigid += 1
@@ -397,12 +427,21 @@ def validate(output):
         if prim.IsA(UsdPhysics.PrismaticJoint):
             prismatic += 1
             excluded_ok &= bool(UsdPhysics.Joint(prim).GetExcludeFromArticulationAttr().Get())
+        if prim.IsA(UsdGeom.Mesh):
+            meshes += 1
+            counts = prim.GetAttribute("faceVertexCounts").Get() or []
+            indices = prim.GetAttribute("faceVertexIndices").Get() or []
+            points = prim.GetAttribute("points").Get() or []
+            if int(sum(counts)) != len(indices) or len(indices) % 3 != 0 or max(indices, default=-1) >= len(points):
+                invalid_meshes.append(str(prim.GetPath()))
     return {
         "rigid_bodies": rigid,
         "revolute_joints": revolute,
         "spherical_joints": spherical,
         "prismatic_joints": prismatic,
         "closures_excluded": excluded_ok,
+        "meshes": meshes,
+        "invalid_meshes": invalid_meshes,
     }
 
 

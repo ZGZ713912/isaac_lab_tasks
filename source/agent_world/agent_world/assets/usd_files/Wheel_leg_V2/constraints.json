@@ -236,6 +236,8 @@
     "revolute_joints": 18,
     "spherical_joints": 4,
     "prismatic_joints": 2,
-    "closures_excluded": true
+    "closures_excluded": true,
+    "meshes": 38,
+    "invalid_meshes": []
   }
 }
