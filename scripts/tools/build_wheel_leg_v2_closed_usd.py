@@ -380,6 +380,16 @@ def build_usd(output, links, joints, frames, four_bar, gas_springs):
         prim.CreateLocalRot0Attr(quatf(origin @ alignment))
         prim.CreateLocalRot1Attr(quatf(alignment))
         prim.CreateExcludeFromArticulationAttr(False)
+        # Author a zero-gain angular drive so the joint is a proper PhysX driven
+        # joint.  Without it, runtime position/velocity gains are ignored and
+        # only direct efforts can move the joint.
+        drive = UsdPhysics.DriveAPI.Apply(prim.GetPrim(), "angular")
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(0.0)
+        drive.CreateDampingAttr(0.0)
+        drive.CreateMaxForceAttr(1000.0)
+        drive.CreateTargetPositionAttr(0.0)
+        drive.CreateTargetVelocityAttr(0.0)
 
     for closure in four_bar:
         prim = UsdPhysics.SphericalJoint.Define(stage, f"/Robot/loop_joints/{closure['name']}")

@@ -13,14 +13,15 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for package in ("agent_world", "agent_tasks", "agent_rl"):
     package_root = REPO_ROOT / "source" / package
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
 
+# NOTE: numpy/scipy must be imported after AppLauncher (Isaac Sim bundles its
+# own numpy; importing the environment numpy first breaks scipy binaries and
+# prevents GUI extensions from starting).
 from isaaclab.app import AppLauncher
 
 ASSET_DIR = REPO_ROOT / "source/agent_world/agent_world/assets/usd_files/Wheel_leg_V2"
@@ -39,6 +40,7 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
