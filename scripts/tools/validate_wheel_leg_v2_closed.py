@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Run a small Isaac Lab dynamics probe for Wheel_leg_V2 closures."""
+"""Validate the authored Wheel_leg_V2 closed-chain USD in Isaac Sim.
+
+Loads ``Wheel_leg_V2.usd`` as an articulation (closures excluded from the
+articulation), runs gravity, and measures the four-bar closure error and the
+gas-spring travel.  Reference bundle reports ~0.73 mm closure error.
+"""
 
 from __future__ import annotations
 
 import argparse
-import os
+import json
 import sys
 from pathlib import Path
 
@@ -18,124 +23,142 @@ for package in ("agent_world", "agent_tasks", "agent_rl"):
 
 from isaaclab.app import AppLauncher
 
+ASSET_DIR = REPO_ROOT / "source/agent_world/agent_world/assets/usd_files/Wheel_leg_V2"
+DEFAULT_USD = ASSET_DIR / "Wheel_leg_V2.usd"
+DEFAULT_CONSTRAINTS = ASSET_DIR / "constraints.json"
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--steps", type=int, default=240)
+parser.add_argument("--usd", type=Path, default=DEFAULT_USD)
+parser.add_argument("--constraints", type=Path, default=DEFAULT_CONSTRAINTS)
+parser.add_argument("--steps", type=int, default=480)
 parser.add_argument("--dt", type=float, default=1.0 / 240.0)
-parser.add_argument(
-    "--usd",
-    type=Path,
-    default=REPO_ROOT
-    / "source/agent_world/agent_world/assets/usd_files/Wheel_leg_V2/Wheel_leg_V2_closed_gas_spring.usd",
-)
+parser.add_argument("--spawn-z", type=float, default=0.30)
+parser.add_argument("--error-tolerance", type=float, default=2.0e-3)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-import torch
+import torch  # noqa: E402
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationContext
-from isaacsim.core.prims import RigidPrim
-
-from agent_world.actuators.wheel_leg_v2_gas_spring import WheelLegV2GasSpringModel
-
-
-FOUR_BAR = (
-    ("LL_link4", "L_link3", (0.00827712, -0.00724487, -0.36980174), (0.23542012, 0.08457446, -0.37359826)),
-    ("RR_link4", "R_link3", (0.00565100, -0.00943867, 0.01919846), (-0.08800131, 0.23572013, 0.02300155)),
-)
-SPRINGS = (("LLL_link1", "LLL_link2"), ("RRR_link1", "RRR_link2"))
+import isaaclab.sim as sim_utils  # noqa: E402
+from isaaclab.actuators import ImplicitActuatorCfg  # noqa: E402
+from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
+from isaaclab.sim import SimulationContext  # noqa: E402
+from isaaclab.utils.math import quat_apply  # noqa: E402
 
 
-def quat_apply_np(quat: np.ndarray, vector: np.ndarray) -> np.ndarray:
-    q_xyz = quat[1:]
-    q_w = quat[0]
-    t = 2.0 * np.cross(q_xyz, vector)
-    return vector + q_w * t + np.cross(q_xyz, t)
+def load_constraints(path: Path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    closures = [(c["name"], c["body0"], c["body1"], c["local_pos0_m"], c["local_pos1_m"]) for c in data["closures"]]
+    springs = [(s["name"], s["body0"], s["body1"], s["nominal_length_m"]) for s in data["gas_springs"]]
+    return closures, springs
 
 
-def frame_point(view: RigidPrim, local: tuple[float, float, float]) -> np.ndarray:
-    pos, quat = view.get_world_poses()
-    pos = pos[0].detach().cpu().numpy() if torch.is_tensor(pos) else pos[0]
-    quat = quat[0].detach().cpu().numpy() if torch.is_tensor(quat) else quat[0]
-    return pos + quat_apply_np(quat, np.asarray(local, dtype=np.float32))
+def robot_cfg(usd_path: Path, spawn_z: float) -> ArticulationCfg:
+    return ArticulationCfg(
+        prim_path="/World/Robot",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=str(usd_path),
+            copy_from_source=True,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=False,
+                max_linear_velocity=100.0,
+                max_angular_velocity=100.0,
+                max_depenetration_velocity=1.0,
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                fix_root_link=False,
+                enabled_self_collisions=False,
+                solver_position_iteration_count=16,
+                solver_velocity_iteration_count=8,
+            ),
+        ),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, spawn_z),
+            joint_pos={".*": 0.0},
+            joint_vel={".*": 0.0},
+        ),
+        actuators={
+            "passive": ImplicitActuatorCfg(
+                joint_names_expr=[".*"],
+                stiffness=0.0,
+                damping=0.0,
+                effort_limit=0.0,
+                velocity_limit=0.0,
+            )
+        },
+    )
+
+
+def body_ids(robot: Articulation, name: str) -> int:
+    indices, _ = robot.find_bodies(name)
+    if len(indices) != 1:
+        raise RuntimeError(f"expected one body {name}, got {indices}")
+    return int(indices[0])
 
 
 def main() -> None:
-    if not args_cli.usd.is_file():
-        raise FileNotFoundError(args_cli.usd)
+    closures, springs = load_constraints(args_cli.constraints)
 
     sim_cfg = sim_utils.SimulationCfg(dt=args_cli.dt, device=args_cli.device)
-    sim_cfg.physx.min_position_iteration_count = 16
-    sim_cfg.physx.max_position_iteration_count = 64
+    sim_cfg.physx.min_position_iteration_count = 8
+    sim_cfg.physx.max_position_iteration_count = 32
     sim_cfg.physx.min_velocity_iteration_count = 4
     sim_cfg.physx.max_velocity_iteration_count = 16
-    sim_cfg.physx.enable_external_forces_every_iteration = True
     sim = SimulationContext(sim_cfg)
-    sim.set_camera_view([1.5, -1.5, 1.0], [0.0, 0.0, 0.0])
-    ground_cfg = sim_utils.GroundPlaneCfg()
-    ground_cfg.func("/World/Ground", ground_cfg)
-    light_cfg = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.75, 0.75, 0.75))
-    light_cfg.func("/World/Light", light_cfg)
+    sim.set_camera_view([1.0, -1.2, 0.6], [0.0, 0.0, 0.0])
 
-    asset_cfg = sim_utils.UsdFileCfg(usd_path=str(args_cli.usd.resolve()))
-    asset_cfg.func("/World/Robot", asset_cfg, translation=(0.0, 0.0, 0.4))
+    ground = sim_utils.GroundPlaneCfg()
+    ground.func("/World/Ground", ground)
+    light = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.75, 0.75, 0.75))
+    light.func("/World/Light", light)
+
+    robot = Articulation(robot_cfg(args_cli.usd.resolve(), args_cli.spawn_z))
     sim.reset()
-    four_bar_views = [(RigidPrim(f"/World/Robot/{a}"), RigidPrim(f"/World/Robot/{b}")) for a, b, _, _ in FOUR_BAR]
-    spring_views = [(RigidPrim(f"/World/Robot/{a}"), RigidPrim(f"/World/Robot/{b}")) for a, b in SPRINGS]
-    for view_a, view_b in four_bar_views + spring_views:
-        view_a.initialize()
-        view_b.initialize()
-    model = WheelLegV2GasSpringModel()
-    max_loop_error = 0.0
-    min_length = float("inf")
-    max_length = 0.0
-    min_force = float("inf")
-    max_force = 0.0
+    robot.reset()
+    dt = args_cli.dt
 
-    for step in range(args_cli.steps):
-        for view_a, view_b in spring_views:
-            p0 = frame_point(view_a, (0.0, 0.0, 0.0))
-            p1 = frame_point(view_b, (0.0, 0.0, 0.0))
-            v0 = view_a.get_velocities()[0, :3]
-            v1 = view_b.get_velocities()[0, :3]
-            if torch.is_tensor(v0):
-                v0 = v0.detach().cpu().numpy()
-                v1 = v1.detach().cpu().numpy()
-            delta = p1 - p0
-            length = float(np.linalg.norm(delta))
-            axis = delta / max(length, 1.0e-8)
-            length_rate = float(np.dot(v1 - v0, axis))
-            length_tensor = torch.tensor([length], dtype=torch.float32)
-            axis_tensor = torch.tensor(axis, dtype=torch.float32).unsqueeze(0)
-            rate_tensor = torch.tensor([length_rate], dtype=torch.float32)
-            force = float(model.force_magnitude(length_tensor, rate_tensor)[0])
-            force_vector = torch.as_tensor((force * axis).reshape(1, 3), dtype=torch.float32, device=sim.device)
-            view_a.apply_forces(force_vector * -1.0, is_global=True)
-            view_b.apply_forces(force_vector, is_global=True)
-            min_length = min(min_length, length)
-            max_length = max(max_length, length)
-            min_force = min(min_force, force)
-            max_force = max(max_force, force)
+    closure_ids = [(name, body_ids(robot, a), body_ids(robot, b),
+                    torch.tensor(p0, dtype=torch.float32, device=sim.device),
+                    torch.tensor(p1, dtype=torch.float32, device=sim.device))
+                   for name, a, b, p0, p1 in closures]
+    spring_ids = [(name, body_ids(robot, a), body_ids(robot, b), nominal)
+                  for name, a, b, nominal in springs]
 
+    def point(body: int, local: torch.Tensor) -> torch.Tensor:
+        return robot.data.body_pos_w[:, body] + quat_apply(robot.data.body_quat_w[:, body], local.expand(1, -1))
+
+    max_error = {name: 0.0 for name, *_ in closures}
+    final_error = {}
+    spring_min = {name: float("inf") for name, *_ in springs}
+    spring_max = {name: 0.0 for name, *_ in springs}
+
+    for _ in range(args_cli.steps):
         sim.step()
-
-        for (view_a, view_b), (_, _, local0, local1) in zip(four_bar_views, FOUR_BAR):
-            p0 = frame_point(view_a, local0)
-            p1 = frame_point(view_b, local1)
-            max_loop_error = max(max_loop_error, float(np.linalg.norm(p0 - p1)))
-
+        robot.update(dt)
+        for name, b0, b1, p0, p1 in closure_ids:
+            err = float(torch.norm(point(b0, p0) - point(b1, p1)))
+            max_error[name] = max(max_error[name], err)
+            final_error[name] = err
+        for name, b0, b1, nominal in spring_ids:
+            length = float(torch.norm(point(b0, torch.zeros(3, device=sim.device)) -
+                                      point(b1, torch.zeros(3, device=sim.device))))
+            spring_min[name] = min(spring_min[name], length)
+            spring_max[name] = max(spring_max[name], length)
         if not simulation_app.is_running():
             break
 
-    print("Wheel_leg_V2 closure probe")
-    print(f"  four-bar max pivot error: {max_loop_error:.6e} m")
-    print(f"  gas-spring length range: {min_length:.6f} .. {max_length:.6f} m")
-    print(f"  gas-spring force range: {min_force:.3f} .. {max_force:.3f} N")
-    if max_loop_error > 2.0e-3:
-        raise RuntimeError(f"four-bar closure error too large: {max_loop_error} m")
+    print("\nWheel_leg_V2 closed-chain validation")
+    print(f"  base height at end: {float(robot.data.root_pos_w[0, 2]):.4f} m")
+    for name, *_ in closures:
+        print(f"  {name:14s} max closure error = {max_error[name]*1000:8.4f} mm   final = {final_error[name]*1000:8.4f} mm")
+    for name, *_ in springs:
+        print(f"  {name:14s} length range = [{spring_min[name]*1000:.2f}, {spring_max[name]*1000:.2f}] mm")
+    worst = max(max_error.values())
+    print(f"  worst closure error = {worst*1000:.4f} mm (reference ~0.7261 mm, tolerance {args_cli.error_tolerance*1000:.1f} mm)")
+    if worst > args_cli.error_tolerance:
+        raise SystemExit(f"[FAIL] closure error {worst*1000:.3f} mm exceeds tolerance")
 
 
 if __name__ == "__main__":

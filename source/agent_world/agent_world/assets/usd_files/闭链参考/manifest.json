@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "name": "chassis",
+  "display_name": "纯底盘",
+  "status": "user_confirmed_kinematic_geometry_not_dynamics",
+  "physics_ready": false,
+  "visual_bodies": 15,
+  "triangles": 245168,
+  "units": "m",
+  "up_axis": "Z",
+  "reference_knee_inner_deg": 68.0,
+  "preview_range_deg": [
+    35,
+    80
+  ],
+  "animation": {
+    "seconds": 12,
+    "samples_per_second": 60,
+    "frames": 721,
+    "interpolation": "translate + quaternion orient"
+  },
+  "validation": {
+    "source_vertices_equal": true,
+    "source_files_unchanged": true,
+    "max_keyframe_pin_gap_m": 1.317102129683768e-09,
+    "max_keyframe_transform_error": 1.4988010832439613e-15,
+    "max_half_frame_pin_gap_m": 2.9614676036906746e-07
+  },
+  "source_sha256": {
+    "/home/yukikaze/Documents/workspace/robot_rl/isaac_wheeled_rl_train/reports/v40_linkage_preview_20260914/geometry.py": "3132b5fdf412f29ad97d0bda9b4229c002a01c068f331a5bee9da816b56e40e1",
+    "/home/yukikaze/Documents/workspace/robot_rl/isaac_wheeled_rl_train/reports/v40_linkage_preview_20260914/geometry_audit.json": "946ebf1c128d8ed2cae9244b5bff1cf7fb344e1407aaa430d4b7b846bb70aaec",
+    "/home/yukikaze/Documents/workspace/robot_rl/isaac_wheeled_rl_train/reports/v40_linkage_repair_20260914/independent_geometry_mass/metrology.json": "9a1949263306a317d9c2413e39850d1a0eba82832d14c8ffe327831a7500afd5"
+  },
+  "files": {
+    "chassis.usdc": {
+      "size": 11775471,
+      "sha256": "4d502e88c5dcb32ad3f88e3c9bbcf2dc8aede3b615d27fbcdf69b5202d3099b9"
+    },
+    "preview.usdc": {
+      "size": 468642,
+      "sha256": "33615ef63f5403e9c9b3ebc964444b9c4bcf2c493ac0a7a5049aa9bf61c9a8b8"
+    },
+    "kinematics.json": {
+      "size": 5614,
+      "sha256": "c4e3ceead2e61e9bb75c9077e02c611cea4bcb49bdd7865446ee3c4af5e88bd0"
+    }
+  },
+  "tools": {
+    "export.py": {
+      "size": 12147,
+      "sha256": "0a9972712d50fd71071d2b9322937dd5a64324f619be49d100713ba2a079dd44"
+    },
+    "README.md": {
+      "size": 1706,
+      "sha256": "eb8f4a0096b2f6ba3dfdef72d34af9b6e8cb0dc905a3871047197a32ca50d369"
+    }
+  }
+}
