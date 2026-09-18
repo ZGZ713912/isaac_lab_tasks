@@ -14,7 +14,7 @@
 #   W / S       前进 / 后退（vx，按住给值、松开归零）
 #   A / D       左移 / 右移（vy 横向平移，按住给值、松开归零）
 #   X / Z       自旋角速度 ωz 加 / 减（增量式，松开保持）
-#   Q           切换基准角：高车身(q=0) <-> 低车身(q≈1.0563)
+#   Q           低车身训练阶段无效（保留按键，避免旧脚本误操作）
 #   L           所有命令归零
 # =============================================================================
 """Keyboard teleop for the deformable active-suspension task (chassis servo + q_cmd)."""
@@ -119,9 +119,12 @@ class DeformableKeyboard:
                 self._wz = max(-cfg.wz_max, self._wz - cfg.wz_step)
                 self._pressed.add("Z")
             elif name == "Q":
-                self._q_idx = 1 - self._q_idx
-                print(f"[键盘] 基准角切换 → q_cmd={self.q_cmd:.4f} "
-                      f"({'高车身' if self._q_idx == 0 else '低车身'})")
+                if len(cfg.q_choices) > 1:
+                    self._q_idx = 1 - self._q_idx
+                    print(f"[键盘] 基准角切换 → q_cmd={self.q_cmd:.4f} "
+                          f"({'高车身' if self._q_idx == 0 else '低车身'})")
+                else:
+                    print(f"[键盘] 当前固定低车身 q_cmd={self.q_cmd:.4f}")
             elif name == "L":
                 self.reset()
                 print("[键盘] 命令全部归零")

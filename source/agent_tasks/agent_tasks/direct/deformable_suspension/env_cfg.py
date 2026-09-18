@@ -10,7 +10,7 @@
 # 任务：用 4 个平四腿电机控制 4 个轮子的高度，使车体在
 #   ① 四轮贴地且法向载荷尽量平均（不打滑）
 #   ② base_link 尽量/严格水平
-#   ③ 跟踪两档基准车高（高 q=0 / 低 q=1.254），低档软偏好低车高（隧道 260mm）
+#   ③ 当前阶段固定低车身 q=Q_LOW，只训练低车身主动悬挂
 # 目标下工作。轮子为球体碰撞、无牵引力，故“运动”由外部底盘速度伺服实现（首版静态关闭）。
 #
 # 合同：
@@ -113,8 +113,13 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     play: bool = False
     training_progress_steps_per_iteration = 24
 
-    # ---- 动作 / 腿级联 PID（外环位置 PI→速度指令，内环速度 PI→力矩；与部署 rmcs_rl 对齐）----
-    leg_action_scale = 0.25  # rad per action unit
+    # ---- 动作 / 腿级联 PID（固定低车身主动悬挂训练）----
+    leg_action_scale = 0.15  # rad per action unit
+    # Phase-0 实测（scripts/tools/deformable_sign_probe.py）：Q_LOW 时底盘余量约 7mm，
+    # q≈1.096 时剩 4.9mm，q≈1.136 起底盘开始承载（16N→203N）。因此有效安全上限
+    # 是 1.13 而不是关节限位 1.36。放开到这个值以取得最大下行行程，同时用
+    # terminate_chassis_clearance + chassis_ground 兜底。
+    leg_target_upper_limit = 1.13
     use_leg_cascade_pid = True  # False 回退单环位置 PD（对比/调试）
     leg_vel_cmd_limit = 8.0  # rad/s，外环速度指令限幅（< 资产 velocity_limit 17）
     leg_outer_kp = 6.0  # 1/s：位置误差 → 速度指令
@@ -128,17 +133,17 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     leg_stiffness = 50.0
     leg_damping = 5.0
 
-    # ---- 基准车高（两档 q_cmd；首版离散两档，q_cmd 以连续量进 obs）----
+    # ---- 基准车高（当前阶段固定低车身，不训练高度切换）----
     use_continuous_q_cmd = False  # False=每次 reset 从 q_cmd_choices 采样
-    q_cmd_choices = (du.Q_HIGH, du.Q_LOW)  # 高=初始 0°；低≈1cm 离地
-    q_cmd_range = (du.Q_HIGH, du.Q_LOW)
-    default_q_cmd = du.Q_HIGH
+    q_cmd_choices = (du.Q_LOW,)
+    q_cmd_range = (du.Q_LOW, du.Q_LOW)
+    default_q_cmd = du.Q_LOW
     init_root_height = 0.18  # spawn 时 base 原点离地高度（略高于接触，轻微下落）
     reset_height_buffer = 0.10  # reset 时在 q_to_height(q_cmd) 之上的缓冲：≥10cm 自由下落，防出生插地
     low_mode_q_threshold = 0.5 * (du.Q_HIGH + du.Q_LOW)  # q_cmd 高于此角视为“低模式”（q 大=车低）
 
-    # ---- 外部底盘速度伺服（球体轮无牵引力 → 由伺服代表推行/自旋）----
-    enable_chassis_servo = True
+    # ---- 第一阶段只训练静态主动悬挂，运动伺服后置 ----
+    enable_chassis_servo = False
     chassis_total_mass = 25.5  # 整车质量粗估（仅伺服力标定用）
     chassis_yaw_inertia = 1.0  # 偏航惯量粗估
     chassis_servo_kp_lin = 20.0  # 1/s（速度误差 → 加速度）
@@ -148,10 +153,10 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     chassis_servo_friction_coeff = 0.6  # μ：地面可传递牵引力上限 |F| ≤ μ·N_total
     airborne_force_threshold = 5.0  # N：四轮法向力之和低于此视为悬空（仅用于日志）
 
-    # ---- 运动命令（随机推行 + 自旋；x/y 对称以消除各向异性激励偏置）----
-    cmd_lin_vel_x_range = (-1.25, 1.25)
-    cmd_lin_vel_y_range = (-1.25, 1.25)
-    cmd_ang_vel_z_range = (-1.5, 1.5)
+    # ---- 第一阶段无运动命令；先学会低车身静态调平 ----
+    cmd_lin_vel_x_range = (0.0, 0.0)
+    cmd_lin_vel_y_range = (0.0, 0.0)
+    cmd_ang_vel_z_range = (0.0, 0.0)
     cmd_resample_time_range = (3.0, 5.0)
     cmd_rel_standing_envs = 0.0
 
@@ -192,34 +197,58 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     # ---- 奖励形状参数 ----
     orientation_x_exp_sigma = 0.02  # roll（pgb_y）
     orientation_y_exp_sigma = 0.02  # pitch（pgb_x）
-    gate_orientation_by_contact = True  # 水平奖励乘四轮接地门控，防“翘轮换水平”
+    # 水平优先：水平奖励不再乘四轮接地门控，否则抬腿调平时会被扣分。
+    gate_orientation_by_contact = False
     wheel_load_target = 0.0  # ≤0 → 自动取 chassis_total_mass·g/4（N）
     wheel_load_sigma = 600.0  # N²：单轮目标载荷分布 exp(-(F-Ft)²/σ)
     wheel_force_balance_sigma_rel = 0.10  # 归一化均力 exp(-Var/(σ_rel·mean²+ε))
     q_track_sigma = 0.02  # 基准角跟踪 σ (rad²)
     low_height_sigma = 3.0e-4  # 低模式贴地偏好 σ (m²)
+    # IMU 重力水平分量 -> 每腿 q 修正。
+    # Phase-0 实测符号：front_raise -> pgb_x<0，left_raise -> pgb_y<0；
+    # 故 pgb_x>0（前低）须抬前 -> sign=-1。原 +1 会让前低时抬后腿（方向相反）。
+    tilt_leg_q_sign = -1.0
+    tilt_leg_q_gain = 0.5  # rad per normalized projected-gravity component（抬/压双向）
+    tilt_leg_position_sigma = 0.5  # rad²，腿角二次误差归一化尺度（原 0.02 放大 50 倍是爆点来源）
+    tilt_leg_velocity_scale = 4.0  # rad/s，用于速度方向奖励归一化
+    tilt_progress_clip = 0.05  # 限制单步二次势能下降奖励的尖峰
 
-    # ---- 奖励权重（v1；权重为每秒尺度，env 内不额外乘 step_dt）----
+    # ---- 底盘离地保护（Phase-0 实测，强惩罚 + 终止）----
+    chassis_ground_threshold = 0.006  # m：低于此余量开始软惩罚
+    chassis_ground_scale = 0.006  # m：惩罚归一化尺度（余量 0 时项=1）
+    terminate_chassis_clearance = 0.0  # m：底盘余量低于此值判死（负值=允许轻微穿透）
+
+    # ---- 奖励清洗与限幅（防 1e4~1e5 爆点）----
+    reward_term_clip = 100.0
+    reward_total_clip = 1000.0
+
+    # ---- 奖励权重（低车身主动悬挂，水平优先）----
     rewards = OrderedDict(
-        alive=0.01,
+        alive=0.02,
         termination=-200.0,
-        four_wheel_contact=4.0,
-        wheel_load_distribution=4.0,
-        wheel_force_balance=3.0,
-        flat_orientation_x_exp=1.0,
-        flat_orientation_y_exp=1.0,
-        track_q_cmd_exp=1.5,
-        low_height_pref=1.0,
+        four_wheel_contact=0.8,
+        wheel_load_distribution=0.5,
+        wheel_force_balance=0.5,
+        tilt_leg_position_error=-0.5,
+        tilt_leg_velocity_direction=1.5,
+        tilt_leg_wrong_velocity=-0.5,
+        tilt_quadratic=-12.0,
+        tilt_progress=10.0,
+        flat_orientation_x_exp=3.0,
+        flat_orientation_y_exp=3.0,
+        track_q_cmd_exp=0.2,
+        low_height_pref=0.0,
+        chassis_ground=-20.0,
         torques=-1.0e-4,
-        action_rate=-0.3,
-        action_rate2=-0.2,
+        action_rate=-0.02,
+        action_rate2=0.0,
         leg_joint_vel=-5.0e-3,
-        leg_joint_acc=-2.5e-5,
-        leg_torque_rate=-5.0e-3,
-        base_ang_acc=-1.0e-3,
-        base_lin_acc_z=-1.0e-2,
-        ang_vel_xy=-0.05,
-        lin_vel_z=-0.2,
+        leg_joint_acc=0.0,
+        leg_torque_rate=0.0,
+        base_ang_acc=0.0,
+        base_lin_acc_z=0.0,
+        ang_vel_xy=-0.01,
+        lin_vel_z=-0.05,
         undesired_contact=-10.0,
         base_contact=-10.0,
     )
@@ -261,6 +290,9 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
 @configclass
 class DeformableSuspensionFlatEnvCfg(DeformableSuspensionBaseEnvCfg):
     """平面地形（首版训练/快速验证）。"""
+
+    # 先验证固定低车身的调平奖励和执行器，域随机化后置。
+    events = None
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -328,9 +360,9 @@ class DeformableSuspensionRoughEnvCfg(DeformableSuspensionBaseEnvCfg):
     - 底盘触地两阶段：<1000 轮软惩罚，之后死亡。
     """
 
-    # 高低模式随机（低模式靠策略主动抬升过坡）
-    q_cmd_choices = (du.Q_HIGH, du.Q_LOW)
-    default_q_cmd = du.Q_HIGH
+    # 当前阶段固定低车身；坡面训练后置，不恢复高度切换。
+    q_cmd_choices = (du.Q_LOW,)
+    default_q_cmd = du.Q_LOW
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=512, env_spacing=6.0, replicate_physics=True
@@ -380,6 +412,7 @@ class DeformableSuspensionRoughKeyboardPlayEnvCfg(DeformableSuspensionRoughEnvCf
     )
     episode_length_s = 1.0e6  # 不因超时重置（键盘观察）
     external_cmd_override = True
+    enable_chassis_servo = True
     cmd_lin_vel_x_range = (0.0, 0.0)
     cmd_lin_vel_y_range = (0.0, 0.0)
     cmd_ang_vel_z_range = (0.0, 0.0)
@@ -409,6 +442,7 @@ class DeformableSuspensionRoughSteepKeyboardPlayEnvCfg(DeformableSuspensionRough
     )
     episode_length_s = 1.0e6
     external_cmd_override = True
+    enable_chassis_servo = True
     cmd_lin_vel_x_range = (0.0, 0.0)
     cmd_lin_vel_y_range = (0.0, 0.0)
     cmd_ang_vel_z_range = (0.0, 0.0)

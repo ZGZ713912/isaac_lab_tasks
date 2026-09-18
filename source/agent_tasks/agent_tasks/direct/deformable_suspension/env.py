@@ -59,6 +59,22 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._wheels_idx, _ = self.robot.find_joints("joint_wheel_(?!set_).*")
         self._num_joints = self.robot.num_joints
 
+        # URDF 顺序：1=前右，2=前左，3=后左，4=后右。
+        # 位置必须和 IMU 重力投影逐腿对应，不能依赖 articulation 的内部排序。
+        joint_index_by_name = {name: i for i, name in enumerate(self.robot.joint_names)}
+        self._legs_idx = [joint_index_by_name[name] for name in du.ORDERED_LEG_JOINT_NAMES]
+        leg_xy = torch.tensor(
+            (
+                (+du.WHEEL_HALF_BASE, -du.WHEEL_HALF_BASE),  # 前右
+                (+du.WHEEL_HALF_BASE, +du.WHEEL_HALF_BASE),  # 前左
+                (-du.WHEEL_HALF_BASE, +du.WHEEL_HALF_BASE),  # 后左
+                (-du.WHEEL_HALF_BASE, -du.WHEEL_HALF_BASE),  # 后右
+            ),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        self._leg_xy_unit = leg_xy / du.WHEEL_HALF_BASE
+
         # ---- 接触索引（接触传感器 body 顺序与 robot 不一致，按名映射）----
         self._base_contact_idx = self._find_contact_sensor_indices("base_link")
         self._legs_contact_idx = self._find_contact_sensor_indices(
@@ -86,6 +102,10 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._prev_leg_torque = torch.zeros(self.num_envs, len(self._legs_idx), device=self.device)
         self._prev_root_ang_vel_xy = torch.zeros(self.num_envs, 2, device=self.device)
         self._prev_root_lin_vel_z = torch.zeros(self.num_envs, device=self.device)
+        self._prev_tilt_energy = torch.zeros(self.num_envs, device=self.device)
+        self._tilt_energy_initialized = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
 
         # ---- 腿级联 PID 状态（外环/内环积分器 + 上一步速度指令）----
         self._leg_outer_int = torch.zeros(self.num_envs, len(self._legs_idx), device=self.device)
@@ -185,6 +205,16 @@ class DeformableSuspensionEnv(DirectRLEnv):
         return z - self.scene.env_origins[:, 2]
 
     @property
+    def chassis_clearance(self) -> torch.Tensor:
+        """底盘网格最低点相对地面的高度（m）。
+
+        `BODY_BOTTOM_OFFSET=-0.027` 是底盘网格最低点相对 base 原点的偏移，故
+        clearance = base_height - 0.027。Phase-0 实测：Q_LOW 时约 7 mm，
+        q≈1.13 时归零并开始承载。负值即底盘插地。
+        """
+        return self.base_height + du.BODY_BOTTOM_OFFSET
+
+    @property
     def wheel_contact_forces(self) -> torch.Tensor:
         """四轮法向接触力模长（N），形状 (N,4)。"""
         return torch.norm(
@@ -250,7 +280,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self.leg_target = torch.clamp(
             self.q_cmd.unsqueeze(-1) + self.cfg.leg_action_scale * self.actions,
             du.LEG_LOWER_LIMIT,
-            du.LEG_UPPER_LIMIT,
+            self.cfg.leg_target_upper_limit,
         )
 
     def _apply_action(self) -> None:
@@ -410,7 +440,16 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._base_contact = base_contact
         iter_now = self.common_step_counter // max(1, self.cfg.training_progress_steps_per_iteration)
         base_contact_death = base_contact & (iter_now >= self.cfg.base_contact_death_after_iterations)
-        terminated = base_contact_death | orientation_term | base_low_term | tunnel_term | nan_term
+        # 底盘离地保护：低车身时 q 增大很快把底盘压到地面，单独判死。
+        chassis_low_term = self.chassis_clearance < self.cfg.terminate_chassis_clearance
+        terminated = (
+            base_contact_death
+            | orientation_term
+            | base_low_term
+            | tunnel_term
+            | nan_term
+            | chassis_low_term
+        )
         time_out = self.episode_length_buf >= self.max_episode_length
         # 越界（跑出所属单位格）→ 按 time_out 重置
         if self._periodic and self.cfg.boundary_reset_enabled:
@@ -424,6 +463,34 @@ class DeformableSuspensionEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # rewards
     # ------------------------------------------------------------------
+    def _get_tilt_leg_targets(self, projected_gravity: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map the IMU horizontal gravity vector to feasible per-leg q targets.
+
+        Phase-0 sim probe (scripts/tools/deformable_sign_probe.py) result:
+          front_raise (q- on leg_1/2) -> pgb_x < 0 (nose up)
+          left_raise  (q- on leg_2/3) -> pgb_y < 0 (left up)
+        so with pgb_x>0 (nose-down) the front must be RAISED and with pgb_y>0
+        (left-down) the left must be RAISED.  Hence the target is
+        `q_cmd + gain * (-1) * (g_xy . leg_xy_unit)`, i.e. negative q delta on
+        the low side (decreasing q raises that corner).
+
+        The correction is symmetric now: the low side is raised and the high
+        side is pushed down (increasing q).  Push-down travel is bounded by
+        chassis ground clearance, enforced by `leg_target_upper_limit` plus the
+        `chassis_ground` reward/termination.
+        """
+        gravity_xy = projected_gravity[:, :2]
+        correction = torch.matmul(gravity_xy, self._leg_xy_unit.transpose(0, 1))
+        correction = self.cfg.tilt_leg_q_sign * correction
+        correction = torch.clamp(correction, -1.0, 1.0)
+        q_delta = self.cfg.tilt_leg_q_gain * correction
+        q_target = torch.clamp(
+            self.q_cmd.unsqueeze(-1) + q_delta,
+            du.LEG_LOWER_LIMIT,
+            self.cfg.leg_target_upper_limit,
+        )
+        return q_target, q_target - self.q_cmd.unsqueeze(-1)
+
     def _get_rewards(self) -> torch.Tensor:
         pgb = self.robot.data.projected_gravity_b
         applied_torque = self.robot.data.applied_torque
@@ -447,7 +514,51 @@ class DeformableSuspensionEnv(DirectRLEnv):
         )
         terms["wheel_force_balance"] = torch.exp(-force_var / balance_denom)
 
-        # 2) 车身水平（接地门控：防“翘轮换水平”）
+        # 2) IMU -> 四腿主动调平：直接给出每条腿的可实现修正目标。
+        tilt_q_target, tilt_q_delta = self._get_tilt_leg_targets(pgb)
+        leg_pos = self.robot.data.joint_pos[:, self._legs_idx]
+        leg_vel = joint_vel[:, self._legs_idx]
+        tilt_position_error = torch.mean(
+            torch.square(leg_pos - tilt_q_target), dim=-1
+        ) / self.cfg.tilt_leg_position_sigma
+        terms["tilt_leg_position_error"] = tilt_position_error
+
+        correction_mag = torch.abs(tilt_q_delta)
+        correction_gate = torch.clamp(
+            correction_mag / self.cfg.tilt_leg_q_gain,
+            0.0,
+            1.0,
+        )
+        correction_dir = torch.sign(tilt_q_delta)
+        velocity_toward = torch.relu(leg_vel * correction_dir) / self.cfg.tilt_leg_velocity_scale
+        velocity_away = torch.relu(-leg_vel * correction_dir) / self.cfg.tilt_leg_velocity_scale
+        terms["tilt_leg_velocity_direction"] = torch.mean(
+            torch.clamp(velocity_toward, 0.0, 1.0) * correction_gate,
+            dim=-1,
+        )
+        terms["tilt_leg_wrong_velocity"] = torch.mean(
+            torch.clamp(velocity_away, 0.0, 1.0) * correction_gate,
+            dim=-1,
+        )
+
+        # 二次 IMU 倾斜势能：同时提供“倾斜越小越好”和“本步变平了”的信号。
+        tilt_energy = torch.sum(torch.square(pgb[:, :2]), dim=-1)
+        tilt_progress = self._prev_tilt_energy - tilt_energy
+        tilt_progress = torch.where(
+            self._tilt_energy_initialized,
+            tilt_progress,
+            torch.zeros_like(tilt_progress),
+        )
+        terms["tilt_quadratic"] = tilt_energy
+        terms["tilt_progress"] = torch.clamp(
+            tilt_progress,
+            -self.cfg.tilt_progress_clip,
+            self.cfg.tilt_progress_clip,
+        )
+        self._prev_tilt_energy.copy_(tilt_energy)
+        self._tilt_energy_initialized.fill_(True)
+
+        # 3) 车身水平（接地门控：防“翘轮换水平”）
         contact_gate = (
             terms["four_wheel_contact"]
             if self.cfg.gate_orientation_by_contact
@@ -460,12 +571,12 @@ class DeformableSuspensionEnv(DirectRLEnv):
             -torch.square(pgb[:, 0]) / self.cfg.orientation_y_exp_sigma
         )
 
-        # 3) 基准腿角跟踪
+        # 4) 基准腿角跟踪
         q_err = self.robot.data.joint_pos[:, self._legs_idx] - self.q_cmd.unsqueeze(-1)
         terms["track_q_cmd_exp"] = torch.exp(
             -torch.square(q_err).mean(dim=-1) / self.cfg.q_track_sigma
         )
-        # 3b) 低模式软偏好贴地（仅低模式生效：q_cmd 大 = 车低；不强制某条腿）
+        # 4b) 低模式软偏好贴地（当前固定低模式，主调平奖励已经负责高度边界）
         low_mask = (self.q_cmd > self.cfg.low_mode_q_threshold).float()
         if self._periodic:
             # 坡上需要抬身过坡，贴地偏好只在平路段生效
@@ -477,10 +588,18 @@ class DeformableSuspensionEnv(DirectRLEnv):
             -torch.square(excess) / self.cfg.low_height_sigma
         )
 
-        # 3c) 底盘触地（软惩罚；≥N 轮后同时判死亡，见 _get_dones）
+        # 4c) 底盘触地（软惩罚；≥N 轮后同时判死亡，见 _get_dones）
         terms["base_contact"] = self._base_contact.float()
 
-        # 4) 常规惩罚
+        # 4d) 底盘离地保护：低于安全余量后线性增长，越界即接近 1。
+        clearance = self.chassis_clearance
+        terms["chassis_ground"] = torch.clamp(
+            (self.cfg.chassis_ground_threshold - clearance) / self.cfg.chassis_ground_scale,
+            min=0.0,
+            max=1.0,
+        )
+
+        # 5) 常规惩罚
         terms["torques"] = torch.sum(torch.square(applied_torque[:, self._legs_idx]), dim=-1)
         terms["action_rate"] = torch.sum(torch.square(self.actions - self.last_actions), dim=-1)
         terms["action_rate2"] = torch.sum(
@@ -518,10 +637,18 @@ class DeformableSuspensionEnv(DirectRLEnv):
         # 5) 方向性指标（覆盖率 + 分方位效果 EMA）
         self._update_direction_metrics(terms, pgb)
 
+        # 6) 逐项清洗 + 限幅：防止个别坏状态在某个无界项上产生 1e4~1e5 级爆点
+        #    （上一版斜坡 run 的 Train/mean_reward 曾跌到 -4e5）。
+        for name in terms:
+            terms[name] = torch.nan_to_num(
+                terms[name], nan=0.0, posinf=0.0, neginf=0.0
+            ).clamp(-self.cfg.reward_term_clip, self.cfg.reward_term_clip)
+
         reward = torch.zeros(self.num_envs, device=self.device)
         for name, weight in self.cfg.rewards.items():
             reward += weight * terms[name]
             self.episode_sums[name] += terms[name]
+        reward = reward.clamp(-self.cfg.reward_total_clip, self.cfg.reward_total_clip)
         self._prev_joint_vel.copy_(joint_vel)
         self._prev_leg_torque.copy_(leg_torque)
         self._prev_root_ang_vel_xy.copy_(root_ang_vel_xy)
@@ -693,6 +820,8 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._prev_leg_torque[env_ids] = 0.0
         self._prev_root_ang_vel_xy[env_ids] = 0.0
         self._prev_root_lin_vel_z[env_ids] = 0.0
+        self._prev_tilt_energy[env_ids] = 0.0
+        self._tilt_energy_initialized[env_ids] = False
         # 级联 PID 积分器/速度指令：teleport 后必须清零，防积分残留
         self._leg_outer_int[env_ids] = 0.0
         self._leg_inner_int[env_ids] = 0.0
