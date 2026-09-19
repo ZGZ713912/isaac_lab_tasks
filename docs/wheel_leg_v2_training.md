@@ -9,13 +9,13 @@
 |---|---|---|
 | 树关节 | 6 revolute | 18 revolute |
 | 闭链 | 无 | 4 × `SphericalJoint`（四杆）+ 2 × `PrismaticJoint`（气弹簧），均 `excludeFromArticulation` |
-| 驱动关节 | `L_joint1/2/3`,`R_joint1/2/3` | **相同 6 个等效输出关节**（右膝原名 `R_jonit2`） |
+| 驱动关节 | `L_joint1/2/3`,`R_joint1/2/3` | **髋 `L_joint1/R_joint1`、膝 `LL_joint1/RR_joint1`、轮 `L_joint3/R_joint3`** |
 | 被动关节 | 无 | `LL_*`/`RR_*`（四杆）、`LLL_*`/`RRR_*`（气弹簧），共 12 个，effort 恒 0 |
 | 资产 | 运行时 URDF→USD + 运行时碰撞过滤 | 直接加载已 authored 的 `Wheel_leg_V2.usd`（闭链在 USD 内） |
 
-`V40 闭链参考/urdf/joint_mapping.json` 明确：控制面是 6 个 *equivalent output joints*，
-`real_C0_motor_mapping: pending`（真实电机→关节映射尚未标定）。因此训练在等效输出关节空间做，
-部署时需要另行标定链传动映射。
+V2 的闭链树结构中，髋电机位于 `L_joint1/R_joint1`，膝电机位于四杆支链的
+`LL_joint1/RR_joint1`。`L_joint2/R_jonit2` 是主链中的被动关节，由闭合约束跟随，
+不能再作为膝电机输入。训练动作和观测现在直接使用这 6 个电机树关节。
 
 **奖励设计与 V40 完全一致**（同一套权重与核）：`velocity/yaw/height/upright/vertical_velocity/
 action_rate/effort/knee_soft_limit`，`lateral_velocity`、`zero_command_translation`、
@@ -76,7 +76,7 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Flat-v0 \
 
 - **观测 25** = `ang_vel_b3 | proj_grav_b3 | cmd(vx,wz,height)3 | 四腿相对名义角4 | 六关节速度6 | 上一动作6`；
   history 5 帧 → actor 125；critic 29 = 25 + 真值线速度3 + 真实车高1。
-- **动作 6** = `[L_joint1,L_joint2,L_joint3,R_joint1,R_jonit2,R_joint3]` 的归一化输出；
+- **动作 6** = `[L_joint1,LL_joint1,L_joint3,R_joint1,RR_joint1,R_joint3]` 的归一化输出；
   腿目标 = nominal + 0.5·a，轮目标 = 10·a（rad/s）。动作 clip 100。
 - **名义位形** = URDF 零位 `q=0`（SolidWorks 装配位形，闭链在 q=0 自洽），即 nominal 全 0。
 - **时钟** = 200Hz 物理 / 100Hz 策略（dt 0.005 × decimation 2）。
@@ -89,7 +89,7 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Flat-v0 \
 
 1. **膝/髋机械限位**：V2 URDF 全部 `continuous`（USD 限位 ±3.4e38，无硬止挡）。
    合同的 `knee_hard_limits` 目前为空 = 不做膝目标夹紧、`knee_soft_limit` 奖励恒 0。
-   机械标定后按 `"L_joint2": [lo,hi], "R_jonit2": [lo,hi]` 填入即可自动生效。
+   机械标定后按 `"LL_joint1": [lo,hi], "RR_joint1": [lo,hi]` 填入即可自动生效。
 2. **站立高度**：`nominal_base_height=0.22`。实测零动作静平衡高 ≈0.2167 m
    （轮子承重 ~68/75 N，闭链误差 <0.05mm，无腿碰地；URDF 零位 FK 估算轮底在 base 下方
    约 0.2376 m）。若结构/气弹簧改动，用 `Geometry/base_height_m` 重新校准。
@@ -101,7 +101,7 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Flat-v0 \
    4096 env 可跑（~3s/iter）；而 `clone_in_fabric=True` 会让接触传感器初始化失败
    （`Failed to initialize contact reporter for specified bodies`），必须保持 False。
    早期用 `replicate_physics=False` 时 4096 env 会因逐环境克隆 USD 打爆内存而卡死。
-5. **真实电机映射**：等效输出关节 ≠ 实机电机（链传动），部署前必须标定。
+5. **电机参数标定**：当前已按实际电机所在关节建模，但减速器参数、闭链传动扭矩和编码器零位仍需实机标定。
 
 ## 6. 与 V40 的对应
 

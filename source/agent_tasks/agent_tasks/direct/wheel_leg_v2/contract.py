@@ -9,8 +9,9 @@
 #
 # 设计参考 V40 训练仓 wheeled-biped-rl-train/src/wheeled_tasks/v40/contract.py，
 # 但针对 V2 闭链机器人做了简化与适配：
-#   - 控制面是 6 个“等效输出关节” L_joint1/2/3 + R_joint1/2/3（右膝原名 R_jonit2）；
-#   - 其余 12 个树关节（LL_*/LLL_*/RR_*/RRR_*）为被动闭链，不进入合同观测/动作；
+#   - 控制面是 6 个真实电机树关节：髋 L_joint1/R_joint1、膝 LL_joint1/RR_joint1、
+#     轮 L_joint3/R_joint3；
+#   - 其余 12 个树关节为被动闭链，不进入合同观测/动作；
 #   - 资产为已 authored 的 Wheel_leg_V2.usd（闭链已在 USD 内），不再运行时转 URDF。
 #
 # 本模块不依赖 Torch / Isaac，可单独做 CPU 静态检查。
@@ -33,8 +34,8 @@ CONTRACT_V1_ID = "own-wheel-leg-v2-jointspace-h5-v1"
 CONTRACT_V2_ID = "own-wheel-leg-v2-jointspace-h5-v2"
 CONTRACT_IDS = {CONTRACT_V1_ID, CONTRACT_V2_ID}
 
-# 6 个等效输出关节的固定顺序（left hip/knee/wheel, right hip/knee/wheel）
-ORDER = ["L_joint1", "L_joint2", "L_joint3", "R_joint1", "R_jonit2", "R_joint3"]
+# 6 个电机树关节的固定顺序（left hip/knee/wheel, right hip/knee/wheel）
+ORDER = ["L_joint1", "LL_joint1", "L_joint3", "R_joint1", "RR_joint1", "R_joint3"]
 LEG_INDICES = [0, 1, 3, 4]
 HIP_INDICES = [0, 3]
 KNEE_INDICES = [1, 4]

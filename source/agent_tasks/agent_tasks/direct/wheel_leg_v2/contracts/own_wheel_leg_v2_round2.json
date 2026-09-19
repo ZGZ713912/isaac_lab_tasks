@@ -19,7 +19,7 @@
     "previous_action": "last_executed_clipped_normalized_policy_output_not_torque"
   },
   "joints": {
-    "action_order": ["L_joint1", "L_joint2", "L_joint3", "R_joint1", "R_jonit2", "R_joint3"],
+    "action_order": ["L_joint1", "LL_joint1", "L_joint3", "R_joint1", "RR_joint1", "R_joint3"],
     "leg_indices": [0, 1, 3, 4],
     "hip_indices": [0, 3],
     "knee_indices": [1, 4],
@@ -34,7 +34,7 @@
   },
   "actions": {"dimension": 6, "clip": 100.0, "leg_position_scales": [0.5, 0.5, 0.5, 0.5], "wheel_velocity_scale": 10.0},
   "actuators": {
-    "profile": "equivalent_output_joints_not_hardware_mapping",
+    "profile": "closed_chain_motor_joint_space",
     "hardware_validated": false,
     "leg": {"model": "DM-J8009-2EC", "kp": 60.0, "kd": 2.0, "effort_limit": 40.0, "armature": 0.015795},
     "wheel": {
@@ -87,7 +87,7 @@
     "empirical_normalization": false
   },
   "unverified": [
-    "哪些等效输出关节对应真实电机（链传动映射 pending）",
+    "真实电机减速器参数与闭链传动扭矩映射",
     "膝/髋机械限位与编码器零位标定",
     "气弹簧力曲线与阻尼",
     "闭链 spherical 约束在强 PD 下的长期数值稳定性"

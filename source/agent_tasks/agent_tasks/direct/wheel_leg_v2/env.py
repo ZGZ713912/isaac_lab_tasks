@@ -8,7 +8,7 @@
 # Wheel_leg_V2 闭链轮腿任务的 DirectRLEnv。
 #
 # 架构移植自 V40 训练仓 wheeled-biped-rl-train/src/wheeled_tasks/direct/v40_serial/env.py：
-#   6 个等效输出关节的 joint-space PD + 轮 torque-speed 曲线，
+#   6 个真实电机树关节的 joint-space PD + 轮 torque-speed 曲线，
 #   25D 观测 ×5 历史、29D critic、奖励核与 V40 合同一致。
 # 适配点（V2 闭链）：
 #   - 资产是已 authored 的 Wheel_leg_V2.usd，18 个树关节中只驱动 6 个，
@@ -31,7 +31,12 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 
-from agent_world.assets.wheel_leg_V2 import WheelLegV2_CFG
+from agent_world.assets.wheel_leg_V2 import (
+    LEGS_ACT_JOINT_NAMES,
+    PASSIVE_JOINT_NAMES,
+    WHEEL_JOINT_NAMES,
+    WheelLegV2_CFG,
+)
 
 from .contract import asset_paths, is_round2, load_constraints, load_contract
 from .core import (
@@ -85,6 +90,15 @@ class WheelLegV2Env(DirectRLEnv):
         cfg.is_finite_horizon = False
 
         self.joint_names = list(self.contract["joints"]["action_order"])
+        configured_drive_names = set(LEGS_ACT_JOINT_NAMES + WHEEL_JOINT_NAMES)
+        contract_drive_names = set(self.joint_names)
+        if configured_drive_names != contract_drive_names:
+            raise ValueError(
+                "WheelLegV2 asset/contract drive-joint mismatch: "
+                f"asset={sorted(configured_drive_names)}, contract={sorted(contract_drive_names)}"
+            )
+        if configured_drive_names & set(PASSIVE_JOINT_NAMES):
+            raise ValueError("WheelLegV2 drive and passive joint groups overlap")
         nominal = self.contract["joints"]["nominal_positions"]
         base_height = self.contract["asset"]["nominal_base_height"]
         # 直接复用资产 cfg，只改 prim_path 与初始根高
@@ -113,6 +127,14 @@ class WheelLegV2Env(DirectRLEnv):
         joints = self.contract["joints"]
         self._leg_ids = torch.tensor(joints["leg_indices"], dtype=torch.long, device=self.device)
         self._wheel_ids = torch.tensor(joints["wheel_indices"], dtype=torch.long, device=self.device)
+        self._hip_ids = torch.tensor(joints["hip_indices"], dtype=torch.long, device=self.device)
+        self._knee_group_ids = torch.tensor(joints["knee_indices"], dtype=torch.long, device=self.device)
+        # 每个驱动关节的力矩上限，用于利用率统计（与 core.compute_reward_terms 的 caps 一致）
+        self._torque_cap = torch.tensor(
+            [self.contract["actuators"]["wheel" if i in joints["wheel_indices"] else "leg"]["effort_limit"]
+             for i in range(len(self.joint_names))],
+            dtype=torch.float32, device=self.device,
+        )
         self._nominal = torch.tensor(nominal, device=self.device)
         hard = joints.get("knee_hard_limits", {})
         self._knee_ids = torch.tensor(
@@ -129,6 +151,10 @@ class WheelLegV2Env(DirectRLEnv):
         self.actions = torch.zeros((self.num_envs, 6), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)
         self.torques = torch.zeros_like(self.actions)
+        # 力矩统计窗口：累积一个 policy step 内全部物理子步的 |τ|（decimation 次）
+        self._torque_abs_sum = torch.zeros_like(self.actions)
+        self._torque_abs_max = torch.zeros_like(self.actions)
+        self._torque_samples = 0
         self.leg_targets = self._nominal[self._leg_ids].repeat(self.num_envs, 1)
         self.wheel_targets = torch.zeros((self.num_envs, 2), device=self.device)
         self.commands = torch.zeros((self.num_envs, 3), device=self.device)
@@ -225,7 +251,12 @@ class WheelLegV2Env(DirectRLEnv):
         bad = ~torch.isfinite(self.torques).all(-1)
         self._invalid_actions |= bad
         self.torques[bad] = 0.0
-        # 只对 6 个驱动关节下发 effort；被动关节保持 0。
+        # 记录本子步力矩（|τ| 累加与峰值），供 _get_dones 输出到 extras["log"]
+        abs_tau = self.torques.abs()
+        self._torque_abs_sum += abs_tau
+        torch.maximum(self._torque_abs_max, abs_tau, out=self._torque_abs_max)
+        self._torque_samples += 1
+        # 只对 6 个真实电机关节下发 effort；被动关节保持 0。
         self.robot.set_joint_effort_target(self.torques, joint_ids=self._joint_ids)
 
     # ------------------------------------------------------------- dones
@@ -282,6 +313,20 @@ class WheelLegV2Env(DirectRLEnv):
         for side, body_id in zip(("left", "right"), self._wheel_body_ids):
             force = torch.nan_to_num(contact[:, body_id], nan=0.0, posinf=0.0, neginf=0.0)
             log[f"Contact/{side}_wheel_force_n"] = force.mean()
+        if self._torque_samples > 0:
+            abs_mean = self._torque_abs_sum / self._torque_samples
+            for i, name in enumerate(self.joint_names):
+                log[f"Joint/Torque_absmean/{name}"] = abs_mean[:, i].mean()
+                log[f"Joint/Torque_absmax/{name}"] = self._torque_abs_max[:, i].mean()
+                log[f"Joint/Torque_cmd_max/{name}"] = self._torque_abs_max[:, i].max()
+                log[f"Joint/Torque_util/{name}"] = (abs_mean[:, i] / self._torque_cap[i]).mean()
+            for group, ids in (("hip", self._hip_ids), ("knee", self._knee_group_ids),
+                               ("wheel", self._wheel_ids)):
+                log[f"Joint/Torque_absmean_{group}"] = abs_mean[:, ids].mean()
+                log[f"Joint/Torque_peak_{group}"] = self._torque_abs_max[:, ids].amax(dim=1).mean()
+            self._torque_abs_sum.zero_()
+            self._torque_abs_max.zero_()
+            self._torque_samples = 0
         return terminated, time_out
 
     # ------------------------------------------------------------- rewards
@@ -394,6 +439,8 @@ class WheelLegV2Env(DirectRLEnv):
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
         self.torques[env_ids] = 0.0
+        self._torque_abs_sum[env_ids] = 0.0
+        self._torque_abs_max[env_ids] = 0.0
         self.leg_targets[env_ids] = self._nominal[self._leg_ids]
         self.wheel_targets[env_ids] = 0.0
         self.commands[env_ids] = 0.0

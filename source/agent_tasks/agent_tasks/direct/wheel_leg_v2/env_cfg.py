@@ -9,6 +9,8 @@
 #
 # 架构移植自 V40 训练仓 wheeled-biped-rl-train/src/wheeled_tasks/direct/v40_serial/env_cfg.py：
 # 环境的具体维度/时钟/资产在 WheelLegV2Env.__init__ 里按合同（contract）填充。
+# 合同动作和关节状态使用真实电机树关节：髋 L/R、膝 LL/RR、轮 L/R；
+# 闭链输出由 USD 中的 spherical 约束传递，不再把主链膝关节当作电机输入。
 # =============================================================================
 
 from isaaclab.assets import ArticulationCfg
@@ -28,6 +30,7 @@ class WheelLegV2EnvCfg(DirectRLEnvCfg):
     decimation = 2
     episode_length_s = 20.0
     is_finite_horizon = False
+    # [L_joint1, LL_joint1, L_joint3, R_joint1, RR_joint1, R_joint3]
     action_space = 6
     # DirectRLEnv 2.3 会把 observation_space 包成 "policy"，state_space 包成 "critic"。
     observation_space = 125

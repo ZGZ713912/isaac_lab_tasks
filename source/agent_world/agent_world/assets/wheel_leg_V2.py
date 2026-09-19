@@ -16,10 +16,9 @@
 #    闭链误差由 scripts/tools/validate_wheel_leg_v2_closed.py 校验。）
 #
 # 关节：18 个树 revolute + 4 个 spherical 闭合 + 2 个 prismatic 气弹簧。
-#   - 驱动关节（等效输出关节，与 V40 合同控制面一致）：
-#       L_joint1/L_joint2/L_joint3 + R_joint1/R_jonit2/R_joint3
-#     （注意右膝 URDF 原名拼写为 R_jonit2，必须原样使用）
-#   - 被动关节：LL_*（左侧四杆）、RR_*（右侧四杆）、LLL_* / RRR_*（气弹簧支链）。
+#   - 驱动关节（真实电机所在的树关节）：
+#       髋 L_joint1/R_joint1，膝 LL_joint1/RR_joint1，轮 L_joint3/R_joint3
+#   - 被动关节：主链膝 L_joint2/R_jonit2、其余四杆关节和气弹簧支链关节。
 #     不设驱动，仅由闭合约束（spherical + prismatic）跟随。
 #
 # 执行器：effort 模式（stiffness/damping=0），由 env 手工计算 PD/轮曲线力矩后
@@ -38,11 +37,16 @@ from agent_world import AssetPath
 # 与 wheelbipe / wheel_leg_V1 同款达妙 DM8009 折算到关节的等效转子惯量
 DM8009_ARMATURE = 1.95e-04 * 9.0 * 9.0
 
-# 合同定义的 6 个驱动关节（名称顺序必须与 contracts/own_wheel_leg_v2.json 一致）
-LEGS_ACT_JOINT_NAMES = ["L_joint1", "L_joint2", "R_joint1", "R_jonit2"]
+# 合同定义的 4 个腿部电机关节；动作交错顺序由 contract.py 统一定义。
+LEGS_ACT_JOINT_NAMES = ["L_joint1", "LL_joint1", "R_joint1", "RR_joint1"]
 WHEEL_JOINT_NAMES = ["L_joint3", "R_joint3"]
-# 被动支链正则：四杆 LL_*/RR_* + 气弹簧 LLL_*/RRR_*
-PASSIVE_JOINT_EXPR = ["LL_.*", "LLL_.*", "RR_.*", "RRR_.*"]
+# 必须显式列出被动关节，避免 LL_joint1/RR_joint1 被通配符重复匹配。
+PASSIVE_JOINT_NAMES = [
+    "L_joint2", "R_jonit2",
+    "LL_joint2", "LL_joint3", "LL_link4",
+    "RR_joint2", "RR_joint3", "RR_joint4",
+    "LLL_joint2", "LLL_jointt1", "RRR_joint2", "RRR_joint1",
+]
 
 LEG_EFFORT_LIMIT = 40.0      # N·m（DM-J8009 研究先验，非实测额定）
 WHEEL_EFFORT_LIMIT = 3.837686567164179  # N·m（M3508 11:1 曲线 + effort 上限，同 V40）
@@ -104,7 +108,7 @@ WheelLegV2_CFG = ArticulationCfg(
         ),
         # 被动闭链关节：不驱动（effort 0），仅随闭合约束运动
         "passive_leg": ImplicitActuatorCfg(
-            joint_names_expr=PASSIVE_JOINT_EXPR,
+            joint_names_expr=PASSIVE_JOINT_NAMES,
             stiffness=0.0,
             damping=0.0,
             effort_limit_sim=0.0,
