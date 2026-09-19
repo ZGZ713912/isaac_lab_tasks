@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "contract_id": "own-wheel-leg-v2-jointspace-h5-v1",
+  "robot_id": "wheel_leg_v2",
+  "control_frame": "Xforward_Yleft_Zup",
+  "timing": {"physics_dt": 0.005, "decimation": 2, "policy_dt": 0.01},
+  "observations": {
+    "single_dim": 25,
+    "history_length": 5,
+    "actor_dim": 125,
+    "critic_dim": 29,
+    "history_order": "oldest_to_newest_current_last",
+    "initial_history": "repeat_first_valid_observation",
+    "scales": {"angular_velocity": 0.5, "joint_position": 1.0, "joint_velocity": 0.1, "command": [1.0, 1.0, 5.0]},
+    "clip": 100.0,
+    "empirical_normalization": false,
+    "wheel_position_observed": false,
+    "previous_action": "last_executed_clipped_normalized_policy_output_not_torque"
+  },
+  "joints": {
+    "action_order": ["L_joint1", "L_joint2", "L_joint3", "R_joint1", "R_jonit2", "R_joint3"],
+    "leg_indices": [0, 1, 3, 4],
+    "hip_indices": [0, 3],
+    "knee_indices": [1, 4],
+    "wheel_indices": [2, 5],
+    "nominal_positions": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "continuous": ["L_joint1", "R_joint1", "L_joint3", "R_joint3"],
+    "knee_hard_limits": {},
+    "knee_soft_margin": 0.08726646259971647,
+    "hip_soft_deviation": 0.35,
+    "note": "nominal = URDF 零位 = SolidWorks 装配位形（闭链在 q=0 自洽）；knee_hard_limits 待机械标定后填入，空={不做目标夹紧/soft-limit 奖励}。"
+  },
+  "actions": {"dimension": 6, "clip": 100.0, "leg_position_scales": [0.5, 0.5, 0.5, 0.5], "wheel_velocity_scale": 10.0},
+  "actuators": {
+    "profile": "equivalent_output_joints_not_hardware_mapping",
+    "hardware_validated": false,
+    "leg": {"model": "DM-J8009-2EC", "kp": 60.0, "kd": 2.0, "effort_limit": 40.0, "armature": 0.015795},
+    "wheel": {
+      "model": "M3508", "gear_ratio": 11.0, "gearbox_efficiency": 1.0, "kd": 0.2, "armature": 0.0,
+      "effort_limit": 3.837686567164179, "curve_side": "motor", "curve_kind": "reference_linear_prior_not_measured",
+      "motor_speed_rad_s": [0.0, 999.0630117647059],
+      "motor_torque_nm": [0.34888059701492535, 0.0]
+    }
+  },
+  "asset": {
+    "directory": "usd_files/Wheel_leg_V2",
+    "usd": "Wheel_leg_V2.usd",
+    "urdf": "urdf/urdf_v5.0.urdf",
+    "constraints": "constraints.json",
+    "nominal_base_height": 0.22
+  },
+  "commands": {
+    "resample_seconds": 3.0,
+    "stages": {
+      "stand": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.22, 0.22]},
+      "height": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.20, 0.25]},
+      "locomotion": {"vx": [-2.0, 2.0], "wz": [-2.0, 2.0], "height": [0.20, 0.25], "standing_probability": 0.1}
+    }
+  },
+  "reset": {"root_velocity_range": [0.0, 0.0]},
+  "rewards": {
+    "weights": {
+      "velocity": 2.0, "yaw": 1.0, "height": 2.0, "upright": -4.0,
+      "lateral_velocity": 0.0, "vertical_velocity": -0.5, "action_rate": -0.01,
+      "effort": -0.02, "knee_soft_limit": -2.0, "zero_command_translation": 0.0
+    },
+    "sigma_velocity": 0.5, "sigma_yaw": 0.5, "sigma_height": 0.03,
+    "zero_vx_threshold": 0.05, "termination_penalty": 0.0,
+    "note": "与 V40 完成训练代码完全一致的奖励权重/核；不含 alive bonus 与 termination reward。"
+  },
+  "termination": {
+    "contact_force_threshold": 1.0,
+    "max_tilt_deg": 35.0,
+    "min_base_height": 0.16,
+    "episode_seconds": 20.0,
+    "knee_limit_tolerance": 0.001
+  },
+  "policy": {
+    "class_name": "ActorCritic",
+    "actor_hidden_dims": [256, 128, 64],
+    "critic_hidden_dims": [256, 128, 64],
+    "activation": "elu",
+    "empirical_normalization": false
+  },
+  "unverified": [
+    "哪些等效输出关节对应真实电机（链传动映射 pending）",
+    "膝/髋机械限位与编码器零位标定",
+    "气弹簧力曲线与阻尼",
+    "闭链 spherical 约束在强 PD 下的长期数值稳定性",
+    "质量/摩擦/PD 随机化与 action delay 尚未实现"
+  ],
+  "hardware_deployment_ready": false
+}
