@@ -37,6 +37,8 @@ source/agent_tasks/agent_tasks/direct/wheel_leg_v2/
   contract.py                                                    # 合同加载/校验
   contracts/own_wheel_leg_v2.json                                # v1 profile（默认，无噪声）
   contracts/own_wheel_leg_v2_round2.json                         # v2 profile（噪声 + 持续倾倒）
+  slope.py                                                       # 周期坡面解析求高/梯度（Torch）
+  jump.py                                                        # 跳跃相位/弹道/辅助力/奖励（wheelbipe 语义）
   agents/rsl_rl_ppo_cfg.py                                       # PPO 配置（移植 V40）
 ```
 
@@ -48,9 +50,15 @@ source/agent_tasks/agent_tasks/direct/wheel_leg_v2/
 | `Robotics-Wheel-Leg-V2-Height-v0` | height | 零速度、变高 |
 | `Robotics-Wheel-Leg-V2-Flat-v0` | locomotion | 统一速度/转向/高度指令（v1 profile，无噪声） |
 | `Robotics-Wheel-Leg-V2-Flat-Round2-v0` | locomotion | V40 完成 profile（噪声+持续倾倒+reset 速度随机） |
+| `Robotics-Wheel-Leg-V2-Slope-v0` | locomotion | 周期坡面 10–17°（round2 profile） |
+| `Robotics-Wheel-Leg-V2-Slope-Steep-v0` | locomotion | 周期坡面 17–25°（round2 profile） |
+| `Robotics-Wheel-Leg-V2-Jump-v0` | jump | 原地/行进跳跃（随机触发+弹道参考+辅助力） |
 | `Robotics-Wheel-Leg-V2-Stand-Play-v0` | stand | 单环境演示 |
 | `Robotics-Wheel-Leg-V2-Flat-Play-v0` | locomotion | 单环境演示 |
 | `Robotics-Wheel-Leg-V2-Flat-Round2-Play-v0` | locomotion | round2 单环境演示 |
+| `Robotics-Wheel-Leg-V2-Slope-Play-v0` | locomotion | 周期坡面 10–17° 单环境演示 |
+| `Robotics-Wheel-Leg-V2-Slope-Steep-Play-v0` | locomotion | 周期坡面 17–25° 单环境演示 |
+| `Robotics-Wheel-Leg-V2-Jump-Play-v0` | jump | 跳跃单环境演示 |
 
 ## 3. 运行
 
@@ -70,6 +78,16 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Stand-v0 \
 
 # 3) 站稳后统一 locomotion
 python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Flat-v0 \
+    --num_envs=1024 --max_iterations=20000 --headless --device=cuda:0
+
+# 4) 斜坡课程（round2 profile）：先缓坡，再陡坡
+python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Slope-v0 \
+    --num_envs=1024 --max_iterations=20000 --headless --device=cuda:0
+python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Slope-Steep-v0 \
+    --num_envs=1024 --max_iterations=20000 --headless --device=cuda:0
+
+# 5) 跳跃（随机触发 + 弹道参考 + 辅助力衰减）
+python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Jump-v0 \
     --num_envs=1024 --max_iterations=20000 --headless --device=cuda:0
 ```
 
@@ -93,12 +111,14 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Flat-v0 \
 1. **膝/髋机械限位**：V2 URDF 全部 `continuous`（USD 限位 ±3.4e38，无硬止挡）。
    合同的 `knee_hard_limits` 目前为空 = 不做膝目标夹紧、`knee_soft_limit` 奖励恒 0。
    机械标定后按 `"LL_joint1": [lo,hi], "RR_joint1": [lo,hi]` 填入即可自动生效。
-2. **站立高度**：`nominal_base_height=0.22`。实测零动作静平衡高 ≈0.2167 m
-   （轮子承重 ~68/75 N，闭链误差 <0.05mm，无腿碰地；URDF 零位 FK 估算轮底在 base 下方
-   约 0.2376 m）。若结构/气弹簧改动，用 `Geometry/base_height_m` 重新校准。
-3. **气弹簧**：第一版被动、不加力（纯 prismatic 约束）。
-   力曲线模型在 `source/agent_world/agent_world/actuators/wheel_leg_v2_gas_spring.py`，
-   后续可接入。
+2. **站立高度**：`nominal_base_height=0.23`。接入气弹簧后实测零动作静平衡高 ≈0.231 m
+   （原无弹簧 ≈0.2167 m）。若结构/气弹簧/力曲线改动，用 `Geometry/base_height_m` 重新校准。
+3. **气弹簧**：已接入 `WheelLegV2GasSpringModel`（BKB0.45-063-172，10MPa，260→380 N 线性，
+   行程 109–172 mm，阻尼 0）。因为气弹簧是 `excludeFromArticulation` 的棱柱 loop joint，
+   **不能下发 effort**，改为每物理子步按 `constraints.json` 的 `gas_springs` 锚点求长度/轴向，
+   对 `LLL/RRR_link1,2` 施等大反向轴向力（`env._apply_gas_spring_forces`），
+   并在 TensorBoard 记录 `Spring/length_m`、`Spring/force_n`。标定后可在
+   `env_cfg.gas_spring_force_at_min_n/max_n/damping_n_s_per_m` 调整。
 4. **复制策略**：`replicate_physics=True` + `clone_in_fabric=False`。
    实测 PhysX 物理复制会正确复制闭链 loop joints（多环境闭合误差 <0.001mm），
    4096 env 可跑（~3s/iter）；而 `clone_in_fabric=True` 会让接触传感器初始化失败
@@ -116,3 +136,35 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Flat-v0 \
 | `wheeled_tasks/direct/v40_serial/env.py` | `wheel_leg_v2/env.py`（+ 18 关节/闭链/气弹簧适配） |
 | `wheeled_tasks/agents/v40_ppo_cfg.py` | `wheel_leg_v2/agents/rsl_rl_ppo_cfg.py` |
 | `contracts/own_v40_v1/v2.json` | `contracts/own_wheel_leg_v2[_round2].json` |
+
+## 7. 斜坡地形（周期坡面，课程两段）
+
+- 地形用 `agent_world.terrains.HfCustomPeriodicSlopeTerrainCfg`：单张大 tile（150×150 m），
+  剖面沿 x，周期 = 4×1 m（上坡/平/下坡/平），每周期独立随机坡角；`use_terrain_origins=False`，
+  各 env 按 `env_spacing` 铺在同一张坡面上（与 `deformable_suspension` 同款）。
+- 求高与地形网格同源：`wheel_leg_v2/slope.py` 提供 `periodic_slope_height_torch` /
+  `periodic_slope_gradient_torch`。`_base_height`、`_wheel_clearance`（接触门控 / `wheel_hop`）
+  都改为相对**解析地面高度**，而非 `env_origins.z`。
+- spawn：按坡角对齐 pitch、随机 yaw，落到地面 + `slope_spawn_drop_m`(4cm) 后自然落地；
+  越界（离 tile 边缘 <3m）按 time_out 重置。
+- 课程：`Slope-v0`(10–17°) → `Slope-Steep-v0`(17–25°)，均用 round2 profile。
+
+## 8. 跳跃（wheelbipe 语义）
+
+实现在 `wheel_leg_v2/jump.py`（纯 Torch `JumpController`），语义照搬
+`wheelbipe/state_machines/{jump_takeoff,airborne}.py`，仅 `stage == "jump"` 生效：
+
+1. **触发**：`trigger_rate_per_s` 随机 + 外部 `request_jump()`；要求 episode 时长≥
+   `jump_min_episode_time_s`、冷却结束。
+2. **弹道参考**：采样峰值高度 `jump_peak_height_range`，解析求离地速度、蹬伸时间、总时长
+   （`gravity`），相位 `IDLE→PUSH→TUCK→IDLE`。
+3. **辅助力**：PUSH 内对 `base_link` 施世界 +Z 力
+   `force_z + missing_vel_gain·max(v_rel − vz, 0)`（上限 `max_force_z`）；
+   概率 `jump_assist_prob_start→end` 按 `common_step_counter` 衰减
+   （`jump_assist_decay_iterations × jump_steps_per_iteration`），用于 bootstrap。
+4. **奖励**（contract `rewards.weights`）：`jump_push_track`、`jump_push_max_vel`、
+   `jump_peak_track`（退出事件）、`jump_air_time`、`airborne_landing_down_vel`。
+5. **日志**：`Jump/{PUSH,TUCK,active,assist}_frac`、`assist_prob`、`assist_force_n`、
+   `active_max_height_m`、`Reward/jump_*`。
+6. **未做**（后续）：腾空高度奖励参考覆盖（airborne height override）、落地轨迹参考、
+   域随机化、`ctrl_mode_obs` 通道。

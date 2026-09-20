@@ -49,14 +49,15 @@
     "usd": "Wheel_leg_V2.usd",
     "urdf": "urdf/urdf_v5.0.urdf",
     "constraints": "constraints.json",
-    "nominal_base_height": 0.22
+    "nominal_base_height": 0.23
   },
   "commands": {
     "resample_seconds": 3.0,
     "stages": {
-      "stand": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.22, 0.22], "standing_probability": 1.0},
-      "height": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.20, 0.25], "standing_probability": 1.0},
-      "locomotion": {"vx": [-2.0, 2.0], "wz": [-2.0, 2.0], "height": [0.20, 0.25], "standing_probability": 0.1}
+      "stand": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.23, 0.23], "standing_probability": 1.0},
+      "height": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.21, 0.26], "standing_probability": 1.0},
+      "locomotion": {"vx": [-2.0, 2.0], "wz": [-2.0, 2.0], "height": [0.21, 0.26], "standing_probability": 0.1},
+      "jump": {"vx": [-1.0, 1.0], "wz": [-1.0, 1.0], "height": [0.21, 0.26], "standing_probability": 0.2}
     }
   },
   "reset": {"root_velocity_range": [-0.5, 0.5], "evaluation_root_velocity": 0.0, "evaluation_observation_noise": false},
@@ -66,7 +67,9 @@
       "lateral_velocity": 0.0, "vertical_velocity": -1.0, "action_rate": -0.01,
       "effort": -0.02, "knee_soft_limit": -2.0, "zero_command_translation": 0.0,
       "wheel_hop": -2.0, "wheel_slip": -0.5,
-      "leg_joint_osc": -0.005, "action_smoothness_leg": -0.01
+      "leg_joint_osc": -0.005, "action_smoothness_leg": -0.01,
+      "jump_push_track": 2.0, "jump_push_max_vel": 5.0, "jump_peak_track": 20.0,
+      "jump_air_time": 2.0, "airborne_landing_down_vel": -1.0
     },
     "sigma_velocity": 0.5, "sigma_yaw": 0.5, "sigma_height": 0.03,
     "zero_vx_threshold": 0.05, "termination_penalty": 0.0,

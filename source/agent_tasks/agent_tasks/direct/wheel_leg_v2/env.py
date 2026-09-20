@@ -31,6 +31,7 @@ from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 
+from agent_world.actuators import WheelLegV2GasSpringModel
 from agent_world.assets.wheel_leg_V2 import (
     LEGS_ACT_JOINT_NAMES,
     PASSIVE_JOINT_NAMES,
@@ -50,6 +51,12 @@ from .core import (
     decode_targets,
 )
 from .env_cfg import WheelLegV2EnvCfg
+from .jump import PHASE_IDLE, PHASE_PUSH, PHASE_TUCK, JumpController
+from .slope import (
+    build_periodic_slope_angle_table,
+    periodic_slope_gradient_torch,
+    periodic_slope_height_torch,
+)
 
 # USD / URDF 里的 19 个刚体（base + 左右各 9）
 BODY_NAMES = [
@@ -127,6 +134,38 @@ class WheelLegV2Env(DirectRLEnv):
         self._wheel_robot_body_ids = self._named_indices(
             self.robot.body_names, WHEEL_BODY_NAMES, "robot wheel body")
 
+        # —— 气弹簧：loop prismatic 约束被 excludeFromArticulation，无法下发 effort，
+        #    改为按 BKB 力曲线对两端刚体施加轴向力（几何来自 constraints.json）——
+        self._gas_spring_enabled = bool(getattr(self.cfg, "gas_spring_enabled", False))
+        self._gas_spring_model = None
+        self._gas_spring_prev_length = None
+        self._gas_spring_last_force = None
+        self._gas_spring_body_ids = None
+        self._gas_spring_body_pairs = None
+        self._gas_spring_anchor_local = None
+        self._gas_spring_nominal_length = None
+        if self._gas_spring_enabled:
+            self._setup_gas_springs()
+
+        # —— 周期坡面地形识别（解析求高/求梯度，与地形网格同源）——
+        self._setup_terrain_profile()
+
+        # —— 跳跃控制器（仅 stage == "jump"）——
+        self._jump_enabled = bool(getattr(self.cfg, "jump_enabled", False)) and self.cfg.stage == "jump"
+        self.jump = None
+        self._jump_base_body_ids = None
+        if self._jump_enabled:
+            self.jump = JumpController(
+                self.num_envs, self.device,
+                peak_height_range=tuple(self.cfg.jump_peak_height_range),
+                push_start_height_m=float(self.cfg.jump_push_start_height_m),
+                release_height_m=float(self.cfg.jump_release_height_m),
+                cooldown_s=float(self.cfg.jump_cooldown_s),
+                trigger_rate_per_s=float(self.cfg.jump_trigger_rate_per_s),
+                trigger_min_episode_time_s=float(self.cfg.jump_min_episode_time_s),
+            )
+            self._jump_base_body_ids = self._body_ids[:1]
+
         joints = self.contract["joints"]
         self._leg_ids = torch.tensor(joints["leg_indices"], dtype=torch.long, device=self.device)
         self._wheel_ids = torch.tensor(joints["wheel_indices"], dtype=torch.long, device=self.device)
@@ -191,12 +230,124 @@ class WheelLegV2Env(DirectRLEnv):
             raise RuntimeError(f"missing/ambiguous {kind} names: expected {requested}, received {actual}")
         return torch.tensor([actual.index(name) for name in requested], device=self.device, dtype=torch.long)
 
+    def _setup_gas_springs(self) -> None:
+        spring_defs = list(self.constraints.get("gas_springs", []))
+        if not spring_defs:
+            self._gas_spring_enabled = False
+            return
+        self._gas_spring_model = WheelLegV2GasSpringModel(
+            force_at_min_n=float(self.cfg.gas_spring_force_at_min_n),
+            force_at_max_n=float(self.cfg.gas_spring_force_at_max_n),
+            damping_n_s_per_m=float(self.cfg.gas_spring_damping_n_s_per_m),
+        )
+        spring_body_names: list[str] = []
+        anchors: list[list[float]] = []
+        nominal_lengths: list[float] = []
+        for spring in spring_defs:
+            spring_body_names.extend((spring["body0"], spring["body1"]))
+            anchors.append(list(spring["local_pos0_m"]))
+            anchors.append(list(spring["local_pos1_m"]))
+            nominal_lengths.append(float(spring["nominal_length_m"]))
+        self._gas_spring_body_ids = self._named_indices(
+            self.robot.body_names, spring_body_names, "gas spring body")
+        self._gas_spring_anchor_local = torch.tensor(anchors, dtype=torch.float32, device=self.device)
+        self._gas_spring_nominal_length = torch.tensor(
+            nominal_lengths, dtype=torch.float32, device=self.device)
+        # 每个弹簧的 body0/body1 在 _gas_spring_body_ids 中的位置
+        self._gas_spring_body_pairs = torch.arange(
+            len(spring_body_names), dtype=torch.long, device=self.device).reshape(-1, 2)
+        self._gas_spring_prev_length = self._gas_spring_nominal_length.repeat(self.num_envs, 1)
+        self._gas_spring_last_force = torch.zeros_like(self._gas_spring_prev_length)
+
+    def _apply_gas_spring_forces(self) -> None:
+        """按气弹簧力曲线对两杆施加轴向力（世界力→各刚体局部系，作用在各杆销点）。"""
+        if self._gas_spring_model is None or self._gas_spring_prev_length is None:
+            return
+        from isaaclab.utils.math import quat_apply_inverse
+
+        pos = self.robot.data.body_pos_w[:, self._gas_spring_body_ids]      # [N, B, 3]
+        quat = self.robot.data.body_quat_w[:, self._gas_spring_body_ids]    # [N, B, 4]
+        pairs = self._gas_spring_body_pairs                                 # [S, 2]
+        p0, p1 = pos[:, pairs[:, 0]], pos[:, pairs[:, 1]]
+        delta = p1 - p0
+        length = torch.linalg.vector_norm(delta, dim=-1)                    # [N, S]
+        axis = delta / length.clamp_min(1e-6).unsqueeze(-1)                 # body0 -> body1
+        dt = max(float(self.physics_dt), 1e-9)
+        rate = (length - self._gas_spring_prev_length) / dt
+        magnitude = self._gas_spring_model.force_magnitude(length, rate)    # [N, S]
+        force_local = torch.zeros_like(pos)
+        for column, body_pair in enumerate(pairs.tolist()):
+            i0, i1 = body_pair
+            f0 = (-magnitude[:, column]).unsqueeze(-1) * axis[:, column]
+            f1 = (magnitude[:, column]).unsqueeze(-1) * axis[:, column]
+            force_local[:, i0] = quat_apply_inverse(quat[:, i0], f0)
+            force_local[:, i1] = quat_apply_inverse(quat[:, i1], f1)
+        finite = torch.isfinite(force_local).all(dim=-1).all(dim=-1)
+        force_local = torch.where(finite[:, None, None], force_local, torch.zeros_like(force_local))
+        anchors = self._gas_spring_anchor_local.unsqueeze(0).expand(self.num_envs, -1, -1)
+        torques = torch.zeros_like(pos)
+        self.robot.set_external_force_and_torque(
+            forces=force_local, torques=torques, positions=anchors,
+            body_ids=self._gas_spring_body_ids,
+        )
+        self._gas_spring_prev_length.copy_(length.detach())
+        self._gas_spring_last_force = magnitude.detach()
+
+    def _setup_terrain_profile(self) -> None:
+        """识别周期坡面地形，构建坡角表与剖面坐标偏移（平地时全部关闭）。"""
+        terrain = getattr(self.cfg, "terrain", None)
+        gen = getattr(terrain, "terrain_generator", None) if terrain is not None else None
+        sub = None
+        if gen is not None and getattr(gen, "sub_terrains", None):
+            sub = gen.sub_terrains.get("periodic_slope")
+        self._periodic = sub is not None
+        self._period_seg = 0.0
+        self._slope_angle_table = None
+        self._profile_x_offset = 0.0
+        self._terrain_half_size = None
+        if not self._periodic:
+            return
+        self._period_seg = float(sub.segment_length)
+        size = gen.size
+        num_periods = int(math.ceil(float(size[0]) / (4.0 * self._period_seg))) + 2
+        self._slope_angle_table = build_periodic_slope_angle_table(
+            self._period_seg, tuple(sub.angle_range), int(sub.angle_seed), num_periods, self.device
+        )
+        # 地形网格以世界原点为中心（[-size/2, size/2]）；剖面坐标 p = world_x + size/2。
+        self._profile_x_offset = float(size[0]) * 0.5
+        self._terrain_half_size = (float(size[0]) * 0.5, float(size[1]) * 0.5)
+
+    def _ground_height_at_x(self, x: torch.Tensor) -> torch.Tensor:
+        if self._periodic:
+            return periodic_slope_height_torch(
+                x + self._profile_x_offset, self._period_seg, self._slope_angle_table)
+        return torch.zeros_like(x)
+
+    def _terrain_normal_w(self) -> torch.Tensor:
+        """脚下地面在世界系的外法向，形状 (N,3)。"""
+        normal = torch.zeros(self.num_envs, 3, device=self.device)
+        normal[:, 2] = 1.0
+        if self._periodic:
+            gradient = periodic_slope_gradient_torch(
+                self.robot.data.root_pos_w[:, 0] + self._profile_x_offset,
+                self._period_seg, self._slope_angle_table)
+            normal[:, 0] = -gradient
+            normal = normal / normal.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        return normal
+
     def _setup_scene(self) -> None:
         self.robot = Articulation(self.cfg.robot_cfg)
         self.contact_sensor = ContactSensor(self.cfg.contact_sensor_cfg)
         self.scene.articulations["robot"] = self.robot
         self.scene.sensors["contact"] = self.contact_sensor
-        spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        terrain = getattr(self.cfg, "terrain", None)
+        if terrain is not None:
+            terrain.num_envs = self.scene.cfg.num_envs
+            terrain.env_spacing = self.scene.cfg.env_spacing
+            self.terrain = terrain.class_type(terrain)
+        else:
+            self.terrain = None
+            spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         self.scene.clone_environments(copy_from_source=True)
         # 独立克隆需要显式跨环境过滤；USD 内已自带自碰撞过滤。
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
@@ -209,6 +360,10 @@ class WheelLegV2Env(DirectRLEnv):
                 self.robot.data.joint_vel[:, self._joint_ids])
 
     def _base_height(self) -> torch.Tensor:
+        """车体原点相对脚下地面的高度（周期坡面用解析地面高度）。"""
+        if self._periodic:
+            return self.robot.data.root_pos_w[:, 2] - self._ground_height_at_x(
+                self.robot.data.root_pos_w[:, 0])
         return self.robot.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2]
 
     def _contact_magnitudes(self) -> torch.Tensor:
@@ -220,8 +375,8 @@ class WheelLegV2Env(DirectRLEnv):
         rewards = self.contract["rewards"]
         radius = float(rewards.get("wheel_hop_reference_radius", 0.06))
         tolerance = float(rewards.get("wheel_hop_clearance_tolerance", 0.01))
-        height = (self.robot.data.body_pos_w[:, self._wheel_robot_body_ids, 2]
-                  - self.scene.env_origins[:, 2:3])
+        wheel_pos = self.robot.data.body_pos_w[:, self._wheel_robot_body_ids]
+        height = wheel_pos[..., 2] - self._ground_height_at_x(wheel_pos[..., 0])
         return height - (radius + tolerance)
 
     def _wheel_contact_flags(self) -> torch.Tensor:
@@ -263,6 +418,13 @@ class WheelLegV2Env(DirectRLEnv):
         return errors
 
     # ------------------------------------------------------------- action
+    def _jump_assist_probability(self) -> float:
+        start = float(self.cfg.jump_assist_prob_start)
+        end = float(self.cfg.jump_assist_prob_end)
+        decay_steps = max(1, int(self.cfg.jump_assist_decay_iterations) * int(self.cfg.jump_steps_per_iteration))
+        fraction = min(1.0, float(self.common_step_counter) / decay_steps)
+        return start + (end - start) * fraction
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         if actions.shape != (self.num_envs, 6):
             raise ValueError("expected N x 6 actions")
@@ -273,6 +435,32 @@ class WheelLegV2Env(DirectRLEnv):
         joint_pos, _ = self._joint_state()
         self.leg_targets, self.wheel_targets, clipped = decode_targets(safe_actions, joint_pos, self.contract)
         self.actions.copy_(clipped)
+        if self.jump is not None:
+            airborne = (self._wheel_clearance() > 0.0).all(dim=-1)
+            root_vel_z = torch.nan_to_num(
+                self.robot.data.root_lin_vel_w[:, 2], nan=0.0, posinf=0.0, neginf=0.0)
+            self.jump.step(
+                float(self.step_dt),
+                torch.nan_to_num(self._base_height(), nan=0.25),
+                root_vel_z,
+                self.episode_length_buf.to(torch.float32) * self.step_dt,
+                airborne,
+                self._jump_assist_probability(),
+                float(self.cfg.jump_assist_force_z),
+                float(self.cfg.jump_assist_missing_vel_gain),
+                float(self.cfg.jump_assist_max_force_z),
+            )
+
+    def _apply_jump_assist(self) -> None:
+        """对 base 施加世界 +Z 辅助力（帮助 bootstrap 蹬伸）；非 PUSH 相位力为 0。"""
+        if self.jump is None:
+            return
+        forces = torch.zeros((self.num_envs, 1, 3), device=self.device)
+        forces[:, 0, 2] = torch.nan_to_num(
+            self.jump.assist_force_z, nan=0.0, posinf=0.0, neginf=0.0)
+        torques = torch.zeros_like(forces)
+        self.robot.set_external_force_and_torque(
+            forces=forces, torques=torques, body_ids=self._jump_base_body_ids, is_global=True)
 
     def _apply_action(self) -> None:
         # DirectRLEnv 每个物理子步都调用；反馈不能冻结在策略频率。
@@ -296,6 +484,10 @@ class WheelLegV2Env(DirectRLEnv):
         self._torque_samples += 1
         # 只对 6 个真实电机关节下发 effort；被动关节保持 0。
         self.robot.set_joint_effort_target(self.torques, joint_ids=self._joint_ids)
+        # 气弹簧被动力（每物理子步重算，避免冻结在策略频率）。
+        self._apply_gas_spring_forces()
+        # 跳跃辅助力（仅 jump 任务；非 PUSH 相位自动置 0）。
+        self._apply_jump_assist()
 
     # ------------------------------------------------------------- dones
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -340,6 +532,12 @@ class WheelLegV2Env(DirectRLEnv):
             terminated = ~self._finite_state | non_wheel_contact | knee_out | tilt | low | closure_bad
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+        if self._terrain_half_size is not None:
+            margin = 3.0
+            root_xy = self.robot.data.root_pos_w[:, :2]
+            off = ((root_xy[:, 0].abs() > self._terrain_half_size[0] - margin)
+                   | (root_xy[:, 1].abs() > self._terrain_half_size[1] - margin))
+            time_out = time_out | off
 
         log = self.extras.setdefault("log", {})
         for name, flag in {**reasons, "timeout": time_out}.items():
@@ -355,6 +553,20 @@ class WheelLegV2Env(DirectRLEnv):
         log["Geometry/wheel_clearance_max_m"] = clearance.clamp(min=0.0).amax(dim=-1).mean()
         log["Geometry/wheel_slip_max"] = self._wheel_slip().amax(dim=-1).mean()
         log["Contact/wheels_grounded_frac"] = self._wheel_contact_flags().all(dim=-1).float().mean()
+        if self._gas_spring_model is not None and self._gas_spring_prev_length is not None:
+            log["Spring/length_m"] = torch.nan_to_num(self._gas_spring_prev_length, nan=0.0).mean()
+            log["Spring/force_n"] = torch.nan_to_num(self._gas_spring_last_force, nan=0.0).mean()
+        if self.jump is not None:
+            jump_active = self.jump.phase != PHASE_IDLE
+            log["Jump/PUSH_frac"] = (self.jump.phase == PHASE_PUSH).float().mean()
+            log["Jump/TUCK_frac"] = (self.jump.phase == PHASE_TUCK).float().mean()
+            log["Jump/active_frac"] = jump_active.float().mean()
+            log["Jump/assist_frac"] = self.jump.assist_active.float().mean()
+            log["Jump/assist_prob"] = self._jump_assist_probability()
+            log["Jump/assist_force_n"] = torch.nan_to_num(self.jump.assist_force_z, nan=0.0).mean()
+            if jump_active.any():
+                log["Jump/active_max_height_m"] = torch.nan_to_num(
+                    self.jump.max_height[jump_active], nan=0.0).mean()
         if self._torque_samples > 0:
             abs_mean = self._torque_abs_sum / self._torque_samples
             for i, name in enumerate(self.joint_names):
@@ -400,6 +612,17 @@ class WheelLegV2Env(DirectRLEnv):
             total += value
             log[f"Reward/{name}"] = value.mean()
             self._episode_sums.setdefault(name, torch.zeros_like(total)).add_(value)
+        if self.jump is not None:
+            weights = self.contract["rewards"]["weights"]
+            policy_dt = self.contract["timing"]["policy_dt"]
+            root_vel_z = torch.nan_to_num(data.root_lin_vel_w[:, 2], nan=0.0, posinf=0.0, neginf=0.0)
+            for name, raw in self.jump.reward_additions(root_vel_z).items():
+                if not torch.isfinite(raw).all():
+                    raise RuntimeError(f"non-finite Wheel_leg_V2 jump reward term: {name}")
+                value = torch.where(valid, raw, torch.zeros_like(raw)) * weights.get(name, 0.0) * policy_dt
+                total += value
+                log[f"Reward/{name}"] = value.mean()
+                self._episode_sums.setdefault(name, torch.zeros_like(total)).add_(value)
         terminal = self.reset_terminated.float() * self.contract["rewards"]["termination_penalty"]
         total += terminal
         log["Reward/termination"] = terminal.mean()
@@ -478,8 +701,21 @@ class WheelLegV2Env(DirectRLEnv):
         joint_vel = torch.zeros_like(joint_pos)
         root = self.robot.data.default_root_state[env_ids].clone()
         root[:, :3] += self.scene.env_origins[env_ids]
-        root[:, 2] = self.scene.env_origins[env_ids, 2] + self.contract["asset"]["nominal_base_height"]
-        root[:, 7:] = 0.0  # 保留默认根四元数
+        nominal = self.contract["asset"]["nominal_base_height"]
+        if self._periodic:
+            from isaaclab.utils.math import quat_from_euler_xyz
+
+            x = root[:, 0]
+            ground = self._ground_height_at_x(x)
+            root[:, 2] = ground + nominal + float(self.cfg.slope_spawn_drop_m)
+            gradient = periodic_slope_gradient_torch(
+                x + self._profile_x_offset, self._period_seg, self._slope_angle_table)
+            zeros = torch.zeros_like(x)
+            yaw = (torch.rand_like(x) * 2.0 - 1.0) * math.pi
+            root[:, 3:7] = quat_from_euler_xyz(zeros, torch.atan(gradient), yaw)
+        else:
+            root[:, 2] = self.scene.env_origins[env_ids, 2] + nominal
+        root[:, 7:] = 0.0  # 保留默认根四元数（平地）
         if is_round2(self.contract):
             low, high = self.contract["reset"]["root_velocity_range"]
             root[:, 7:] = low + (high - low) * torch.rand_like(root[:, 7:])
@@ -494,6 +730,10 @@ class WheelLegV2Env(DirectRLEnv):
         self.torques[env_ids] = 0.0
         self._torque_abs_sum[env_ids] = 0.0
         self._torque_abs_max[env_ids] = 0.0
+        if self._gas_spring_prev_length is not None:
+            self._gas_spring_prev_length[env_ids] = self._gas_spring_nominal_length
+        if self.jump is not None:
+            self.jump.reset(env_ids)
         self.leg_targets[env_ids] = self._nominal[self._leg_ids]
         self.wheel_targets[env_ids] = 0.0
         self.commands[env_ids] = 0.0

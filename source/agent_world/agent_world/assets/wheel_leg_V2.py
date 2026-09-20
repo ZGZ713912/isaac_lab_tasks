@@ -53,9 +53,9 @@ WHEEL_EFFORT_LIMIT = 3.837686567164179  # N·m（M3508 11:1 曲线 + effort 上�
 SOLVER_VELOCITY_LIMIT = 1.0e9  # 关闭 URDF/UUSD 占位速度上限；真实由轮曲线/腿限幅约束
 
 # 重置时的默认根高（米）。env 每次 reset 会用合同 nominal_base_height 覆盖；
-# 这里仅作为 ArticulationCfg 的初始 spawn。实测零动作静平衡高 ≈0.217 m
-# （见 docs/wheel_leg_v2_training.md），合同取 0.22。
-DEFAULT_SPAWN_HEIGHT = 0.22
+# 这里仅作为 ArticulationCfg 的初始 spawn。接入气弹簧（BKB0.45-063-172, 365N 预载）后
+# 实测零动作静平衡高 ≈0.231 m，合同取 0.23。
+DEFAULT_SPAWN_HEIGHT = 0.23
 
 
 WheelLegV2_CFG = ArticulationCfg(
