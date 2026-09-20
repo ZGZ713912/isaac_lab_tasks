@@ -123,6 +123,9 @@ class WheelLegV2Env(DirectRLEnv):
             self.contact_sensor.body_names, NON_WHEEL_BODY_NAMES, "non-wheel body")
         self._closure_body_ids = self._named_indices(self.robot.body_names, CLOSURE_BODY_NAMES, "closure body")
         self._body_ids = self._named_indices(self.robot.body_names, BODY_NAMES, "robot body")
+        # 轮体在 robot 刚体表中的下标（用于轮心离地高度 / 轮底滑移计算）
+        self._wheel_robot_body_ids = self._named_indices(
+            self.robot.body_names, WHEEL_BODY_NAMES, "robot wheel body")
 
         joints = self.contract["joints"]
         self._leg_ids = torch.tensor(joints["leg_indices"], dtype=torch.long, device=self.device)
@@ -150,7 +153,11 @@ class WheelLegV2Env(DirectRLEnv):
         # —— 运行时状态 ——
         self.actions = torch.zeros((self.num_envs, 6), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)
+        self.previous_previous_actions = torch.zeros_like(self.actions)
         self.torques = torch.zeros_like(self.actions)
+        # 腿关节速度 EMA，用于 leg_joint_osc 振荡惩罚
+        self._leg_joint_vel_ema = torch.zeros((self.num_envs, self._leg_ids.numel()), device=self.device)
+        self._leg_joint_vel_ema_alpha = 0.1
         # 力矩统计窗口：累积一个 policy step 内全部物理子步的 |τ|（decimation 次）
         self._torque_abs_sum = torch.zeros_like(self.actions)
         self._torque_abs_max = torch.zeros_like(self.actions)
@@ -208,6 +215,36 @@ class WheelLegV2Env(DirectRLEnv):
         history = self.contact_sensor.data.net_forces_w_history
         return torch.linalg.vector_norm(history, dim=-1).amax(dim=1)
 
+    def _wheel_clearance(self) -> torch.Tensor:
+        """轮心相对地面高度减去 (轮半径 + 容差)：>0 表示离地（弹跳），<0 表示压在地面。"""
+        rewards = self.contract["rewards"]
+        radius = float(rewards.get("wheel_hop_reference_radius", 0.06))
+        tolerance = float(rewards.get("wheel_hop_clearance_tolerance", 0.01))
+        height = (self.robot.data.body_pos_w[:, self._wheel_robot_body_ids, 2]
+                  - self.scene.env_origins[:, 2:3])
+        return height - (radius + tolerance)
+
+    def _wheel_contact_flags(self) -> torch.Tensor:
+        """每轮触地标志（浮点，1=接触力超过阈值）。"""
+        threshold = float(self.contract["rewards"].get("wheel_contact_force_threshold", 5.0))
+        force = self._contact_magnitudes()[:, self._wheel_body_ids]
+        return (force > threshold).to(torch.float32)
+
+    def _wheel_slip(self) -> torch.Tensor:
+        """轮底接触点相对地面的切向滑移速度平方（纯滚动 ≈ 0）。"""
+        radius = float(self.contract["rewards"].get("wheel_slip_reference_radius", 0.06))
+        lin_w = getattr(self.robot.data, "body_lin_vel_w", None)
+        ang_w = getattr(self.robot.data, "body_ang_vel_w", None)
+        count = self._wheel_robot_body_ids.numel()
+        if lin_w is None or ang_w is None or count == 0:
+            return torch.zeros((self.num_envs, count), device=self.device)
+        lin = lin_w[:, self._wheel_robot_body_ids]
+        ang = ang_w[:, self._wheel_robot_body_ids]
+        offset = torch.zeros_like(lin)
+        offset[..., 2] = -radius
+        bottom_vel = lin + torch.cross(ang, offset, dim=-1)
+        return bottom_vel[..., :2].square().sum(dim=-1)
+
     def _closure_errors(self) -> dict[str, torch.Tensor]:
         """每个闭合点两杆世界点距离（米），对标 validate_wheel_leg_v2_closed.py。"""
         from isaaclab.utils.math import quat_apply
@@ -229,6 +266,7 @@ class WheelLegV2Env(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         if actions.shape != (self.num_envs, 6):
             raise ValueError("expected N x 6 actions")
+        self.previous_previous_actions.copy_(self.previous_actions)
         self.previous_actions.copy_(self.actions)
         self._invalid_actions = ~torch.isfinite(actions).all(dim=-1)
         safe_actions = torch.where(self._invalid_actions[:, None], torch.zeros_like(actions), actions)
@@ -313,6 +351,10 @@ class WheelLegV2Env(DirectRLEnv):
         for side, body_id in zip(("left", "right"), self._wheel_body_ids):
             force = torch.nan_to_num(contact[:, body_id], nan=0.0, posinf=0.0, neginf=0.0)
             log[f"Contact/{side}_wheel_force_n"] = force.mean()
+        clearance = self._wheel_clearance()
+        log["Geometry/wheel_clearance_max_m"] = clearance.clamp(min=0.0).amax(dim=-1).mean()
+        log["Geometry/wheel_slip_max"] = self._wheel_slip().amax(dim=-1).mean()
+        log["Contact/wheels_grounded_frac"] = self._wheel_contact_flags().all(dim=-1).float().mean()
         if self._torque_samples > 0:
             abs_mean = self._torque_abs_sum / self._torque_samples
             for i, name in enumerate(self.joint_names):
@@ -331,13 +373,22 @@ class WheelLegV2Env(DirectRLEnv):
 
     # ------------------------------------------------------------- rewards
     def _get_rewards(self) -> torch.Tensor:
-        joint_pos, _ = self._joint_state()
+        joint_pos, joint_vel = self._joint_state()
         data = self.robot.data
         valid = self._finite_state
+        leg_vel = joint_vel[:, self._leg_ids]
+        self._leg_joint_vel_ema.mul_(1.0 - self._leg_joint_vel_ema_alpha).add_(
+            leg_vel, alpha=self._leg_joint_vel_ema_alpha)
         terms = compute_reward_terms(
             data.root_lin_vel_b[valid], data.root_ang_vel_b[valid], data.projected_gravity_b[valid],
             self._base_height()[valid], self.commands[valid], self.actions[valid],
             self.previous_actions[valid], self.torques[valid], joint_pos[valid], self.contract,
+            wheel_clearance2=self._wheel_clearance()[valid],
+            wheel_slip2=self._wheel_slip()[valid],
+            wheel_contact2=self._wheel_contact_flags()[valid],
+            leg_joint_vel4=leg_vel[valid],
+            leg_joint_vel_ema4=self._leg_joint_vel_ema[valid],
+            previous_previous_actions6=self.previous_previous_actions[valid],
         )
         total = torch.zeros(self.num_envs, device=self.device)
         log = self.extras.setdefault("log", {})
@@ -438,6 +489,8 @@ class WheelLegV2Env(DirectRLEnv):
 
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
+        self.previous_previous_actions[env_ids] = 0.0
+        self._leg_joint_vel_ema[env_ids] = 0.0
         self.torques[env_ids] = 0.0
         self._torque_abs_sum[env_ids] = 0.0
         self._torque_abs_max[env_ids] = 0.0

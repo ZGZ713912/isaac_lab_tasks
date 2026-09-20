@@ -63,12 +63,17 @@
   "rewards": {
     "weights": {
       "velocity": 2.0, "yaw": 1.0, "height": 2.0, "upright": -4.0,
-      "lateral_velocity": 0.0, "vertical_velocity": -0.5, "action_rate": -0.01,
-      "effort": -0.02, "knee_soft_limit": -2.0, "zero_command_translation": 0.0
+      "lateral_velocity": 0.0, "vertical_velocity": -1.0, "action_rate": -0.01,
+      "effort": -0.02, "knee_soft_limit": -2.0, "zero_command_translation": 0.0,
+      "wheel_hop": -2.0, "wheel_slip": -0.5,
+      "leg_joint_osc": -0.005, "action_smoothness_leg": -0.01
     },
     "sigma_velocity": 0.5, "sigma_yaw": 0.5, "sigma_height": 0.03,
     "zero_vx_threshold": 0.05, "termination_penalty": 0.0,
-    "note": "与 V40 round2 完成训练代码一致的权重/核；膝限位未标定时 knee_soft_limit 恒 0。"
+    "velocity_contact_gate": true, "contact_gate_sigma_m": 0.01,
+    "wheel_hop_reference_radius": 0.06, "wheel_hop_clearance_tolerance": 0.01,
+    "wheel_slip_reference_radius": 0.06, "wheel_contact_force_threshold": 5.0,
+    "note": "V40 round2 权重/核 + 防弹跳：wheel_hop / wheel_slip / leg_joint_osc / action_smoothness_leg，速度与偏航追踪在轮子离地时被接触门控；膝限位未标定时 knee_soft_limit 恒 0。"
   },
   "termination": {
     "contact_force_threshold": 1.0,

@@ -17,9 +17,12 @@ V2 的闭链树结构中，髋电机位于 `L_joint1/R_joint1`，膝电机位于
 `LL_joint1/RR_joint1`。`L_joint2/R_jonit2` 是主链中的被动关节，由闭合约束跟随，
 不能再作为膝电机输入。训练动作和观测现在直接使用这 6 个电机树关节。
 
-**奖励设计与 V40 完全一致**（同一套权重与核）：`velocity/yaw/height/upright/vertical_velocity/
-action_rate/effort/knee_soft_limit`，`lateral_velocity`、`zero_command_translation`、
-`termination_penalty` 权重为 0，无 alive bonus。见
+**奖励设计**：以 V40 权重/核为基础（`velocity/yaw/height/upright/vertical_velocity/action_rate/
+effort/knee_soft_limit`），并移植 V1 的防弹跳项 `wheel_hop`（轮心离地高度超 r+tol 的平方）、
+`wheel_slip`（轮底切向滑移²，仅触地轮）、`leg_joint_osc`（腿关节速度相对 EMA 的偏差²）、
+`action_smoothness_leg`（腿动作二阶差分²）；`velocity`/`yaw` 追踪在轮子离地时被
+**接触门控**（`velocity_contact_gate`）清零，避免"腾空拿速度分"。`lateral_velocity`、
+`zero_command_translation`、`termination_penalty` 权重为 0，无 alive bonus。见
 `contracts/own_wheel_leg_v2.json` 的 `rewards`。
 
 ## 2. 文件

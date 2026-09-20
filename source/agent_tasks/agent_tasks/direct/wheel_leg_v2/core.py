@@ -241,8 +241,17 @@ def compute_torques(joint_pos6, joint_vel6, leg_targets4, wheel_targets2, contra
 
 
 def compute_reward_terms(v_body3, w_body3, gravity3, height, commands3, actions6,
-                         previous_actions6, torques6, joint_pos6, contract):
-    """加权、按 policy_dt 缩放的即时奖励（不要重复乘 dt）。"""
+                         previous_actions6, torques6, joint_pos6, contract,
+                         wheel_clearance2=None, wheel_slip2=None, wheel_contact2=None,
+                         leg_joint_vel4=None, leg_joint_vel_ema4=None,
+                         previous_previous_actions6=None):
+    """加权、按 policy_dt 缩放的即时奖励（不要重复乘 dt）。
+
+    新增的防弹跳输入全部可选：``wheel_clearance2`` 为轮心相对地面高度减去
+    (轮半径+容差)（>0 表示离地），``wheel_slip2`` 为轮底切向滑移速度平方，
+    ``wheel_contact2`` 为触地浮点标志，``leg_joint_vel4``/``leg_joint_vel_ema4``
+    用于腿关节振荡惩罚，``previous_previous_actions6`` 用于腿动作二阶平滑。
+    """
     v = _matrix(v_body3, 3, "body linear velocity")
     n = v.shape[0]
     for value, width, name in [(w_body3, 3, "body angular velocity"), (gravity3, 3, "gravity"),
@@ -250,6 +259,13 @@ def compute_reward_terms(v_body3, w_body3, gravity3, height, commands3, actions6
                                 (previous_actions6, 6, "previous actions"), (torques6, 6, "torques"),
                                 (joint_pos6, 6, "joint positions")]:
         _matrix(value, width, name, n)
+    for value, width, name in [(wheel_clearance2, 2, "wheel clearance"),
+                               (wheel_slip2, 2, "wheel slip"), (wheel_contact2, 2, "wheel contact"),
+                               (leg_joint_vel4, 4, "leg joint velocity"),
+                               (leg_joint_vel_ema4, 4, "leg joint velocity EMA"),
+                               (previous_previous_actions6, 6, "previous previous actions")]:
+        if value is not None:
+            _matrix(value, width, name, n)
     h = _vector(height, n, "base height")
     r, j = contract["rewards"], contract["joints"]
     soft = torch.zeros_like(h)
@@ -268,9 +284,15 @@ def compute_reward_terms(v_body3, w_body3, gravity3, height, commands3, actions6
             soft = soft + (lo + margin - joint_pos6[:, idx]).clamp(min=0).square()
             soft = soft + (joint_pos6[:, idx] - hi + margin).clamp(min=0).square()
     caps = [contract["actuators"]["wheel" if idx in j["wheel_indices"] else "leg"]["effort_limit"] for idx in range(6)]
+    # 接触门控：轮子离地时不再给速度/偏航追踪奖励（掐断"腾空拿速度分"）。
+    if wheel_clearance2 is not None and bool(r.get("velocity_contact_gate", False)):
+        gate_sigma = max(float(r.get("contact_gate_sigma_m", 0.01)), 1e-6)
+        contact_gate = torch.exp(-wheel_clearance2.clamp(min=0.0) / gate_sigma).prod(dim=-1)
+    else:
+        contact_gate = torch.ones_like(h)
     raw = {
-        "velocity": torch.exp(-((v[:, 0] - commands3[:, 0]) / r["sigma_velocity"]).square()),
-        "yaw": torch.exp(-((w_body3[:, 2] - commands3[:, 1]) / r["sigma_yaw"]).square()),
+        "velocity": contact_gate * torch.exp(-((v[:, 0] - commands3[:, 0]) / r["sigma_velocity"]).square()),
+        "yaw": contact_gate * torch.exp(-((w_body3[:, 2] - commands3[:, 1]) / r["sigma_yaw"]).square()),
         "height": torch.exp(-((h - commands3[:, 2]) / r["sigma_height"]).square()),
         "upright": gravity3[:, :2].square().sum(-1),
         "lateral_velocity": v[:, 1].square(), "vertical_velocity": v[:, 2].square(),
@@ -279,4 +301,13 @@ def compute_reward_terms(v_body3, w_body3, gravity3, height, commands3, actions6
         "knee_soft_limit": soft,
         "zero_command_translation": (commands3[:, 0].abs() < r["zero_vx_threshold"]).to(v.dtype) * v[:, :2].square().sum(-1),
     }
+    if wheel_clearance2 is not None:
+        raw["wheel_hop"] = wheel_clearance2.clamp(min=0.0).square().sum(-1)
+    if wheel_slip2 is not None and wheel_contact2 is not None:
+        raw["wheel_slip"] = (wheel_slip2 * (wheel_contact2 > 0.0).to(wheel_slip2.dtype)).sum(-1)
+    if leg_joint_vel4 is not None and leg_joint_vel_ema4 is not None:
+        raw["leg_joint_osc"] = (leg_joint_vel4 - leg_joint_vel_ema4).square().sum(-1)
+    if previous_previous_actions6 is not None:
+        second_diff = actions6 - 2.0 * previous_actions6 + previous_previous_actions6
+        raw["action_smoothness_leg"] = second_diff[:, j["leg_indices"]].square().sum(-1)
     return {name: value * r["weights"][name] * contract["timing"]["policy_dt"] for name, value in raw.items()}
