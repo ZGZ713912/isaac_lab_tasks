@@ -17,7 +17,7 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim import RigidBodyMaterialCfg, SimulationCfg
 from isaaclab.utils import configclass
 
 import isaaclab.sim as sim_utils
@@ -39,7 +39,16 @@ class WheelLegV2EnvCfg(DirectRLEnvCfg):
     # DirectRLEnv 2.3 会把 observation_space 包成 "policy"，state_space 包成 "critic"。
     observation_space = 125
     state_space = 29
-    sim = SimulationCfg(dt=0.005, render_interval=2)
+    # 轮腿课程学习：当前轮次 = common_step_counter // iteration_steps + iteration_offset。
+    # iteration_steps 必须等于 PPO 的 num_steps_per_env；resume 续训时把已训轮次写进 offset。
+    iteration_steps: int = 48
+    iteration_offset: int = 0
+    # 接触摩擦：包胶轮用 realistic μ；默认 0.5 时单轮轮端 ~2.0 Nm 就超摩擦打滑。
+    sim = SimulationCfg(
+        dt=0.005,
+        render_interval=2,
+        physics_material=RigidBodyMaterialCfg(static_friction=0.9, dynamic_friction=0.9),
+    )
     # 实测（/tmp 探测脚本）：
     #   replicate_physics=True + clone_in_fabric=False → 闭链 loop joints 被正确复制，
     #     多环境闭合误差 <0.001mm；这是可扩到 4096 env 的关键。

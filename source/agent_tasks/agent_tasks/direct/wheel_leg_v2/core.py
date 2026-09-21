@@ -284,17 +284,32 @@ def compute_reward_terms(v_body3, w_body3, gravity3, height, commands3, actions6
             soft = soft + (lo + margin - joint_pos6[:, idx]).clamp(min=0).square()
             soft = soft + (joint_pos6[:, idx] - hi + margin).clamp(min=0).square()
     caps = [contract["actuators"]["wheel" if idx in j["wheel_indices"] else "leg"]["effort_limit"] for idx in range(6)]
-    # 接触门控：轮子离地时不再给速度/偏航追踪奖励（掐断"腾空拿速度分"）。
+    # 接触和姿态门控：轮子离地或车身持续前倾时，不应继续获得完整速度分。
     if wheel_clearance2 is not None and bool(r.get("velocity_contact_gate", False)):
         gate_sigma = max(float(r.get("contact_gate_sigma_m", 0.01)), 1e-6)
         contact_gate = torch.exp(-wheel_clearance2.clamp(min=0.0) / gate_sigma).prod(dim=-1)
     else:
         contact_gate = torch.ones_like(h)
+    pitch_error = gravity3[:, 0]
+    if bool(r.get("velocity_upright_gate", False)):
+        pitch_sigma = max(float(r.get("pitch_gate_sigma", 0.02)), 1e-6)
+        velocity_gate = torch.exp(-pitch_error.square() / pitch_sigma)
+    else:
+        velocity_gate = torch.ones_like(h)
+    yaw_error = w_body3[:, 2] - commands3[:, 1]
     raw = {
-        "velocity": contact_gate * torch.exp(-((v[:, 0] - commands3[:, 0]) / r["sigma_velocity"]).square()),
-        "yaw": contact_gate * torch.exp(-((w_body3[:, 2] - commands3[:, 1]) / r["sigma_yaw"]).square()),
+        "velocity": contact_gate * velocity_gate * torch.exp(
+            -((v[:, 0] - commands3[:, 0]) / r["sigma_velocity"]).square()
+        ),
+        "yaw": contact_gate * torch.exp(-(yaw_error / r["sigma_yaw"]).square()),
+        # 仿 wheelbipe track_ang_vel_z_square：二次型偏航误差惩罚，给大误差强梯度。
+        "yaw_square": contact_gate * (yaw_error * _like(r["sigma_yaw_square"], yaw_error)).square(),
+        # 横滚/俯仰角速度阻尼（wheelbipe ang_vel_xy=-0.05），自旋时压车身晃动。
+        "ang_vel_xy": w_body3[:, :2].square().sum(-1),
         "height": torch.exp(-((h - commands3[:, 2]) / r["sigma_height"]).square()),
         "upright": gravity3[:, :2].square().sum(-1),
+        "pitch": pitch_error.square(),
+        "pitch_rate": w_body3[:, 1].square(),
         "lateral_velocity": v[:, 1].square(), "vertical_velocity": v[:, 2].square(),
         "action_rate": (actions6 - previous_actions6).square().sum(-1),
         "effort": (torques6 / _like(caps, torques6)).square().sum(-1),

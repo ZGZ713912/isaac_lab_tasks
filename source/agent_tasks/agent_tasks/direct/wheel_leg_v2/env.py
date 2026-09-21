@@ -347,7 +347,10 @@ class WheelLegV2Env(DirectRLEnv):
             self.terrain = terrain.class_type(terrain)
         else:
             self.terrain = None
-            spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+            spawn_ground_plane(
+            prim_path="/World/ground",
+            cfg=GroundPlaneCfg(physics_material=self.cfg.sim.physics_material),
+        )
         self.scene.clone_environments(copy_from_source=True)
         # 独立克隆需要显式跨环境过滤；USD 内已自带自碰撞过滤。
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
@@ -399,6 +402,17 @@ class WheelLegV2Env(DirectRLEnv):
         offset[..., 2] = -radius
         bottom_vel = lin + torch.cross(ang, offset, dim=-1)
         return bottom_vel[..., :2].square().sum(dim=-1)
+
+    def _wheel_x_relative_to_root(self) -> torch.Tensor:
+        """轮心在根部坐标系的前后位置，x>0 表示位于质心前方。"""
+        from isaaclab.utils.math import quat_apply_inverse
+
+        wheel_pos_w = self.robot.data.body_pos_w[:, self._wheel_robot_body_ids]
+        root_pos_w = self.robot.data.root_pos_w[:, None, :]
+        root_quat_w = self.robot.data.root_quat_w[:, None, :].expand(
+            -1, wheel_pos_w.shape[1], -1)
+        wheel_pos_b = quat_apply_inverse(root_quat_w, wheel_pos_w - root_pos_w)
+        return wheel_pos_b[..., 0]
 
     def _closure_errors(self) -> dict[str, torch.Tensor]:
         """每个闭合点两杆世界点距离（米），对标 validate_wheel_leg_v2_closed.py。"""
@@ -553,6 +567,15 @@ class WheelLegV2Env(DirectRLEnv):
         log["Geometry/wheel_clearance_max_m"] = clearance.clamp(min=0.0).amax(dim=-1).mean()
         log["Geometry/wheel_slip_max"] = self._wheel_slip().amax(dim=-1).mean()
         log["Contact/wheels_grounded_frac"] = self._wheel_contact_flags().all(dim=-1).float().mean()
+        wheel_x = self._wheel_x_relative_to_root()
+        log["Geometry/wheel_x_rel_root_left_m"] = wheel_x[:, 0].mean()
+        log["Geometry/wheel_x_rel_root_right_m"] = wheel_x[:, 1].mean()
+        log["Geometry/wheel_x_rel_root_min_m"] = wheel_x.amin(dim=-1).mean()
+        pitch = torch.rad2deg(torch.asin(body.projected_gravity_b[:, 0].clamp(-1.0, 1.0)))
+        roll = torch.rad2deg(torch.asin(body.projected_gravity_b[:, 1].clamp(-1.0, 1.0)))
+        log["Orientation/pitch_deg"] = torch.nan_to_num(pitch, nan=0.0).mean()
+        log["Orientation/roll_deg"] = torch.nan_to_num(roll, nan=0.0).mean()
+        log["Orientation/pitch_rate_rad_s"] = torch.nan_to_num(body.root_ang_vel_b[:, 1], nan=0.0).mean()
         if self._gas_spring_model is not None and self._gas_spring_prev_length is not None:
             log["Spring/length_m"] = torch.nan_to_num(self._gas_spring_prev_length, nan=0.0).mean()
             log["Spring/force_n"] = torch.nan_to_num(self._gas_spring_last_force, nan=0.0).mean()
@@ -643,6 +666,34 @@ class WheelLegV2Env(DirectRLEnv):
             self._last_reward_tick = tick
         return total
 
+    def _current_iteration(self) -> int:
+        """由 common_step_counter 外推训练轮次（env 不知道 runner 轮次）。
+
+        ``iteration_steps`` 必须等于 PPO 的 num_steps_per_env；resume 时用
+        ``iteration_offset`` 把已训轮次补回来，否则课程会从头开始。
+        """
+        steps = max(1, int(getattr(self.cfg, "iteration_steps", 1)))
+        return int(self.common_step_counter) // steps + int(getattr(self.cfg, "iteration_offset", 0))
+
+    def _sample_interval(self, spec, count: int) -> torch.Tensor:
+        """采样指令区间：spec 支持 [lo,hi] 或 [[lo,hi], ...]（多区间按宽度加权）。"""
+        pairs = spec if isinstance(spec[0], (list, tuple)) else [spec]
+        bounds = torch.tensor(
+            [[float(low), float(high)] for low, high in pairs],
+            device=self.device, dtype=self.commands.dtype)
+        widths = (bounds[:, 1] - bounds[:, 0]).clamp_min(0.0)
+        if bounds.shape[0] == 1 or float(widths.sum()) <= 0.0:
+            idx = torch.zeros(count, device=self.device, dtype=torch.long)
+        else:
+            idx = torch.multinomial(widths, count, replacement=True)
+        low, high = bounds[idx, 0], bounds[idx, 1]
+        return low + (high - low) * torch.rand(count, device=self.device)
+
+    def _apply_command_spec(self, env_ids: torch.Tensor, spec: dict) -> None:
+        count = env_ids.numel()
+        for column, key in enumerate(("vx", "wz", "height")):
+            self.commands[env_ids, column] = self._sample_interval(spec[key], count)
+
     def _sample_commands(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
@@ -652,15 +703,58 @@ class WheelLegV2Env(DirectRLEnv):
             self._command_ticks_left[env_ids] = self._command_period_ticks
             self._commands_due[env_ids] = False
             return
-        stage = self.contract["commands"]["stages"][self.cfg.stage]
-        for column, key in enumerate(("vx", "wz", "height")):
-            low, high = stage[key]
-            self.commands[env_ids, column] = low + (high - low) * torch.rand(len(env_ids), device=self.device)
-        probability = stage.get("standing_probability", 0.0) if is_round2(self.contract) else 0.0
-        if probability > 0.0:
-            standing = torch.rand(len(env_ids), device=self.device) < probability
-            self.commands[env_ids[standing], :2] = 0.0
-        self._command_ticks_left[env_ids] = self._command_period_ticks
+        command_cfg = self.contract["commands"]
+        stage = command_cfg["stages"][self.cfg.stage]
+        count = env_ids.numel()
+        period = torch.full(
+            (count,), self._command_period_ticks,
+            device=self.device, dtype=self._command_ticks_left.dtype)
+
+        # —— 特殊模式（小陀螺自旋档）：按 rel_envs 分桶，并按训练轮次启停 ——
+        modes = stage.get("special_modes", {}) or {}
+        iteration = self._current_iteration()
+        min_episode = float(command_cfg.get("special_mode_min_episode_seconds", 0.0))
+        old_enough = (self.episode_length_buf[env_ids].float() * self.step_dt >= min_episode)
+        eligible = []
+        for name, mode in modes.items():
+            start, end = int(mode.get("iteration_start", 0)), int(mode.get("iteration_end", -1))
+            if iteration < start or (end >= 0 and iteration >= end):
+                continue
+            eligible.append(mode)
+        mode_index = torch.full((count,), -1, device=self.device, dtype=torch.long)
+        if eligible:
+            u = torch.rand(count, device=self.device)
+            cumulative = 0.0
+            for index, mode in enumerate(eligible):
+                rel = float(mode.get("rel_envs", 0.0))
+                low, high = cumulative, min(cumulative + rel, 1.0)
+                picked = old_enough & (mode_index < 0) & (u >= low) & (u < high)
+                mode_index[picked] = index
+                cumulative = high
+                if cumulative >= 1.0:
+                    break
+            for index, mode in enumerate(eligible):
+                picked = mode_index == index
+                if not bool(picked.any()):
+                    continue
+                selected = env_ids[picked]
+                spec = {key: mode.get(key, stage[key]) for key in ("vx", "wz", "height")}
+                self._apply_command_spec(selected, spec)
+                if mode.get("resample_seconds", 0.0) > 0.0:
+                    ticks = max(1, math.ceil(
+                        float(mode["resample_seconds"]) / self.contract["timing"]["policy_dt"]))
+                    period[picked] = ticks
+
+        base = mode_index < 0
+        if bool(base.any()):
+            base_ids = env_ids[base]
+            self._apply_command_spec(base_ids, stage)
+            probability = stage.get("standing_probability", 0.0) if is_round2(self.contract) else 0.0
+            if probability > 0.0:
+                standing = torch.rand(base_ids.numel(), device=self.device) < probability
+                self.commands[base_ids[standing], :2] = 0.0
+
+        self._command_ticks_left[env_ids] = period
         self._commands_due[env_ids] = False
 
     # ------------------------------------------------------------- observations

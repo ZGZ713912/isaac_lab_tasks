@@ -64,6 +64,21 @@ def _numbers(values, size, label, positive=False):
     return [_finite(x, label, positive) for x in values]
 
 
+def _interval_list(values, label):
+    """接受 [lo,hi] 或 [[lo,hi],...]，返回 [[lo,hi],...] 并校验 lo<=hi。"""
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"{label} must be an interval or a nonempty interval list")
+    scalars = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
+    pairs = [values] if scalars else values
+    out = []
+    for pair in pairs:
+        lo, hi = _numbers(pair, 2, label)
+        if lo > hi:
+            raise ValueError(f"{label} has a reversed interval")
+        out.append([lo, hi])
+    return out
+
+
 def validate_contract(c: dict) -> dict:
     """拒绝维度/单位/内部不一致的合同；不修改输入。"""
     try:
@@ -136,20 +151,41 @@ def validate_contract(c: dict) -> dict:
             raise ValueError("Motor curve needs increasing speeds and nonnegative torques")
 
         _finite(c["asset"]["nominal_base_height"], "nominal height", True)
-        for stage in c["commands"]["stages"].values():
+        commands = c["commands"]
+        _finite(commands["resample_seconds"], "resample interval", True)
+        _finite(commands.get("special_mode_min_episode_seconds", 0.0), "special mode min episode")
+        for stage in commands["stages"].values():
             for name in ("vx", "wz", "height"):
-                bounds = _numbers(stage[name], 2, name)
-                if bounds[0] > bounds[1]:
-                    raise ValueError("Reversed command interval")
-            if not 0.10 <= stage["height"][0] <= stage["height"][1] <= 0.50:
-                raise ValueError("height command outside conservative V2 domain")
+                _interval_list(stage[name], name)
+            for low, high in _interval_list(stage["height"], "height"):
+                if not 0.10 <= low <= high <= 0.50:
+                    raise ValueError("height command outside conservative V2 domain")
             if is_round2(c):
                 probability = _finite(stage.get("standing_probability", 0.0), "standing probability")
                 if not 0.0 <= probability <= 1.0:
                     raise ValueError("Standing probability must be within [0,1]")
-        _finite(c["commands"]["resample_seconds"], "resample interval", True)
+            modes = stage.get("special_modes", {})
+            if not isinstance(modes, dict):
+                raise ValueError("special_modes must be a mapping")
+            for mode_name, mode in modes.items():
+                if not isinstance(mode, dict):
+                    raise ValueError(f"special mode {mode_name} must be a mapping")
+                rel = _finite(mode.get("rel_envs", 0.0), f"{mode_name} rel_envs")
+                if not 0.0 <= rel <= 1.0:
+                    raise ValueError(f"special mode {mode_name} rel_envs must be within [0,1]")
+                start = mode.get("iteration_start", 0)
+                end = mode.get("iteration_end", -1)
+                if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+                    raise ValueError(f"special mode {mode_name} iteration_start must be a nonnegative int")
+                if isinstance(end, bool) or not isinstance(end, int) or end < -1:
+                    raise ValueError(f"special mode {mode_name} iteration_end must be int >= -1")
+                for name in ("vx", "wz", "height"):
+                    if name in mode:
+                        _interval_list(mode[name], f"{mode_name}.{name}")
+                if "resample_seconds" in mode:
+                    _finite(mode["resample_seconds"], f"{mode_name}.resample_seconds", True)
 
-        for key in ("sigma_velocity", "sigma_yaw", "sigma_height"):
+        for key in ("sigma_velocity", "sigma_yaw", "sigma_yaw_square", "sigma_height"):
             _finite(c["rewards"][key], key, True)
         for value in c["rewards"]["weights"].values():
             _finite(value, "reward weight")

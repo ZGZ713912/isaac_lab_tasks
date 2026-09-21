@@ -18,7 +18,7 @@ V2 的闭链树结构中，髋电机位于 `L_joint1/R_joint1`，膝电机位于
 不能再作为膝电机输入。训练动作和观测现在直接使用这 6 个电机树关节。
 
 **奖励设计**：以 V40 权重/核为基础（`velocity/yaw/height/upright/vertical_velocity/action_rate/
-effort/knee_soft_limit`），并移植 V1 的防弹跳项 `wheel_hop`（轮心离地高度超 r+tol 的平方）、
+effort/knee_soft_limit`），增加前倾约束 `pitch/pitch_rate`，并在车身前倾时衰减速度奖励；同时移植 V1 的防弹跳项 `wheel_hop`（轮心离地高度超 r+tol 的平方）、
 `wheel_slip`（轮底切向滑移²，仅触地轮）、`leg_joint_osc`（腿关节速度相对 EMA 的偏差²）、
 `action_smoothness_leg`（腿动作二阶差分²）；`velocity`/`yaw` 追踪在轮子离地时被
 **接触门控**（`velocity_contact_gate`）清零，避免"腾空拿速度分"。`lateral_velocity`、
@@ -98,7 +98,7 @@ python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Jump-v0 \
 - **观测 25** = `ang_vel_b3 | proj_grav_b3 | cmd(vx,wz,height)3 | 四腿相对名义角4 | 六关节速度6 | 上一动作6`；
   history 5 帧 → actor 125；critic 29 = 25 + 真值线速度3 + 真实车高1。
 - **动作 6** = `[L_joint1,LL_joint1,L_joint3,R_joint1,RR_joint1,R_joint3]` 的归一化输出；
-  腿目标 = nominal + 0.5·a，轮目标 = 10·a（rad/s）。动作 clip 100。
+  腿目标 = nominal + 0.5·a，轮目标 = 10·a（rad/s）。动作 clip 100；轮速目标仍由当前策略输出和控制器裁剪共同决定。
 - **名义位形** = URDF 零位 `q=0`（SolidWorks 装配位形，闭链在 q=0 自洽），即 nominal 全 0。
 - **时钟** = 200Hz 物理 / 100Hz 策略（dt 0.005 × decimation 2）。
 - **执行器** = effort 模式：腿 `kp=60,kd=2,effort=40`；轮 `kd=0.2` + M3508 11:1 torque-speed 曲线
