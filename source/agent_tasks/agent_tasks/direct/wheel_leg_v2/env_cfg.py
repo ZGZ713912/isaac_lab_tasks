@@ -69,9 +69,12 @@ class WheelLegV2EnvCfg(DirectRLEnvCfg):
 
     # 气弹簧力学：对 LLL/RRR 棱柱约束两端的刚体施加轴向力（BKB0.45-063-172, 10MPa）。
     # 几何（杆件/锚点）来自 constraints.json 的 gas_springs；这里只放力曲线参数。
+    # 方向：气簧越压缩弹力越大 —— 109mm 全压 347N > 172mm 全伸 279N。
+    # 数值取自产品图 9/12MPa 曲线数字插值到 10MPa（行程 0=279N, 行程 63.5=347N）；
+    # 若实机充气压力不是 10MPa，或曲线/型号改动，需按图重新标定。
     gas_spring_enabled: bool = True
-    gas_spring_force_at_min_n: float = 260.0   # 最短（109mm）时的弹力
-    gas_spring_force_at_max_n: float = 380.0   # 最长（172mm）时的弹力
+    gas_spring_force_at_min_n: float = 347.0   # 最短（109mm，全压缩）时的弹力
+    gas_spring_force_at_max_n: float = 279.0   # 最长（172mm，全伸出）时的弹力
     gas_spring_damping_n_s_per_m: float = 0.0  # 阻尼未实测，默认 0
 
     # 地形：None = 平地（默认）；子类可挂 TerrainImporterCfg（周期坡面）。

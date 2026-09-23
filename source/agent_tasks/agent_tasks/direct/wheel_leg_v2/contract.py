@@ -131,6 +131,11 @@ def validate_contract(c: dict) -> dict:
         _numbers(action["leg_position_scales"], 4, "leg action scales", True)
         _finite(action["clip"], "action clip", True)
         _finite(action["wheel_velocity_scale"], "wheel action scale", True)
+        # 左右轮关节符号映射：轮语义为“正动作=车轮正向滚动”，需按关节轴方向给 ±1。
+        sign = action.get("wheel_joint_sign")
+        if (not isinstance(sign, list) or len(sign) != len(WHEEL_INDICES)
+                or any(isinstance(v, bool) or v not in (-1.0, 1.0) for v in sign)):
+            raise ValueError("wheel_joint_sign must list +/-1 per wheel joint")
 
         leg, wheel = c["actuators"]["leg"], c["actuators"]["wheel"]
         for module in (leg, wheel):

@@ -194,7 +194,12 @@ def decode_targets(actions6, joint_pos6, contract):
                 lo, hi = bounds
                 margin = 0.0 if is_round2(contract) else j.get("knee_soft_margin", 0.0)
                 targets[:, column] = desired[:, column].clamp(lo + margin, hi - margin)
-    wheel = clipped[:, j["wheel_indices"]] * a["wheel_velocity_scale"]
+    # 轮语义：正动作 = 车轮正向滚动（车体前进），左右关节符号由合同给出。
+    # base 系中 L_joint3 轴 = +Y、R_joint3 轴 = -Y，故左右关节速度对直行需反号；
+    # probe（scripts/tools/wheel_leg_v2_wheel_probe.py）实测确认：
+    #   同号关节目标 -> 纯自转；反号关节目标 -> 纯直行。
+    sign = _like(a.get("wheel_joint_sign", [1.0] * len(j["wheel_indices"])), q)
+    wheel = clipped[:, j["wheel_indices"]] * a["wheel_velocity_scale"] * sign
     return targets, wheel, clipped
 
 

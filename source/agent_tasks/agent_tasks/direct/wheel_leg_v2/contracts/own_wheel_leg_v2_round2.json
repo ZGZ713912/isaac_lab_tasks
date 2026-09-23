@@ -32,7 +32,7 @@
     "soft_position_limit_factor": 0.97,
     "note": "V2 profile：髋目标用最近等价周期角、膝只夹机械硬限位（当前未标定，空=不夹）。"
   },
-  "actions": {"dimension": 6, "clip": 100.0, "leg_position_scales": [0.5, 0.5, 0.5, 0.5], "wheel_velocity_scale": 10.0},
+  "actions": {"dimension": 6, "clip": 100.0, "leg_position_scales": [0.5, 0.5, 0.5, 0.5], "wheel_velocity_scale": 10.0, "wheel_joint_sign": [1.0, -1.0]},
   "actuators": {
     "profile": "closed_chain_motor_joint_space",
     "hardware_validated": false,
@@ -58,7 +58,7 @@
       "stand": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.22, 0.22], "standing_probability": 1.0},
       "height": {"vx": [0.0, 0.0], "wz": [0.0, 0.0], "height": [0.20, 0.25], "standing_probability": 1.0},
       "locomotion": {
-        "vx": [-2.0, 2.0], "wz": [-2.0, 2.0], "height": [0.20, 0.25], "standing_probability": 0.1,
+        "vx": [-1.0, 1.0], "wz": [-2.0, 2.0], "height": [0.20, 0.25], "standing_probability": 0.1,
         "special_modes": {
           "spin_low": {
             "rel_envs": 0.15, "iteration_start": 2000, "iteration_end": -1, "resample_seconds": 8.0,
@@ -88,7 +88,7 @@
     },
     "sigma_velocity": 0.5, "sigma_yaw": 0.25, "sigma_yaw_square": 0.5, "sigma_height": 0.03,
     "velocity_upright_gate": true, "pitch_gate_sigma": 0.02,
-    "zero_vx_threshold": 0.05, "termination_penalty": -50.0,
+    "zero_vx_threshold": 0.05, "termination_penalty": 0.0,
     "velocity_contact_gate": true, "contact_gate_sigma_m": 0.01,
     "wheel_hop_reference_radius": 0.06, "wheel_hop_clearance_tolerance": 0.01,
     "wheel_slip_reference_radius": 0.06, "wheel_contact_force_threshold": 5.0,

@@ -3,6 +3,11 @@
 The supplied BKB catalogue gives a force-vs-stroke curve.  For the current
 10 MPa estimate we use a linear interpolation between the user-selected
 endpoints and keep damping optional until measured damping is available.
+
+A gas spring pushes harder the more it is compressed, so the force must
+decrease as ``length_m`` grows: ``force_at_min_n`` (shortest, most compressed)
+must be LARGER than ``force_at_max_n`` (longest, most extended), e.g. the
+BKB0.45-063-172 10 MPa endpoints are 347 N @ 109 mm and 279 N @ 172 mm.
 """
 
 from __future__ import annotations
@@ -19,8 +24,8 @@ class WheelLegV2GasSpringModel:
     pressure_mpa: float = 10.0
     min_length_m: float = 0.109
     max_length_m: float = 0.172
-    force_at_min_n: float = 260.0
-    force_at_max_n: float = 380.0
+    force_at_min_n: float = 347.0
+    force_at_max_n: float = 279.0
     damping_n_s_per_m: float = 0.0
 
     @property

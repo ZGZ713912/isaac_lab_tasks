@@ -117,20 +117,12 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._n_dir_bins = max(1, int(self.cfg.spawn_dir_bins))
         self._dir_az_coverage = torch.zeros(self._n_dir_bins, device=self.device)
         self._dir_contact_ema = torch.zeros(self._n_dir_bins, device=self.device)
-        self._dir_balance_ema = torch.zeros(self._n_dir_bins, device=self.device)
         self._dir_trackq_ema = torch.zeros(self._n_dir_bins, device=self.device)
         self._dir_up_frac_ema = torch.zeros((), device=self.device)
         self._dir_down_frac_ema = torch.zeros((), device=self.device)
         self._dir_flat_frac_ema = torch.zeros((), device=self.device)
         self._airborne_frac_ema = torch.zeros((), device=self.device)
         self._dir_ema_alpha = 0.01
-
-        # 单轮目标载荷：默认按整车质量 1/4 估算
-        self._wheel_load_target = (
-            float(self.cfg.wheel_load_target)
-            if float(self.cfg.wheel_load_target) > 0.0
-            else self.cfg.chassis_total_mass * 9.81 / 4.0
-        )
 
         self.episode_sums = {
             name: torch.zeros(self.num_envs, device=self.device) for name in self.cfg.rewards
@@ -501,18 +493,9 @@ class DeformableSuspensionEnv(DirectRLEnv):
         terms["alive"] = torch.ones(self.num_envs, device=self.device)
         terms["termination"] = self.reset_terminated.float()
 
-        # 1) 四轮触地门控（20N）+ 目标载荷分布 + 归一化均力
+        # 1) 四轮触地门控（20N）
         contact = torch.clamp(forces / self.cfg.desired_contact_force_threshold, 0.0, 1.0)
         terms["four_wheel_contact"] = contact.mean(dim=-1)
-        terms["wheel_load_distribution"] = torch.exp(
-            -torch.square(forces - self._wheel_load_target) / self.cfg.wheel_load_sigma
-        ).mean(dim=-1)
-        force_mean = forces.mean(dim=-1, keepdim=True)
-        force_var = ((forces - force_mean) ** 2).mean(dim=-1)
-        balance_denom = (
-            self.cfg.wheel_force_balance_sigma_rel * torch.square(force_mean.squeeze(-1)) + 1.0
-        )
-        terms["wheel_force_balance"] = torch.exp(-force_var / balance_denom)
 
         # 2) IMU -> 四腿主动调平：直接给出每条腿的可实现修正目标。
         tilt_q_target, tilt_q_delta = self._get_tilt_leg_targets(pgb)

@@ -33,6 +33,7 @@ if _RSL_RL_SCRIPTS not in sys.path:
 
 import argparse
 import csv
+import math
 from datetime import datetime
 
 from isaaclab.app import AppLauncher
@@ -74,6 +75,8 @@ JOINTS = ["L_joint1", "LL_joint1", "L_joint3", "R_joint1", "RR_joint1", "R_joint
 # (label, vx, wz, height)
 BINS = [
     ("stand_zero", 0.0, 0.0, 0.22),
+    ("fwd_0.3", 0.3, 0.0, 0.22),
+    ("fwd_0.6", 0.6, 0.0, 0.22),
     ("fwd_low", 0.4, 0.0, 0.22),
     ("fwd_mid", 1.0, 0.0, 0.22),
     ("fwd_high", 1.8, 0.0, 0.22),
@@ -84,6 +87,10 @@ BINS = [
     ("spin_pos", 0.0, 1.5, 0.22),
     ("spin_neg", 0.0, -1.5, 0.22),
     ("spin_max", 0.0, 2.0, 0.22),
+    ("spin_2pi", 0.0, 2.0 * math.pi, 0.22),
+    ("spin_3pi", 0.0, 3.0 * math.pi, 0.22),
+    ("spin_4pi", 0.0, 4.0 * math.pi, 0.22),
+    ("spin_4.5pi", 0.0, 4.5 * math.pi, 0.22),
     ("arc_fwd", 1.0, 0.8, 0.22),
     ("arc_back", -1.0, -0.8, 0.22),
     ("corner_fwd_spin", 2.0, 2.0, 0.22),
@@ -245,7 +252,8 @@ def main() -> None:
                     obs, _, _, _ = env.step(policy(obs))
 
                 acc = {k: torch.zeros(n, device=env.device) for k in
-                       ("vx", "wz", "h", "gx", "gy", "speed", "tau_leg", "tau_wheel", "ewheel")}
+                       ("vx", "wz", "h", "gx", "gy", "speed", "tau_leg", "tau_wheel", "ewheel",
+                        "wt_l", "wt_r", "slip", "aw_l", "aw_r")}
                 sat = torch.zeros(n, device=env.device)
                 falls = 0
                 total = 0
@@ -275,6 +283,12 @@ def main() -> None:
                     acc["tau_leg"][valid] += tau[:, unwrapped._leg_ids].abs().amax(dim=-1)
                     acc["tau_wheel"][valid] += tau[:, unwrapped._wheel_ids].abs().amax(dim=-1)
                     acc["ewheel"][valid] += jv[:, unwrapped._wheel_ids].abs().amax(dim=-1)
+                    # 轮控制诊断：解码后轮目标 / 原始轮动作 / 轮底滑移（判断烧胎）
+                    acc["wt_l"][valid] += unwrapped.wheel_targets[:, 0]
+                    acc["wt_r"][valid] += unwrapped.wheel_targets[:, 1]
+                    acc["aw_l"][valid] += unwrapped.actions[:, unwrapped._wheel_ids[0]]
+                    acc["aw_r"][valid] += unwrapped.actions[:, unwrapped._wheel_ids[1]]
+                    acc["slip"][valid] += unwrapped._wheel_slip().amax(dim=-1)
                     sat[valid] += (tau[:, unwrapped._wheel_ids].abs()
                                    >= 0.99 * torque_cap[unwrapped._wheel_ids]).any(dim=-1).float()
 
@@ -293,6 +307,11 @@ def main() -> None:
                     "tau_leg_max": _mean(acc["tau_leg"] / denom),
                     "tau_wheel_max": _mean(acc["tau_wheel"] / denom),
                     "wheel_speed": _mean(acc["ewheel"] / denom),
+                    "wheel_tgt_l": _mean(acc["wt_l"] / denom),
+                    "wheel_tgt_r": _mean(acc["wt_r"] / denom),
+                    "wheel_act_l": _mean(acc["aw_l"] / denom),
+                    "wheel_act_r": _mean(acc["aw_r"] / denom),
+                    "wheel_slip_max": _mean(acc["slip"] / denom),
                     "fall_rate": falls / total,
                     "wheel_sat": _mean(sat / denom),
                     "count": total,
@@ -304,6 +323,8 @@ def main() -> None:
                       f"h={row['mean_h']:.3f}(err {row['h_err']:.3f}) "
                       f"pitch={row['pitch_deg']:+.1f} roll={row['roll_deg']:+.1f} "
                       f"tau_leg={row['tau_leg_max']:.1f} tau_wheel={row['tau_wheel_max']:.2f} "
+                      f"wtgt=({row['wheel_tgt_l']:+.1f},{row['wheel_tgt_r']:+.1f}) "
+                      f"slip={row['wheel_slip_max']:.3f} "
                       f"sat={row['wheel_sat']*100:.1f}% fall={row['fall_rate']*100:.1f}%")
 
     env.close()
