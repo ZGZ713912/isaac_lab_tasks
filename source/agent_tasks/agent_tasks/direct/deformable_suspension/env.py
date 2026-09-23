@@ -694,7 +694,6 @@ class DeformableSuspensionEnv(DirectRLEnv):
             ema[valid] = (1.0 - alpha) * ema[valid] + alpha * mean_per_bin[valid]
 
         _bin_ema(self._dir_contact_ema, terms["four_wheel_contact"])
-        _bin_ema(self._dir_balance_ema, terms["wheel_force_balance"])
         _bin_ema(self._dir_trackq_ema, terms["track_q_cmd_exp"])
 
     # ------------------------------------------------------------------
@@ -823,7 +822,6 @@ class DeformableSuspensionEnv(DirectRLEnv):
         for i in range(self._n_dir_bins):
             log[f"dir/az_bin{i}"] = self._dir_az_coverage[i].item()
             log[f"dir/contact_bin{i}"] = self._dir_contact_ema[i].item()
-            log[f"dir/balance_bin{i}"] = self._dir_balance_ema[i].item()
             log[f"dir/trackq_bin{i}"] = self._dir_trackq_ema[i].item()
         log["dir/slope_up_frac"] = self._dir_up_frac_ema.item()
         log["dir/slope_down_frac"] = self._dir_down_frac_ema.item()

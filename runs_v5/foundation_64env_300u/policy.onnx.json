@@ -1,0 +1,18 @@
+{
+  "contract_id": "v5-gas-spring-commanded-research-v1",
+  "contract_sha256": "e18273c380ad5bd97620ed922a0f924959be142f9d977785fce02b0453829f6e",
+  "asset_manifest_sha256": "5f88012c30ca7191ee30f6ed460bc51bdd96590b63910e119010e7b3dbb6093a",
+  "control_math_sha256": "5b97bf2935b5bb04357737e2a54046ab891c15bc15d6e4c2ad9d4d6150e3e8cc",
+  "onnx_sha256": "f5a7a1ea5c6b8bb01fe3a27b8af1609736066b019605cd952ae46c2334460d59",
+  "input": [
+    "batch",
+    230
+  ],
+  "output": [
+    "batch",
+    6
+  ],
+  "normalization": "contract-scaled observations; no running normalizer",
+  "verified": true,
+  "max_abs_error": 1.7881393432617188e-07
+}

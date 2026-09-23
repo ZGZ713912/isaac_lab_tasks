@@ -199,9 +199,6 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     orientation_y_exp_sigma = 0.02  # pitch（pgb_x）
     # 水平优先：水平奖励不再乘四轮接地门控，否则抬腿调平时会被扣分。
     gate_orientation_by_contact = False
-    wheel_load_target = 0.0  # ≤0 → 自动取 chassis_total_mass·g/4（N）
-    wheel_load_sigma = 600.0  # N²：单轮目标载荷分布 exp(-(F-Ft)²/σ)
-    wheel_force_balance_sigma_rel = 0.10  # 归一化均力 exp(-Var/(σ_rel·mean²+ε))
     q_track_sigma = 0.02  # 基准角跟踪 σ (rad²)
     low_height_sigma = 3.0e-4  # 低模式贴地偏好 σ (m²)
     # IMU 重力水平分量 -> 每腿 q 修正。
@@ -227,8 +224,6 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
         alive=0.02,
         termination=-200.0,
         four_wheel_contact=0.8,
-        wheel_load_distribution=0.5,
-        wheel_force_balance=0.5,
         tilt_leg_position_error=-0.5,
         tilt_leg_velocity_direction=1.5,
         tilt_leg_wrong_velocity=-0.5,
