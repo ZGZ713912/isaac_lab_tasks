@@ -111,21 +111,24 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     observation_space = 26  # q_cmd1|cmd3|angvel3|grav3|pos4|vel4|torque4|act4
     state_space = 34  # critic：+ lin_vel3 + 车高1 + 四轮接触力4
     play: bool = False
-    training_progress_steps_per_iteration = 24
+    # 必须与 PPO num_steps_per_env 一致，否则 base_contact_death 等按 iteration
+    # 计数的课程会提前/滞后激活（曾导致 iteration≈500 全灭）。
+    training_progress_steps_per_iteration = 48
 
     # ---- 动作 / 腿级联 PID（固定低车身主动悬挂训练）----
-    leg_action_scale = 0.15  # rad per action unit
+    leg_action_scale = 0.10  # rad per action unit
     # Phase-0 实测（scripts/tools/deformable_sign_probe.py）：Q_LOW 时底盘余量约 7mm，
     # q≈1.096 时剩 4.9mm，q≈1.136 起底盘开始承载（16N→203N）。因此有效安全上限
     # 是 1.13 而不是关节限位 1.36。放开到这个值以取得最大下行行程，同时用
     # terminate_chassis_clearance + chassis_ground 兜底。
     leg_target_upper_limit = 1.13
     use_leg_cascade_pid = True  # False 回退单环位置 PD（对比/调试）
-    leg_vel_cmd_limit = 8.0  # rad/s，外环速度指令限幅（< 资产 velocity_limit 17）
+    leg_vel_cmd_limit = 4.0  # rad/s，外环速度指令限幅（< 资产 velocity_limit 17）
     leg_outer_kp = 6.0  # 1/s：位置误差 → 速度指令
-    leg_outer_ki = 3.0  # 1/s²：位置误差积分 → 速度指令
+    # 斜坡上 ki=0 会在重力分量下产生稳态下压 → base 长期触地；保留小积分抗静差。
+    leg_outer_ki = 0.5  # 1/s²
     leg_inner_kp = 2.0  # N·m/(rad/s)：速度误差 → 力矩
-    leg_inner_ki = 20.0  # N·m/rad：速度误差积分 → 力矩
+    leg_inner_ki = 2.0  # N·m/rad
     leg_outer_int_limit = 0.4  # rad·s：外环积分限幅（抗积分饱和）
     leg_inner_int_limit = 0.5  # rad：内环积分限幅（抗积分饱和）
     max_leg_torque = 13.0  # 训练力矩终限幅
@@ -139,7 +142,7 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     q_cmd_range = (du.Q_LOW, du.Q_LOW)
     default_q_cmd = du.Q_LOW
     init_root_height = 0.18  # spawn 时 base 原点离地高度（略高于接触，轻微下落）
-    reset_height_buffer = 0.10  # reset 时在 q_to_height(q_cmd) 之上的缓冲：≥10cm 自由下落，防出生插地
+    reset_height_buffer = 0.03  # reset 时的小高度缓冲，避免把出生冲击学成控制策略
     low_mode_q_threshold = 0.5 * (du.Q_HIGH + du.Q_LOW)  # q_cmd 高于此角视为“低模式”（q 大=车低）
 
     # ---- 第一阶段只训练静态主动悬挂，运动伺服后置 ----
@@ -174,7 +177,8 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     external_cmd_override = False
 
     # ---- 底盘触地两阶段：前 N 轮软惩罚（不死亡），之后死亡 ----
-    base_contact_death_after_iterations = 1000  # 逾期后 base 触地 = 终止
+    # 用正确 steps/iteration 后，1000 ≈ 真实 PPO iteration 1000；再留裕量防过早全灭。
+    base_contact_death_after_iterations = 2000
 
 
     # ---- 观测缩放 ----
@@ -190,15 +194,12 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     termination_pitch_deg = 30.0
     terminate_base_height_low = 0.004  # 低于此离地高度即终止（防穿透/塌）
     terminate_body_top: float | None = None  # 260mm 隧道约束（None=不启用）
-    wheel_contact_force_threshold = 1.0  # 单轮着地判定（N）
-    desired_contact_force_threshold = 20.0  # 接地门控阈值（N，四轮触地项用）
+    wheel_contact_force_threshold = 1.0  # 单轮接地判定阈值（N）；不表示目标载荷
     undesired_contact_force_threshold = 3.0  # 腿/轮架触地惩罚阈值（N）
 
     # ---- 奖励形状参数 ----
-    orientation_x_exp_sigma = 0.02  # roll（pgb_y）
-    orientation_y_exp_sigma = 0.02  # pitch（pgb_x）
-    # 水平优先：水平奖励不再乘四轮接地门控，否则抬腿调平时会被扣分。
-    gate_orientation_by_contact = False
+    orientation_x_exp_sigma = 0.05  # roll（pgb_y）
+    orientation_y_exp_sigma = 0.05  # pitch（pgb_x）
     q_track_sigma = 0.02  # 基准角跟踪 σ (rad²)
     low_height_sigma = 3.0e-4  # 低模式贴地偏好 σ (m²)
     # IMU 重力水平分量 -> 每腿 q 修正。
@@ -207,8 +208,6 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     tilt_leg_q_sign = -1.0
     tilt_leg_q_gain = 0.5  # rad per normalized projected-gravity component（抬/压双向）
     tilt_leg_position_sigma = 0.5  # rad²，腿角二次误差归一化尺度（原 0.02 放大 50 倍是爆点来源）
-    tilt_leg_velocity_scale = 4.0  # rad/s，用于速度方向奖励归一化
-    tilt_progress_clip = 0.05  # 限制单步二次势能下降奖励的尖峰
 
     # ---- 底盘离地保护（Phase-0 实测，强惩罚 + 终止）----
     chassis_ground_threshold = 0.006  # m：低于此余量开始软惩罚
@@ -219,19 +218,16 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     reward_term_clip = 100.0
     reward_total_clip = 1000.0
 
-    # ---- 奖励权重（低车身主动悬挂，水平优先）----
+    # ---- 奖励权重（低车身主动悬挂；不约束轮间载荷转移）----
     rewards = OrderedDict(
         alive=0.02,
         termination=-200.0,
-        four_wheel_contact=0.8,
-        tilt_leg_position_error=-0.5,
-        tilt_leg_velocity_direction=1.5,
-        tilt_leg_wrong_velocity=-0.5,
+        all_wheel_contact=2.5,
+        tilt_leg_position_error=-0.1,
         tilt_quadratic=-12.0,
-        tilt_progress=10.0,
-        flat_orientation_x_exp=3.0,
-        flat_orientation_y_exp=3.0,
-        track_q_cmd_exp=0.2,
+        flat_orientation_x_exp=1.5,
+        flat_orientation_y_exp=1.5,
+        track_q_cmd_exp=0.02,
         low_height_pref=0.0,
         chassis_ground=-20.0,
         torques=-1.0e-4,
@@ -242,7 +238,7 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
         leg_torque_rate=0.0,
         base_ang_acc=0.0,
         base_lin_acc_z=0.0,
-        ang_vel_xy=-0.01,
+        ang_vel_xy=-0.03,
         lin_vel_z=-0.05,
         undesired_contact=-10.0,
         base_contact=-10.0,

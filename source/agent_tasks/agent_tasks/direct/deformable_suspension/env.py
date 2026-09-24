@@ -13,7 +13,8 @@
 #     joint_wheel_set_* / joint_upper_leg_* 由 URDF <mimic> 硬约束跟随，不施加力矩。
 #   - obs 26：q_cmd | cmd(vx,vy,ωz) | ang_vel_b | proj_grav_b | leg_pos(绝对) |
 #     leg_vel | leg_torque | act；critic 追加 lin_vel_b、真实车高、四轮接触力。
-#   - 奖励：四轮触地 + 法向力均衡 + 车身水平 + 基准角跟踪 + 低模式贴地偏好 + 常规。
+#   - 奖励：四轮同时接地 + 车身水平 + 基准角跟踪 + 低模式贴地偏好 + 常规；
+#     不约束上坡/加速/转向时的轮间载荷转移。
 #   - 运动：球体碰撞轮无牵引力 → 由外部底盘速度伺服实现（首版静态关闭）。
 # =============================================================================
 
@@ -102,10 +103,10 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._prev_leg_torque = torch.zeros(self.num_envs, len(self._legs_idx), device=self.device)
         self._prev_root_ang_vel_xy = torch.zeros(self.num_envs, 2, device=self.device)
         self._prev_root_lin_vel_z = torch.zeros(self.num_envs, device=self.device)
-        self._prev_tilt_energy = torch.zeros(self.num_envs, device=self.device)
-        self._tilt_energy_initialized = torch.zeros(
-            self.num_envs, dtype=torch.bool, device=self.device
+        self._wheel_contact_counts = torch.zeros(
+            self.num_envs, len(self._wheels_contact_idx), device=self.device
         )
+        self._all_wheel_contact_steps = torch.zeros(self.num_envs, device=self.device)
 
         # ---- 腿级联 PID 状态（外环/内环积分器 + 上一步速度指令）----
         self._leg_outer_int = torch.zeros(self.num_envs, len(self._legs_idx), device=self.device)
@@ -116,7 +117,6 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._reset_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._n_dir_bins = max(1, int(self.cfg.spawn_dir_bins))
         self._dir_az_coverage = torch.zeros(self._n_dir_bins, device=self.device)
-        self._dir_contact_ema = torch.zeros(self._n_dir_bins, device=self.device)
         self._dir_trackq_ema = torch.zeros(self._n_dir_bins, device=self.device)
         self._dir_up_frac_ema = torch.zeros((), device=self.device)
         self._dir_down_frac_ema = torch.zeros((), device=self.device)
@@ -212,6 +212,13 @@ class DeformableSuspensionEnv(DirectRLEnv):
         return torch.norm(
             self.contact_sensor.data.net_forces_w[:, self._wheels_contact_idx, :], dim=-1
         )
+
+    @property
+    def wheel_normal_forces(self) -> torch.Tensor:
+        """四轮沿地面法向的有效承重力（N），不把切向载荷算作接地。"""
+        forces = self.contact_sensor.data.net_forces_w[:, self._wheels_contact_idx, :]
+        normal = self._terrain_normal_w().unsqueeze(1)
+        return torch.relu((forces * normal).sum(dim=-1))
 
     def _clip_policy_obs(self, obs: torch.Tensor) -> torch.Tensor:
         i = 0
@@ -356,7 +363,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
         force_t = force_b - (force_b * n_b).sum(dim=-1, keepdim=True) * n_b
 
         # 库仑牵引限幅：地面最多传递 μ·N_total
-        n_total = self.wheel_contact_forces.sum(dim=-1)
+        n_total = self.wheel_normal_forces.sum(dim=-1)
         f_cap = self.cfg.chassis_servo_friction_coeff * n_total
         scale = torch.clamp(f_cap / force_t.norm(dim=-1).clamp_min(1.0e-6), max=1.0)
         force_t = force_t * scale.unsqueeze(-1)
@@ -487,66 +494,37 @@ class DeformableSuspensionEnv(DirectRLEnv):
         pgb = self.robot.data.projected_gravity_b
         applied_torque = self.robot.data.applied_torque
         joint_vel = self.robot.data.joint_vel
-        forces = self.wheel_contact_forces  # (N,4)
-
         terms: dict[str, torch.Tensor] = {}
         terms["alive"] = torch.ones(self.num_envs, device=self.device)
         terms["termination"] = self.reset_terminated.float()
 
-        # 1) 四轮触地门控（20N）
-        contact = torch.clamp(forces / self.cfg.desired_contact_force_threshold, 0.0, 1.0)
-        terms["four_wheel_contact"] = contact.mean(dim=-1)
+        # Contact objective: only the weakest wheel matters.  This rewards all
+        # wheels being on the ground without constraining normal-load transfer.
+        normal_forces = self.wheel_normal_forces
+        wheel_contact = normal_forces >= self.cfg.wheel_contact_force_threshold
+        contact_ratio = torch.clamp(
+            normal_forces / self.cfg.wheel_contact_force_threshold,
+            0.0,
+            1.0,
+        )
+        terms["all_wheel_contact"] = contact_ratio.min(dim=-1).values
+        self._wheel_contact_counts += wheel_contact.float()
+        self._all_wheel_contact_steps += wheel_contact.all(dim=-1).float()
 
-        # 2) IMU -> 四腿主动调平：直接给出每条腿的可实现修正目标。
-        tilt_q_target, tilt_q_delta = self._get_tilt_leg_targets(pgb)
+        # 1) IMU -> 四腿主动调平：直接给出每条腿的可实现修正目标。
+        tilt_q_target, _ = self._get_tilt_leg_targets(pgb)
         leg_pos = self.robot.data.joint_pos[:, self._legs_idx]
-        leg_vel = joint_vel[:, self._legs_idx]
         tilt_position_error = torch.mean(
             torch.square(leg_pos - tilt_q_target), dim=-1
         ) / self.cfg.tilt_leg_position_sigma
         terms["tilt_leg_position_error"] = tilt_position_error
 
-        correction_mag = torch.abs(tilt_q_delta)
-        correction_gate = torch.clamp(
-            correction_mag / self.cfg.tilt_leg_q_gain,
-            0.0,
-            1.0,
-        )
-        correction_dir = torch.sign(tilt_q_delta)
-        velocity_toward = torch.relu(leg_vel * correction_dir) / self.cfg.tilt_leg_velocity_scale
-        velocity_away = torch.relu(-leg_vel * correction_dir) / self.cfg.tilt_leg_velocity_scale
-        terms["tilt_leg_velocity_direction"] = torch.mean(
-            torch.clamp(velocity_toward, 0.0, 1.0) * correction_gate,
-            dim=-1,
-        )
-        terms["tilt_leg_wrong_velocity"] = torch.mean(
-            torch.clamp(velocity_away, 0.0, 1.0) * correction_gate,
-            dim=-1,
-        )
-
-        # 二次 IMU 倾斜势能：同时提供“倾斜越小越好”和“本步变平了”的信号。
+        # 二次 IMU 倾斜势能：直接惩罚 roll/pitch 误差，避免差分进度奖励引发抖动。
         tilt_energy = torch.sum(torch.square(pgb[:, :2]), dim=-1)
-        tilt_progress = self._prev_tilt_energy - tilt_energy
-        tilt_progress = torch.where(
-            self._tilt_energy_initialized,
-            tilt_progress,
-            torch.zeros_like(tilt_progress),
-        )
         terms["tilt_quadratic"] = tilt_energy
-        terms["tilt_progress"] = torch.clamp(
-            tilt_progress,
-            -self.cfg.tilt_progress_clip,
-            self.cfg.tilt_progress_clip,
-        )
-        self._prev_tilt_energy.copy_(tilt_energy)
-        self._tilt_energy_initialized.fill_(True)
 
-        # 3) 车身水平（接地门控：防“翘轮换水平”）
-        contact_gate = (
-            terms["four_wheel_contact"]
-            if self.cfg.gate_orientation_by_contact
-            else torch.ones_like(terms["four_wheel_contact"])
-        )
+        # 2) 车身水平。接触门控只要求四轮都接地，不约束轮间载荷分配。
+        contact_gate = 0.2 + 0.8 * terms["all_wheel_contact"]
         terms["flat_orientation_x_exp"] = contact_gate * torch.exp(
             -torch.square(pgb[:, 1]) / self.cfg.orientation_x_exp_sigma
         )
@@ -554,12 +532,12 @@ class DeformableSuspensionEnv(DirectRLEnv):
             -torch.square(pgb[:, 0]) / self.cfg.orientation_y_exp_sigma
         )
 
-        # 4) 基准腿角跟踪
+        # 3) 基准腿角跟踪
         q_err = self.robot.data.joint_pos[:, self._legs_idx] - self.q_cmd.unsqueeze(-1)
         terms["track_q_cmd_exp"] = torch.exp(
             -torch.square(q_err).mean(dim=-1) / self.cfg.q_track_sigma
         )
-        # 4b) 低模式软偏好贴地（当前固定低模式，主调平奖励已经负责高度边界）
+        # 3b) 低模式软偏好贴地（当前固定低模式，主调平奖励已经负责高度边界）
         low_mask = (self.q_cmd > self.cfg.low_mode_q_threshold).float()
         if self._periodic:
             # 坡上需要抬身过坡，贴地偏好只在平路段生效
@@ -571,10 +549,10 @@ class DeformableSuspensionEnv(DirectRLEnv):
             -torch.square(excess) / self.cfg.low_height_sigma
         )
 
-        # 4c) 底盘触地（软惩罚；≥N 轮后同时判死亡，见 _get_dones）
+        # 3c) 底盘触地（软惩罚；≥N 轮后同时判死亡，见 _get_dones）
         terms["base_contact"] = self._base_contact.float()
 
-        # 4d) 底盘离地保护：低于安全余量后线性增长，越界即接近 1。
+        # 3d) 底盘离地保护：低于安全余量后线性增长，越界即接近 1。
         clearance = self.chassis_clearance
         terms["chassis_ground"] = torch.clamp(
             (self.cfg.chassis_ground_threshold - clearance) / self.cfg.chassis_ground_scale,
@@ -582,7 +560,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
             max=1.0,
         )
 
-        # 5) 常规惩罚
+        # 4) 常规惩罚
         terms["torques"] = torch.sum(torch.square(applied_torque[:, self._legs_idx]), dim=-1)
         terms["action_rate"] = torch.sum(torch.square(self.actions - self.last_actions), dim=-1)
         terms["action_rate2"] = torch.sum(
@@ -651,7 +629,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
         n_bins = self._n_dir_bins
 
         # 悬空占比（四轮法向力之和 < 阈值）
-        n_total = self.wheel_contact_forces.sum(dim=-1)
+        n_total = self.wheel_normal_forces.sum(dim=-1)
         airborne = (n_total < self.cfg.airborne_force_threshold).float().mean()
         self._airborne_frac_ema = (1.0 - alpha) * self._airborne_frac_ema + alpha * airborne
 
@@ -693,7 +671,6 @@ class DeformableSuspensionEnv(DirectRLEnv):
             mean_per_bin = summed / counts.clamp_min(1.0)
             ema[valid] = (1.0 - alpha) * ema[valid] + alpha * mean_per_bin[valid]
 
-        _bin_ema(self._dir_contact_ema, terms["four_wheel_contact"])
         _bin_ema(self._dir_trackq_ema, terms["track_q_cmd_exp"])
 
     # ------------------------------------------------------------------
@@ -802,18 +779,24 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._prev_leg_torque[env_ids] = 0.0
         self._prev_root_ang_vel_xy[env_ids] = 0.0
         self._prev_root_lin_vel_z[env_ids] = 0.0
-        self._prev_tilt_energy[env_ids] = 0.0
-        self._tilt_energy_initialized[env_ids] = False
         # 级联 PID 积分器/速度指令：teleport 后必须清零，防积分残留
         self._leg_outer_int[env_ids] = 0.0
         self._leg_inner_int[env_ids] = 0.0
         self._leg_vel_cmd[env_ids] = 0.0
 
-        # 日志
+        # 日志：先读计数再清零，否则 contact rate 恒为 0
         self.extras["log"] = {}
+        episode_steps = self.episode_sums["alive"][env_ids].clamp_min(1.0)
+        contact_counts = self._wheel_contact_counts[env_ids] / episode_steps.unsqueeze(-1)
+        all_four_rate = self._all_wheel_contact_steps[env_ids] / episode_steps
         for name, sums in self.episode_sums.items():
             self.extras["log"][f"episode/{name}"] = sums[env_ids].mean().item()
             sums[env_ids] = 0.0
+        for i in range(contact_counts.shape[-1]):
+            self.extras["log"][f"contact/wheel_{i + 1}_rate"] = contact_counts[:, i].mean().item()
+        self.extras["log"]["contact/all_four_rate"] = all_four_rate.mean().item()
+        self._wheel_contact_counts[env_ids] = 0.0
+        self._all_wheel_contact_steps[env_ids] = 0.0
         self._log_direction_metrics()
 
     def _log_direction_metrics(self) -> None:
@@ -821,7 +804,6 @@ class DeformableSuspensionEnv(DirectRLEnv):
         log = self.extras["log"]
         for i in range(self._n_dir_bins):
             log[f"dir/az_bin{i}"] = self._dir_az_coverage[i].item()
-            log[f"dir/contact_bin{i}"] = self._dir_contact_ema[i].item()
             log[f"dir/trackq_bin{i}"] = self._dir_trackq_ema[i].item()
         log["dir/slope_up_frac"] = self._dir_up_frac_ema.item()
         log["dir/slope_down_frac"] = self._dir_down_frac_ema.item()

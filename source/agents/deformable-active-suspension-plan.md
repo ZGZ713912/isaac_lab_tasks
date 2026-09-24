@@ -25,7 +25,7 @@
 sim-to-real 红线 = 只驱动 `joint_leg_*`、手工 effort PD（kp=200/kd=4）、100 Hz。
 
 **现状一句话**（2026-09-16）：URDF→USD 链路已打通（Y-up→Z-up、`<mimic>` 闭链、球体轮碰撞体），
-任务已按**两档基准 + 外部底盘速度伺服**单层重写并通过 CPU 冒烟（obs 26/34、四轮均力、
+任务已按**两档基准 + 外部底盘速度伺服**单层重写并通过 CPU 冒烟（obs 26/34、四轮接地、
 车身水平、闭链残差 <0.002 rad）。下一步：动态运动、坡度课程、域随机化。
 
 ---
@@ -198,7 +198,7 @@ usd_files/deformable_infantry/         ← 新转换，355MB，尚未入库
 2. `_get_observations`：policy 22 结构**一字不改**（红线）；critic 26 同。cmd3 保留占位；
    观测噪声/延迟如需加，只允许加在 **critic/额外组**（部署不可得信息不进 policy）。
 3. `_get_rewards`：核对 12 项权重语义并**按 deformable 物理重审**：
-   - `flat_orientation_x/y_exp`、`track_height_exp`、`four_wheel_contact`、`undesired_contact`
+   - `flat_orientation_x/y_exp`、`track_height_exp`、`all_wheel_contact`、`undesired_contact`
      （leg/wheel_set 不该触地）、`alive/termination` 保留；
    - 力矩/速度/加速度惩罚的系数按新质量（25.5kg）与 effort 上限复核；
    - **可选新增**：轮距变化率惩罚（防变轮距抖动）、左右/前后着地力差惩罚（防侧倾翘轮）、
@@ -529,7 +529,7 @@ v_roll_i    = v_contact_i · u_i              # u_i = 地面内滚动方向 (±0
 
 ---
 
-## 9ter. 任务定义 v4（现行，2026-09-17）：腿级联 PID + 两段陡坡 + 奖励重构 + 方向均匀性
+## 9ter. 任务定义 v4（历史，2026-09-17）：腿级联 PID + 两段陡坡 + 奖励重构 + 方向均匀性
 
 > 基于最新 run `2026-09-17_20-09-37`（999 iter, 5–10° 周期坡）的诊断结论重写。
 > 旧 run 参数与当前工作区不一致（PD 扫参 kp: 200→10→20→100→50；权重亦不同），以工作区为准。
@@ -567,7 +567,7 @@ v_roll_i    = v_contact_i · u_i              # u_i = 地面内滚动方向 (±0
 
 - **分层/循环 spawn**：`spawn_dir_stratify` 按 (8 个车体系坡度方位 bin × 上/下坡) 循环分配，`combo=(env_id+reset_count)%16`，bin 内抖动；相位上坡 `[0,L)`、下坡 `[2L,3L)`，并保证 world_x 落在本 env 单元内。
 - **对称命令**：`cmd_lin_vel_x_range=cmd_lin_vel_y_range=(-1.25,1.25)`，去掉前向偏置；`ωz=(-1.5,1.5)`。
-- **方向日志**：`dir/az_bin{i}`（仅坡段的重力方位覆盖率）、`dir/contact|balance|trackq_bin{i}`、`dir/slope_up|down|flat_frac`，用于验收均匀性与定位弱方向。
+- **方向日志**：`dir/az_bin{i}`（仅坡段的重力方位覆盖率）、`dir/trackq_bin{i}`、`dir/slope_up|down|flat_frac`，用于验收方向覆盖与定位弱方向。
 - 键盘 play 变体关闭分层（`spawn_dir_stratify=False`），保留随机朝向/相位。
 
 ### 9ter.5 伺服"托举"悬空修复（2026-09-17）
