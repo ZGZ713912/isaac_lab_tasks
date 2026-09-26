@@ -64,6 +64,7 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
+from isaaclab.utils import math as math_utils  # noqa: E402
 
 import agent_world  # noqa: F401,E402
 import agent_tasks  # noqa: F401,E402
@@ -80,7 +81,62 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
+def _disable_viewport_wasd() -> None:
+    """把视口相机从 fly 切到 orbit，避免 WASD 抢机器人遥控键。
+
+    Kit 的 viewportMode 格式是 [viewport_id, "fly"|"orbit"]（见
+    omni.kit.viewport.window tests）。纯字符串 set 不会真正切模式。
+    """
+    try:
+        import carb
+
+        settings = carb.settings.get_settings()
+        viewport_id = None
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+
+            vp = get_active_viewport()
+            viewport_id = getattr(vp, "viewport_id", None) or getattr(vp, "id", None)
+        except Exception:  # noqa: BLE001
+            viewport_id = None
+
+        if viewport_id is not None:
+            settings.set(
+                "/exts/omni.kit.manipulator.camera/viewportMode",
+                [viewport_id, "orbit"],
+            )
+            print(f"[INFO] 视口相机已切到 orbit（viewport_id={viewport_id}，禁用 WASD fly）")
+        else:
+            # 兜底：部分版本接受全局字符串
+            settings.set("/exts/omni.kit.manipulator.camera/viewportMode", "orbit")
+            print("[INFO] 视口相机已设为 orbit（全局，未取到 viewport_id）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] 无法切换视口相机模式: {exc}")
+
+
+def camera_follow(env) -> None:
+    """相机跟随机器人（移植 play.py，减少手动转视角需求）。"""
+    if not hasattr(camera_follow, "smooth_camera_positions"):
+        camera_follow.smooth_camera_positions = []
+    robot_pos = env.unwrapped.scene["robot"].data.root_pos_w[0]
+    robot_quat = env.unwrapped.scene["robot"].data.root_quat_w[0]
+    camera_offset = torch.tensor([-3.0, 0.0, 0.5], dtype=torch.float32, device=env.device)
+    camera_pos = math_utils.transform_points(
+        camera_offset.unsqueeze(0), pos=robot_pos.unsqueeze(0), quat=robot_quat.unsqueeze(0)
+    ).squeeze(0)
+    window_size = 50
+    camera_follow.smooth_camera_positions.append(camera_pos)
+    if len(camera_follow.smooth_camera_positions) > window_size:
+        camera_follow.smooth_camera_positions.pop(0)
+    smooth_camera_pos = torch.mean(torch.stack(camera_follow.smooth_camera_positions), dim=0)
+    env.unwrapped.viewport_camera_controller.set_view_env_index(env_index=0)
+    env.unwrapped.viewport_camera_controller.update_view_location(
+        eye=smooth_camera_pos.cpu().numpy(), lookat=robot_pos.cpu().numpy()
+    )
+
+
 def main() -> None:
+    _disable_viewport_wasd()
     # ---- env + agent config -------------------------------------------------
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.play = True
@@ -106,6 +162,8 @@ def main() -> None:
 
     # ---- environment --------------------------------------------------------
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    # env 创建后 viewport 已就绪，再确保一次 orbit（防 App 启动时未生效）
+    _disable_viewport_wasd()
 
     keyboard = DeformableKeyboard(
         DeformableKeyboardCfg(
@@ -138,6 +196,7 @@ def main() -> None:
     keyboard.reset()
     print("[INFO] 键盘 play 已启动：W/S 前后，A/D 横移，X/Z 自旋，Q 切换高低车身，L 归零")
     print("[INFO] 请确保 Isaac Sim 窗口有焦点才能接收键盘输入")
+    print("[INFO] 相机自动跟随；WASD 已留给机器人（视口 orbit，不再 fly）")
 
     while simulation_app.is_running():
         keyboard.apply()
@@ -146,6 +205,8 @@ def main() -> None:
             obs, _, dones, _ = env.step(actions)
         if play_vis is not None:
             play_vis.update()
+        if not getattr(args_cli, "headless", False):
+            camera_follow(env)
         if bool(dones.any()):
             keyboard.reset()
             print("[INFO] 环境重置，键盘命令已归零")

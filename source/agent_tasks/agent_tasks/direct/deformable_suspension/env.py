@@ -107,6 +107,8 @@ class DeformableSuspensionEnv(DirectRLEnv):
             self.num_envs, len(self._wheels_contact_idx), device=self.device
         )
         self._all_wheel_contact_steps = torch.zeros(self.num_envs, device=self.device)
+        self._last_servo_force = torch.zeros(self.num_envs, 3, device=self.device)
+        self._last_servo_torque_z = torch.zeros(self.num_envs, device=self.device)
 
         # ---- 腿级联 PID 状态（外环/内环积分器 + 上一步速度指令）----
         self._leg_outer_int = torch.zeros(self.num_envs, len(self._legs_idx), device=self.device)
@@ -338,12 +340,15 @@ class DeformableSuspensionEnv(DirectRLEnv):
         return n
 
     def _apply_chassis_servo(self) -> None:
-        """外部底盘速度伺服：对 base 施车身系力/力矩跟踪 (vx,vy,ωz)。
+        """外部底盘速度伺服：对 base 施车体系力/力矩跟踪 (vx,vy,ωz)。
 
-        球体碰撞轮不产生牵引力，故“运动工况”由此外部伺服代表。为忠实于地面耦合，
-        期望力先投影到脚下地面切平面（去掉法向/抬升分量），再按库仑牵引上限
-        `|F| ≤ μ·N_total` 限幅——离地时 N_total→0，力自动归零，杜绝“伺服托举悬空”。
-        偏航力矩同理按 `μ·N_total·L` 限幅。
+        球体碰撞轮不产生牵引力，故“运动工况”由此外部伺服代表。
+        Isaac Lab `set_external_force_and_torque` 默认 `is_global=False`（车体系），
+        下面的 force_b / torques_z 均按车体系给出，坐标系正确。
+
+        训练默认：期望力投影到地面切平面后按库仑帽 `|F| ≤ μ·N_total` 限幅。
+        Play（`chassis_servo_friction_cap_enabled=False`）：跳过摩擦帽，只保留
+        绝对 `max_force` / `max_torque`，让遥控移动/自旋跟手。
         """
         if not self.cfg.enable_chassis_servo:
             return
@@ -354,25 +359,30 @@ class DeformableSuspensionEnv(DirectRLEnv):
         tz = self.cfg.chassis_yaw_inertia * self.cfg.chassis_servo_kp_yaw * (self.cmd_buf[:, 2] - w[:, 2])
         fx = fx.clamp(-self.cfg.chassis_servo_max_force, self.cfg.chassis_servo_max_force)
         fy = fy.clamp(-self.cfg.chassis_servo_max_force, self.cfg.chassis_servo_max_force)
+        tz = tz.clamp(-self.cfg.chassis_servo_max_torque, self.cfg.chassis_servo_max_torque)
 
-        # 期望车身系力 → 投影到地面切平面（n_b = 地面法向在车身系）
+        # 车体系力 → 投影到地面切平面（n_b = 地面法向在车身系）
         force_b = torch.zeros(self.num_envs, 3, device=self.device)
         force_b[:, 0] = fx
         force_b[:, 1] = fy
         n_b = quat_rotate_inverse(self.robot.data.root_link_quat_w, self._terrain_normal_w())
         force_t = force_b - (force_b * n_b).sum(dim=-1, keepdim=True) * n_b
 
-        # 库仑牵引限幅：地面最多传递 μ·N_total
         n_total = self.wheel_normal_forces.sum(dim=-1)
-        f_cap = self.cfg.chassis_servo_friction_coeff * n_total
-        scale = torch.clamp(f_cap / force_t.norm(dim=-1).clamp_min(1.0e-6), max=1.0)
-        force_t = force_t * scale.unsqueeze(-1)
+        if self.cfg.chassis_servo_friction_cap_enabled:
+            # 库仑牵引限幅：地面最多传递 μ·N_total
+            f_cap = self.cfg.chassis_servo_friction_coeff * n_total
+            scale = torch.clamp(f_cap / force_t.norm(dim=-1).clamp_min(1.0e-6), max=1.0)
+            force_t = force_t * scale.unsqueeze(-1)
+            tz_cap = torch.minimum(
+                torch.full_like(n_total, self.cfg.chassis_servo_max_torque),
+                self.cfg.chassis_servo_friction_coeff * n_total * du.OMNI_YAW_COEFF,
+            )
+            tz = tz.clamp(-tz_cap, tz_cap)
 
-        tz_cap = torch.minimum(
-            torch.full_like(n_total, self.cfg.chassis_servo_max_torque),
-            self.cfg.chassis_servo_friction_coeff * n_total * du.OMNI_YAW_COEFF,
-        )
-        tz = tz.clamp(-tz_cap, tz_cap)
+        # 诊断缓冲（HUD/日志用）
+        self._last_servo_force = force_t.detach().clone()
+        self._last_servo_torque_z = tz.detach().clone()
 
         forces = torch.zeros(self.num_envs, 1, 3, device=self.device)
         torques = torch.zeros(self.num_envs, 1, 3, device=self.device)

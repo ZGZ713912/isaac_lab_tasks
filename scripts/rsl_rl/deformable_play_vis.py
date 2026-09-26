@@ -77,10 +77,13 @@ class DeformablePlayVis:
                 import omni.ui as ui
 
                 self._ui = ui
-                self._window = ui.Window("Deformable Play HUD", width=380, height=250)
+                self._window = ui.Window("Deformable Play HUD", width=400, height=280)
                 with self._window.frame:
                     with ui.VStack(spacing=4):
-                        for key in ("mode", "q_cmd", "cmd", "roll", "pitch", "height", "force", "contact"):
+                        for key in (
+                            "mode", "q_cmd", "cmd", "vel", "servo",
+                            "roll", "pitch", "height", "force", "contact",
+                        ):
                             self._labels[key] = ui.Label("", height=18)
                 print("[VIS] HUD 已创建")
             except Exception as exc:  # noqa: BLE001
@@ -124,12 +127,25 @@ class DeformablePlayVis:
         q_cmd = float(unwrapped.q_cmd[0].item())
         low = q_cmd > float(unwrapped.cfg.low_mode_q_threshold)
         cmd = unwrapped.cmd_buf[0]
+        vel_b = self._robot.data.root_lin_vel_b[0]
+        ang_b = self._robot.data.root_ang_vel_b[0]
+        f = getattr(unwrapped, "_last_servo_force", None)
+        tz = getattr(unwrapped, "_last_servo_torque_z", None)
+        f_txt = (
+            f"F_b=({f[0, 0]:+.0f},{f[0, 1]:+.0f}) tz={tz[0]:+.0f}"
+            if f is not None and tz is not None
+            else "F_b=n/a"
+        )
 
         self._labels["mode"].text = f"模式: {'低车身' if low else '高车身'}"
         self._labels["q_cmd"].text = f"q_cmd: {q_cmd:.4f} rad"
         self._labels["cmd"].text = (
             f"cmd: vx={cmd[0].item():+.2f} vy={cmd[1].item():+.2f} wz={cmd[2].item():+.2f}"
         )
+        self._labels["vel"].text = (
+            f"vel_b: vx={vel_b[0].item():+.2f} vy={vel_b[1].item():+.2f} wz={ang_b[2].item():+.2f}"
+        )
+        self._labels["servo"].text = f"servo: {f_txt}"
         self._labels["roll"].text = f"roll (车身横滚): {roll:+.1f}°"
         self._labels["pitch"].text = f"pitch (车身俯仰): {pitch:+.1f}°"
         self._labels["height"].text = f"base 离地高度: {height:.3f} m"

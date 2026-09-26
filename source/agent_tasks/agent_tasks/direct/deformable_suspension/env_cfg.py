@@ -151,9 +151,11 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
     chassis_yaw_inertia = 1.0  # 偏航惯量粗估
     chassis_servo_kp_lin = 20.0  # 1/s（速度误差 → 加速度）
     chassis_servo_kp_yaw = 10.0  # 1/s
-    chassis_servo_max_force = 300.0  # N（按轴限幅；实际再受 μ·N_total 牵引限幅约束）
-    chassis_servo_max_torque = 150.0  # N·m（实际再受 μ·N_total·L 约束）
+    chassis_servo_max_force = 300.0  # N（按轴限幅；训练时再受 μ·N_total 牵引限幅约束）
+    chassis_servo_max_torque = 150.0  # N·m（训练时再受 μ·N_total·L 约束）
     chassis_servo_friction_coeff = 0.6  # μ：地面可传递牵引力上限 |F| ≤ μ·N_total
+    # True=施加库仑牵引帽（训练默认）；False=play 只保留绝对 max_force/torque。
+    chassis_servo_friction_cap_enabled = True
     airborne_force_threshold = 5.0  # N：四轮法向力之和低于此视为悬空（仅用于日志）
 
     # ---- 第一阶段无运动命令；先学会低车身静态调平 ----
@@ -417,9 +419,12 @@ class DeformableSuspensionRoughKeyboardPlayEnvCfg(DeformableSuspensionRoughEnvCf
     # 键盘 play 专用伺服增益（克服球轮静摩擦，仅影响 play；训练用基类默认值）
     chassis_servo_kp_lin = 80.0
     chassis_servo_max_force = 1600.0
-    chassis_yaw_inertia = 15.0
-    chassis_servo_kp_yaw = 20.0
+    # yaw 惯量用真值量级；旧值 15 会把自旋指令算大再被摩擦帽压死 → Z/X 极慢。
+    chassis_yaw_inertia = 1.5
+    chassis_servo_kp_yaw = 30.0
     chassis_servo_max_torque = 900.0
+    # play 不设摩擦帽：只保留绝对 max_force/torque，移动/自旋跟手。
+    chassis_servo_friction_cap_enabled = False
 
 
 @configclass
@@ -447,6 +452,7 @@ class DeformableSuspensionRoughSteepKeyboardPlayEnvCfg(DeformableSuspensionRough
     # 键盘 play 专用伺服增益（同上）
     chassis_servo_kp_lin = 80.0
     chassis_servo_max_force = 1600.0
-    chassis_yaw_inertia = 15.0
-    chassis_servo_kp_yaw = 20.0
+    chassis_yaw_inertia = 1.5
+    chassis_servo_kp_yaw = 30.0
     chassis_servo_max_torque = 900.0
+    chassis_servo_friction_cap_enabled = False
