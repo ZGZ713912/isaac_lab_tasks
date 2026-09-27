@@ -1,41 +1,32 @@
 #!/bin/bash
 # =============================================================================
-# 将 deformable_infantry URDF 转换为 USD（Isaac Lab 资产）。
+# [已废弃] 本脚本原用于把 ~/legged_gym 下的 deformable_infantry(V1) 转成 USD，
+# 输出到 usd_files/deformable_suspension/。
 #
-# 前置：
-#   1) GPU 可用（isaacsim 需要）
-#   2) isaaclab conda 环境就绪（REPRODUCE.md 第 0 节）
-#   3) 源 URDF：~/legged_gym/resources/robots/deformable_infantry/
-#      （deformable_infantry.urdf 使用相对网格路径，urdf/ 与 meshes/ 同级）
+# 但：
+#   - 源 URDF 位于 $HOME/legged_gym/...，不在本仓库内，无法复现；
+#   - 资产模块 assets/deformable_infantry.py 与 deformable_V1 目标已不存在；
+#   - 现役资产为 deformable_V2（狗v3）。
 #
-# 产物：source/agent_world/agent_world/assets/usd_files/deformable_suspension/
-#       deformable_suspension.usd
-# 运行：
-#   bash scripts/tools/convert_deformable_urdf.sh
+# 请改用：
+#   python scripts/tools/prepare_deformable_v2_urdf.py
+#   bash   scripts/tools/convert_deformable_v2_urdf.sh
+#
+# 本脚本保留为转发入口，避免旧文档/命令直接失效。
 # =============================================================================
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-URDF_SRC="${URDF_SRC:-$HOME/legged_gym/resources/robots/deformable_infantry/urdf/deformable_infantry.urdf}"
-OUT_DIR="$REPO_ROOT/source/agent_world/agent_world/assets/usd_files/deformable_suspension"
 
-if [ ! -f "$URDF_SRC" ]; then
-    echo "ERROR: URDF not found: $URDF_SRC"
-    exit 1
+echo ">>> [DEPRECATED] convert_deformable_urdf.sh 已废弃，转发到 deformable_V2 链路。"
+echo ">>> 若需要 V1/deformable_suspension 资产，请从 git 历史恢复对应 URDF 与模块。"
+
+# 默认只做提示；设置 FORWARD=1 时真正执行 V2 转换。
+if [ "${FORWARD:-0}" = "1" ]; then
+    echo ">>> FORWARD=1 → 先归一化 URDF，再转换 USD"
+    python "$REPO_ROOT/scripts/tools/prepare_deformable_v2_urdf.py"
+    bash "$REPO_ROOT/scripts/tools/convert_deformable_v2_urdf.sh" "$@"
+else
+    echo ">>> 提示：bash scripts/tools/convert_deformable_v2_urdf.sh"
+    echo ">>> （如需本脚本代跑：FORWARD=1 bash $0）"
 fi
-
-mkdir -p "$OUT_DIR"
-# 复制 URDF 与网格（保持相对路径结构）
-cp -r "$(dirname "$URDF_SRC")" "$OUT_DIR/urdf"
-cp -r "$(dirname "$(dirname "$URDF_SRC")")/meshes" "$OUT_DIR/meshes"
-
-cd "$HOME/IsaacLab-v2.3.2" || exit 1
-echo ">>> Converting $URDF_SRC -> $OUT_DIR/deformable_suspension.usd"
-# 所有关节转为 effort 模式（stiffness/damping 由 ArticulationCfg 执行器配置覆盖，
-# 环境内手工 set_joint_effort_target 驱动腿 PD 与平四耦合）
-./isaaclab.sh -p scripts/tools/convert_urdf.py \
-    "$OUT_DIR/urdf/deformable_infantry.urdf" \
-    "$OUT_DIR/deformable_suspension.usd" \
-    --joint-target-type none
-
-echo ">>> Done: $OUT_DIR/deformable_suspension.usd"

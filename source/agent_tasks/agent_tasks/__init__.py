@@ -17,6 +17,9 @@ import os
 # 导入子模块，触发 gymnasium 环境注册
 import agent_tasks.direct.wheelbipe.wheelbipe_V14  # noqa: F401
 import agent_tasks.direct.wheel_leg_v1.wheel_leg_task  # noqa: F401
+import agent_tasks.direct.wheel_leg_v2  # noqa: F401
+import agent_tasks.direct.wheel_leg_v3.wheel_leg_task  # noqa: F401
+import agent_tasks.direct.wheel_leg_v4.task_init  # noqa: F401
 import agent_tasks.direct.deformable_suspension  # noqa: F401
 
 # Parent Path

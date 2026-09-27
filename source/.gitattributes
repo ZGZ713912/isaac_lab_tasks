@@ -1,0 +1,2 @@
+agent_world/agent_world/assets/usd_files/deformable_V2/configuration/deformable_V2_base.usd filter=lfs diff=lfs merge=lfs -text
+agent_world/agent_world/assets/usd_files/deformable_V2/meshes/base_link.STL filter=lfs diff=lfs merge=lfs -text

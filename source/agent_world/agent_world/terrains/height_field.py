@@ -983,3 +983,95 @@ class HfCustomTruncatedSlopedTerrainCfg(HfTerrainBaseCfg):
 
     randomize_each_ramp: bool = False
     """Whether to independently sample each ramp from the provided ranges."""
+
+
+# ---------------------------------------------------------------------------
+# 周期坡面：[+θ·L, 平·L, −θ·L, 平·L] 循环（对称上下坡），每周期独立随机 θ。
+# 地形网格与 env 的解析地面高度共用同一套函数/种子，保证完全一致（无量化误差）。
+# ---------------------------------------------------------------------------
+def periodic_slope_angle(period_index: int, angle_range: tuple[float, float], seed: int = 0) -> float:
+    """第 ``period_index`` 个周期的坡角（度）。确定性：同 (seed, index) 必得同角。"""
+    rng = np.random.default_rng([int(seed), int(period_index)])
+    return float(rng.uniform(float(angle_range[0]), float(angle_range[1])))
+
+
+def _periodic_slope_angle_table(
+    x: np.ndarray, period: float, angle_range: tuple[float, float], seed: int
+) -> np.ndarray:
+    """按 world x 取所属周期的坡角（向量化）。"""
+    k = np.floor(np.asarray(x, dtype=np.float64) / period).astype(np.int64)
+    k_min = int(k.min())
+    k_max = int(k.max())
+    table = np.array(
+        [periodic_slope_angle(i, angle_range, seed) for i in range(k_min, k_max + 1)],
+        dtype=np.float64,
+    )
+    return table[k - k_min]
+
+
+def periodic_slope_height(
+    x, segment_length: float, angle_range: tuple[float, float], seed: int = 0
+):
+    """周期坡面在 world x 处的地面高度（m）。连续、每周期首尾等高。
+
+    剖面（周期 = 4·L）：[0,L) 上坡 +θ；[L,2L) 平 ε；[2L,3L) 下坡 −θ；[3L,4L) 平地 0。
+    """
+    x = np.asarray(x, dtype=np.float64)
+    seg = float(segment_length)
+    period = 4.0 * seg
+    slope = np.tan(np.deg2rad(_periodic_slope_angle_table(x, period, angle_range, seed)))
+    s = x - np.floor(x / period) * period
+    height = np.zeros_like(x)
+    up = (s >= 0.0) & (s < seg)
+    height[up] = slope[up] * s[up]
+    top = (s >= seg) & (s < 2.0 * seg)
+    height[top] = slope[top] * seg
+    down = (s >= 2.0 * seg) & (s < 3.0 * seg)
+    height[down] = slope[down] * (3.0 * seg - s[down])
+    return height
+
+
+def periodic_slope_terrain(difficulty: float, cfg: "HfCustomPeriodicSlopeTerrainCfg"):
+    """直接构建周期坡面 trimesh（不走 height_field_to_mesh，避免量化/边界误差）。"""
+    del difficulty
+    h = float(cfg.horizontal_scale)
+    # 剖面只沿 x 变化，y 方向可粗分（省内存）；x 按 horizontal_scale，y 按 >=0.5m
+    y_step = max(h, 0.5)
+    nx = int(round(cfg.size[0] / h)) + 1
+    ny = max(2, int(round(cfg.size[1] / y_step)) + 1)
+    xs = np.linspace(0.0, cfg.size[0], nx)
+    ys = np.linspace(0.0, cfg.size[1], ny)
+    z = periodic_slope_height(xs, cfg.segment_length, cfg.angle_range, cfg.angle_seed).astype(np.float32)
+    xx, yy = np.meshgrid(xs, ys, indexing="ij")
+    zz = np.repeat(z[:, None], ny, axis=1)
+    vertices = np.stack([xx.ravel(), yy.ravel(), zz.ravel()], axis=1).astype(np.float32)
+
+    i = np.arange(nx - 1)[:, None]
+    j = np.arange(ny - 1)[None, :]
+    a = (i * ny + j).ravel()
+    b = a + 1
+    c = a + ny
+    d = c + 1
+    faces = np.empty((a.size * 2, 3), dtype=np.int32)
+    faces[0::2] = np.stack([a, c, b], axis=1)
+    faces[1::2] = np.stack([b, c, d], axis=1)
+
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    origin = np.array([cfg.size[0] * 0.5, cfg.size[1] * 0.5, 0.0])
+    return [mesh], origin
+
+
+@configclass
+class HfCustomPeriodicSlopeTerrainCfg(HfTerrainBaseCfg):
+    """周期上/下坡 + 平路地形（沿 x，每周期独立随机坡角）。"""
+
+    function = periodic_slope_terrain
+
+    segment_length: float = 1.0
+    """每段（坡/平）沿 x 的长度（m）。周期 = 4 × segment_length。"""
+
+    angle_range: tuple[float, float] = (5.0, 10.0)
+    """坡角范围（度），每周期独立采样。"""
+
+    angle_seed: int = 0
+    """坡角序列的确定性种子（地形与 env 解析求高共用；注意不能用 `seed`，会被生成器覆盖）。"""

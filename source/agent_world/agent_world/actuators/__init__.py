@@ -16,6 +16,7 @@ from .m3508_actuator import M3508Actuator, M3508ActuatorCfg
 from .learned_velocity_actuator import LearnedVelocityActuator
 from .learned_velocity_actuator_cfg import LearnedVelocityActuatorCfg
 from .diff_vel_actuator import DiffVelPDActuator, DiffVelPDActuatorCfg
+from .wheel_leg_v2_gas_spring import WheelLegV2GasSpringModel
 
 __all__ = [
     "M3508Actuator",
@@ -24,4 +25,5 @@ __all__ = [
     "LearnedVelocityActuatorCfg",
     "DiffVelPDActuator",
     "DiffVelPDActuatorCfg",
+    "WheelLegV2GasSpringModel",
 ]

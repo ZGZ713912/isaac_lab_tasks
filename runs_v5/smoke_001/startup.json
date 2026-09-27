@@ -1,0 +1,563 @@
+{
+  "started_at": "2026-09-23T09:43:03.061216+00:00",
+  "contract_id": "v5-gas-spring-commanded-research-v1",
+  "contract_sha256": "e18273c380ad5bd97620ed922a0f924959be142f9d977785fce02b0453829f6e",
+  "asset_manifest_sha256": "5f88012c30ca7191ee30f6ed460bc51bdd96590b63910e119010e7b3dbb6093a",
+  "control_math_sha256": "5b97bf2935b5bb04357737e2a54046ab891c15bc15d6e4c2ad9d4d6150e3e8cc",
+  "source_sha256": {
+    "scripts/train_chassis.py": "625a67f964d2b1b5e0f497f16e2e1650e805bf1210fde46e5a97d8370dc0f85d",
+    "src/wheeled_tasks/chassis/env.py": "7641bf79046d405a3c2479926110775a90cf16e02806c91a61c31a70fe74c55a",
+    "src/wheeled_tasks/chassis/task.py": "7fcde0a6991b39b83599909341eb561d689945b46f91efc4c8744d2643e2b570",
+    "src/wheeled_tasks/v40/core.py": "f8e9712a95e69f6a8aacda0a358ea9cb52a33a1308d6614c8ad3101d4e7a9fc9",
+    "src/wheeled_tasks/v40/contract.py": "7f16335d383ad4f392a5b4dbee98b012f59b83be78b718a5c976ad2be903944f",
+    "src/wheeled_tasks/agents/v40_ppo_cfg.py": "3445aa0fdbf0fc4986be9b139d3c2c1ffa22782daf53cee6580c966fb9db0d5f",
+    "src/wheeled_algo/v40_job.py": "b255ab1597e064aaae23e8a2139a9eff1cef3437c24004c996ccd9c6ba94312b",
+    "src/wheeled_algo/chassis_export.py": "cfb38118a32a97839f29abe82c69ae1c6caab9ad9aa708d648a177282d452838",
+    "contracts/own_v40_v2.json": "5b97bf2935b5bb04357737e2a54046ab891c15bc15d6e4c2ad9d4d6150e3e8cc",
+    "src/wheeled_tasks/chassis/v5_control.py": "96fc3f2105c3cb4c94bb50c3c29a884a6ba35969f76cf91c541816ac84349fde",
+    "src/wheeled_tasks/chassis/torque_monitor.py": "e22692f56b59c7eb46727691343be1fa6627a6321f382e23fa9cdbc363998589",
+    "src/wheeled_tasks/chassis/full_curriculum.py": "6be6f537c76ee37e3bcdc81e49dcaf4f1024ffe8b00165c30b9328079944c705"
+  },
+  "stage": "foundation",
+  "status": "running",
+  "successful_updates": 0,
+  "parent_updates": 0,
+  "parent_training_transitions": 0,
+  "actor_updates_in_block": 0,
+  "args": {
+    "contract": "\u53c2\u8003\u4f8b\u7a0b/contracts/v5_foundation_v1.json",
+    "stage": "foundation",
+    "num_envs": 8,
+    "updates": 8,
+    "level": 1.0,
+    "seed": 617,
+    "device": "cuda:0",
+    "run_dir": "/home/noir/Documents/workspace/example/wheeled-legged_RL/runs_v5/smoke_001",
+    "research": true,
+    "preflight_only": false,
+    "coverage": false,
+    "validate_scene": 0,
+    "resume": null,
+    "transfer": null,
+    "transfer_actor_only": false,
+    "publish_state": false,
+    "max_runtime_seconds": 172800.0
+  },
+  "startup": {
+    "body_count": 19,
+    "tree_dofs": 18,
+    "loop_constraints": 48,
+    "num_envs": 8,
+    "terrain_families": [
+      "flat",
+      "flat",
+      "flat",
+      "flat",
+      "flat",
+      "flat",
+      "flat",
+      "flat"
+    ],
+    "mass_kg_each": [
+      14.642001152038574,
+      14.642001152038574,
+      14.642001152038574,
+      14.642001152038574,
+      14.642001152038574,
+      14.642001152038574,
+      14.642001152038574,
+      14.642001152038574
+    ],
+    "contact_filters": [
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_0/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_1/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_2/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_3/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_4/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_5/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_6/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ],
+      [
+        "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+      ]
+    ],
+    "self_collision_enabled": false,
+    "solver_order": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "scene_group_counts": {
+      "foundation": 8
+    },
+    "terrain_collision_paths": [
+      "/World/envs/env_0/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_1/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_2/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_3/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_4/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_5/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_6/Terrain/surface_0/geometry/mesh",
+      "/World/envs/env_7/Terrain/surface_0/geometry/mesh"
+    ],
+    "gas_spring_force_enabled": true,
+    "active_joint_order": [
+      "L_joint1",
+      "LL_joint1",
+      "L_joint3",
+      "R_joint1",
+      "RR_joint1",
+      "R_joint3"
+    ]
+  }
+}
