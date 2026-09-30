@@ -43,14 +43,14 @@ parser = argparse.ArgumentParser(description="Keyboard play for deformable activ
 parser.add_argument(
     "--task",
     type=str,
-    default="Robotics-Deformable-Suspension-Rough-Keyboard-Play-v0",
+    default="Robotics-Deformable-Suspension-Rough-Keyboard-Play-History-Transformer-v1",
     help="Task name (keyboard play variant).",
 )
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to model_XXXX.pt")
 parser.add_argument("--num_envs", type=int, default=1, help="Must be 1 for keyboard play.")
 parser.add_argument("--vx_max", type=float, default=3.0, help="Max forward/backward speed (m/s).")
 parser.add_argument("--vy_max", type=float, default=1.6, help="Max lateral speed (m/s).")
-parser.add_argument("--wz_max", type=float, default=4.5, help="Max yaw rate (rad/s).")
+parser.add_argument("--wz_max", type=float, default=6.283185307179586, help="Max yaw rate (rad/s); 2*pi = 60 rpm.")
 parser.add_argument("--wz_step", type=float, default=0.6, help="Yaw-rate increment per Z/X press (rad/s).")
 parser.add_argument("--no_vis", action="store_true", default=False, help="Disable play visualization (contact/level/HUD).")
 AppLauncher.add_app_launcher_args(parser)

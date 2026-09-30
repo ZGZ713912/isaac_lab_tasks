@@ -302,7 +302,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self._apply_chassis_servo()
 
     def _leg_cascade_torque(self, joint_pos: torch.Tensor, joint_vel: torch.Tensor) -> torch.Tensor:
-        """腿级联 PID：外环位置 PI→速度指令，内环速度 PI→力矩（100 Hz 前向欧拉）。
+        """腿级联 PID：外环位置 PI→速度指令，内环速度 PI→力矩（物理子步积分）。
 
         积分器均做限幅抗饱和；外环输出再经速度限幅，终力矩由 _apply_action 统一限幅。
         """
@@ -311,7 +311,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
 
         # 外环：位置误差 → 速度指令
         e_q = self.leg_target - q
-        self._leg_outer_int += e_q * self.step_dt
+        self._leg_outer_int += e_q * self.physics_dt
         self._leg_outer_int.clamp_(-self.cfg.leg_outer_int_limit, self.cfg.leg_outer_int_limit)
         vel_cmd = self.cfg.leg_outer_kp * e_q + self.cfg.leg_outer_ki * self._leg_outer_int
         vel_cmd = vel_cmd.clamp(-self.cfg.leg_vel_cmd_limit, self.cfg.leg_vel_cmd_limit)
@@ -319,7 +319,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
 
         # 内环：速度误差 → 力矩
         e_v = vel_cmd - qd
-        self._leg_inner_int += e_v * self.step_dt
+        self._leg_inner_int += e_v * self.physics_dt
         self._leg_inner_int.clamp_(-self.cfg.leg_inner_int_limit, self.cfg.leg_inner_int_limit)
         return self.cfg.leg_inner_kp * e_v + self.cfg.leg_inner_ki * self._leg_inner_int
 

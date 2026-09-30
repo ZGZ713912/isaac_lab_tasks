@@ -73,3 +73,23 @@ class DeformableSuspensionTransformerPPORunnerCfg(DeformableSuspensionPPORunnerC
     def __post_init__(self):
         # transformer 在 5e-5 下学得过慢；adaptive 调度会按 KL 自动回调
         self.algorithm.learning_rate = 3.0e-4
+
+
+@configclass
+class DeformableHistoryTransformerPolicyCfg(DeformableTransformerPolicyCfg):
+    history_length: int = 8
+    actor_layout: dict = {
+        "global": list(range(10)) + [30, 31],
+        "legs": [[10 + i, 14 + i, 18 + i, 22 + i, 26 + i] for i in range(4)],
+    }
+    critic_layout: dict = {
+        "global": list(range(10)) + [30, 31, 32, 33, 34, 35],
+        "legs": [[10 + i, 14 + i, 18 + i, 22 + i, 26 + i, 36 + i] for i in range(4)],
+    }
+
+
+@configclass
+class DeformableDynamicPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg):
+    experiment_name = "deformable_dynamic_history_v1"
+    clip_actions = 1.0
+    policy = DeformableHistoryTransformerPolicyCfg(init_noise_std=0.4)

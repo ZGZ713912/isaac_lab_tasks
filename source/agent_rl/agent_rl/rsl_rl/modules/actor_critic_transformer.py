@@ -86,6 +86,7 @@ class LegTokenTransformer(nn.Module):
         head_hidden: int = 64,
         head: str = "global",
         out_gain: float = 1.0,
+        history_length: int = 1,
     ):
         super().__init__()
         global_idx = list(layout["global"])
@@ -94,11 +95,14 @@ class LegTokenTransformer(nn.Module):
         leg_dim = len(legs_idx[0])
         assert all(len(l) == leg_dim for l in legs_idx), "all leg tokens must have the same size"
         max_idx = max(global_idx + [i for l in legs_idx for i in l])
-        assert max_idx < num_obs, f"layout index {max_idx} out of range for obs dim {num_obs}"
+        assert num_obs % history_length == 0, "observation must contain complete history frames"
+        assert max_idx < num_obs // history_length, "layout index outside history frame"
         if head == "per_leg":
             assert num_outputs == num_legs, "per_leg head requires num_outputs == num_legs"
 
         self.num_obs = num_obs
+        self.history_length = history_length
+        self.frame_size = num_obs // history_length
         self.num_outputs = num_outputs
         self.head_type = head
         self.register_buffer("global_idx", torch.tensor(global_idx, dtype=torch.long), persistent=False)
@@ -113,6 +117,9 @@ class LegTokenTransformer(nn.Module):
         # token 身份编码：0=global，1..L=各腿
         self.token_pos = nn.Parameter(torch.zeros(1, 1 + num_legs, d_model))
         nn.init.normal_(self.token_pos, std=0.02)
+        if history_length > 1:
+            self.time_pos = nn.Parameter(torch.zeros(1, history_length, 1, d_model))
+            nn.init.normal_(self.time_pos, std=0.02)
 
         self.layers = nn.ModuleList([_EncoderLayer(d_model, nhead, dim_ff) for _ in range(num_layers)])
         self.norm = nn.LayerNorm(d_model)
@@ -124,13 +131,18 @@ class LegTokenTransformer(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         b = obs.shape[0]
-        g = self.global_embed(obs.index_select(-1, self.global_idx)).unsqueeze(1)  # (b,1,d)
-        legs = obs.index_select(-1, self.legs_idx).reshape(b, self.num_legs, self.leg_dim)
+        obs = obs.reshape(b * self.history_length, self.frame_size)
+        g = self.global_embed(obs.index_select(-1, self.global_idx)).unsqueeze(1)
+        legs = obs.index_select(-1, self.legs_idx).reshape(b * self.history_length, self.num_legs, self.leg_dim)
         l = self.leg_embed(legs)  # (b,L,d)
         x = torch.cat([g, l], dim=1) + self.token_pos
+        if self.history_length > 1:
+            x = x.reshape(b, self.history_length, 1 + self.num_legs, -1) + self.time_pos
+            x = x.flatten(1, 2)
         for layer in self.layers:
             x = layer(x)
         x = self.norm(x)
+        x = x[:, -self.num_legs - 1:, :]
         if self.head_type == "per_leg":
             return self.head(x[:, 1:, :]).squeeze(-1)  # (b,L)
         return self.head(x[:, 0, :])
@@ -158,6 +170,7 @@ class ActorCriticTransformer(ActorCritic):
         actor_head: str = "per_leg",
         actor_layout: dict | None = None,
         critic_layout: dict | None = None,
+        history_length: int = 1,
         **kwargs,
     ):
         # RslRlPpoActorCriticCfg 基类自带字段，对 transformer 无意义
@@ -180,7 +193,8 @@ class ActorCriticTransformer(ActorCritic):
 
         common = dict(d_model=d_model, nhead=nhead, num_layers=num_layers, dim_ff=dim_ff, head_hidden=head_hidden)
         self.actor = LegTokenTransformer(
-            num_actor_obs, num_actions, actor_layout, head=actor_head, out_gain=0.01, **common
+            num_actor_obs, num_actions, actor_layout, head=actor_head, out_gain=0.01,
+            history_length=history_length, **common
         )
         self.critic = LegTokenTransformer(num_critic_obs, 1, critic_layout, head="global", out_gain=1.0, **common)
 

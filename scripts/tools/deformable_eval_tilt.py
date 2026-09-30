@@ -59,6 +59,7 @@ import torch  # noqa: E402
 
 import agent_world  # noqa: F401,E402
 import agent_tasks  # noqa: F401,E402
+import agent_rl.rsl_rl.modules  # noqa: F401,E402
 import cli_args as rsl_cli_args  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
@@ -95,7 +96,7 @@ def _rollout(env, policy, steps: int, warmup: int) -> dict:
             tilt = torch.sqrt(torch.clamp(pgb[:, 0] ** 2 + pgb[:, 1] ** 2, min=0.0))
             acc["tilt"].append(tilt.mean().item())
             acc["contact"].append(
-                (unwrapped.wheel_contact_forces > 1.0).float().mean().item()
+                (unwrapped.wheel_normal_forces > unwrapped.cfg.wheel_contact_force_threshold).all(dim=-1).float().mean().item()
             )
             acc["clear"].append(unwrapped.chassis_clearance.mean().item())
             acc["base"].append(unwrapped._base_contact.float().mean().item())

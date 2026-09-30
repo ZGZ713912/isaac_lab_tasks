@@ -117,3 +117,20 @@ for _task_id, _env_cfg in (
             "rsl_rl_cfg_entry_point": _TRANSFORMER_RUNNER,
         },
     )
+
+# V1 changes the observation/action contract and must not load V0 checkpoints.
+for _suffix, _cfg in (
+    ("Flat", "DeformableDynamicFlatEnvCfg"),
+    ("Rough", "DeformableDynamicRoughEnvCfg"),
+    ("Rough-Steep", "DeformableDynamicRoughSteepEnvCfg"),
+    ("Rough-Keyboard-Play", "DeformableDynamicKeyboardPlayEnvCfg"),
+):
+    gym.register(
+        id=f"Robotics-Deformable-Suspension-{_suffix}-History-Transformer-v1",
+        entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.dynamic_cfg:{_cfg}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableDynamicPPORunnerCfg",
+        },
+    )

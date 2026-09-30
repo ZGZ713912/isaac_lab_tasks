@@ -1,0 +1,324 @@
+"""Wheel-driven active suspension with encoder odometry and policy-step history."""
+
+from __future__ import annotations
+
+import torch
+import trimesh
+
+from isaaclab.utils.math import quat_apply, quat_apply_inverse
+
+from agent_world import AssetPath
+from . import cfg_utils as du
+from .env import DeformableSuspensionEnv
+
+
+class DeformableDynamicEnv(DeformableSuspensionEnv):
+    def __init__(self, cfg, render_mode=None, **kwargs):
+        if cfg.enable_chassis_servo or cfg.events is not None:
+            raise ValueError("V1 tire dynamics cannot be combined with base servo or wheel material events")
+        if cfg.observation_space != 32 * cfg.policy_history_length or cfg.state_space != 40:
+            raise ValueError("V1 contract requires policy=32*history_length and critic=40")
+        super().__init__(cfg, render_mode, **kwargs)
+        joints = {name: i for i, name in enumerate(self.robot.joint_names)}
+        bodies = {name: i for i, name in enumerate(self.robot.body_names)}
+        contacts = {name: i for i, name in enumerate(self.contact_sensor.body_names)}
+        self._wheels_idx = [joints[name] for name in du.ORDERED_WHEEL_JOINT_NAMES]
+        self._wheel_body_ids = [bodies[f"wheel_{i}"] for i in range(1, 5)]
+        self._wheel_set_body_ids = [bodies[f"wheel_set_{i}"] for i in range(1, 5)]
+        self._wheels_contact_idx = [contacts[f"wheel_{i}"] for i in range(1, 5)]
+        self._friction = torch.ones(self.num_envs, 1, device=self.device)
+        self._encoder_bias = torch.zeros(self.num_envs, 4, device=self.device)
+        self._gyro_bias = torch.zeros(self.num_envs, 3, device=self.device)
+        self._delay = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._sensor_fifo = torch.zeros(self.num_envs, cfg.max_sensor_delay_steps + 1, 32, device=self.device)
+        self._history = torch.zeros(self.num_envs, cfg.policy_history_length, 32, device=self.device)
+        self._history_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._obs_tick = -1
+        self._obs_cache = None
+        self._last_wheel_slip = torch.zeros(self.num_envs, 4, device=self.device)
+        self._wheel_target = torch.zeros_like(self._last_wheel_slip)
+        self._wheel_tau = torch.zeros_like(self._last_wheel_slip)
+        self._metric_names = ("all_contact", "tilt_square", "height_violation", "clearance_min",
+                              "speed_error", "yaw_error", "slip", "torque_saturation")
+        self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
+        self._metric_steps = torch.zeros(self.num_envs, device=self.device)
+
+        # Use the actual transformed mesh envelope, not only its base-frame z offsets.
+        mesh = trimesh.load(f"{AssetPath}/usd_files/deformable_V2/meshes/base_link.STL", force="mesh")
+        vertices = torch.as_tensor(mesh.vertices.copy(), dtype=torch.float32, device=self.device)
+        vertices = torch.stack((vertices[:, 0], -vertices[:, 2], vertices[:, 1]), dim=-1)
+        lo, hi = vertices.amin(0), vertices.amax(0)
+        xy = torch.cartesian_prod(torch.linspace(lo[0], hi[0], 7, device=self.device),
+                                  torch.linspace(lo[1], hi[1], 7, device=self.device))
+        self._bottom_samples = torch.cat((xy, lo[2].expand(len(xy), 1)), dim=-1)
+        self._top_vertices = torch.as_tensor(
+            trimesh.convex.convex_hull(vertices.cpu().numpy()).vertices.copy(),
+            dtype=torch.float32, device=self.device)
+        self._set_wheel_material()
+
+    def _set_wheel_material(self):
+        # PhysX handles normal collision; our tire law owns ALL wheel tangential friction.
+        view = self.robot.root_physx_view
+        materials = view.get_material_properties()
+        start = 0
+        for body_id, path in enumerate(view.link_paths[0]):
+            count = self.robot._physics_sim_view.create_rigid_body_view(path).max_shapes
+            if body_id in self._wheel_body_ids:
+                materials[:, start:start + count, :2] = 0.0
+                materials[:, start:start + count, 2] = 0.0
+            start += count
+        if start != view.max_shapes:
+            raise RuntimeError("Wheel material shape mapping mismatch")
+        view.set_material_properties(materials, torch.arange(self.num_envs, dtype=torch.int32, device="cpu"))
+
+    def _ground_height(self, points):
+        if self._periodic:
+            return du.periodic_slope_height_torch(
+                points[..., 0] + self._profile_x_offset, self._period_seg, self._slope_angle_table)
+        shape = (self.num_envs,) + (1,) * (points.ndim - 2)
+        return self.scene.env_origins[:, 2].reshape(shape).expand(points.shape[:-1])
+
+    def _normals_at(self, points):
+        normals = torch.zeros_like(points)
+        normals[..., 2] = 1.0
+        if self._periodic:
+            x = points[..., 0] + self._profile_x_offset
+            eps = 0.01
+            gradient = (du.periodic_slope_height_torch(x + eps, self._period_seg, self._slope_angle_table)
+                        - du.periodic_slope_height_torch(x - eps, self._period_seg, self._slope_angle_table)) / (2 * eps)
+            normals[..., 0] = -gradient
+        return torch.nn.functional.normalize(normals, dim=-1)
+
+    def _wheel_geometry_w(self):
+        data = self.robot.data
+        quats = data.body_link_quat_w[:, self._wheel_body_ids]
+        offset = torch.zeros(self.num_envs, 4, 3, device=self.device)
+        offset[..., 0] = -0.0055
+        centers = data.body_link_pos_w[:, self._wheel_body_ids] + quat_apply(quats, offset)
+        normals = self._normals_at(centers)
+        axle = torch.zeros_like(centers)
+        axle[..., 0] = 1.0
+        axle = quat_apply(quats, axle)
+        roll = torch.nn.functional.normalize(torch.cross(axle, normals, dim=-1), dim=-1)
+        points = centers - du.WHEEL_RADIUS * normals
+        return centers, points, normals, axle, roll
+
+    @property
+    def wheel_normal_forces(self):
+        _, _, normals, _, _ = self._wheel_geometry_w()
+        forces = self.contact_sensor.data.net_forces_w[:, self._wheels_contact_idx]
+        return (forces * normals).sum(-1).clamp_min(0.0)
+
+    @property
+    def chassis_clearance(self):
+        data = self.robot.data
+        quat = data.root_link_quat_w[:, None].expand(-1, len(self._bottom_samples), -1)
+        points = data.root_link_pos_w[:, None] + quat_apply(
+            quat, self._bottom_samples[None].expand(self.num_envs, -1, -1))
+        return (points[..., 2] - self._ground_height(points)).amin(-1)
+
+    @property
+    def body_top_height(self):
+        data = self.robot.data
+        quat = data.root_link_quat_w[:, None].expand(-1, len(self._top_vertices), -1)
+        top_z = (data.root_link_pos_w[:, None] + quat_apply(
+            quat, self._top_vertices[None].expand(self.num_envs, -1, -1)))[..., 2].amax(-1)
+        _, points, _, _, _ = self._wheel_geometry_w()
+        # Ground surface at each wheel, so an airborne wheel cannot hide excess height.
+        return top_z - self._ground_height(points).amax(-1)
+
+    def _drive_cmd_b(self):
+        cmd = self.cmd_buf.clone()
+        if self.cfg.commands_world_frame:
+            horizontal = torch.cat((cmd[:, :2], torch.zeros_like(cmd[:, :1])), dim=-1)
+            cmd[:, :2] = quat_apply_inverse(self.robot.data.root_link_quat_w, horizontal)[:, :2]
+        return cmd
+
+    def _resample_commands(self, env_ids):
+        super()._resample_commands(env_ids)
+        if self.cfg.external_cmd_override:
+            return
+        progress = min(1.0, self.common_step_counter / max(
+            1, self.cfg.motion_curriculum_iterations * self.cfg.training_progress_steps_per_iteration))
+        # Standing -> translation -> spin -> simultaneous motion; both spin signs are sampled.
+        linear_scale = min(1.0, max(0.0, (progress - 0.05) / 0.35))
+        yaw_scale = min(1.0, max(0.0, (progress - 0.25) / 0.65))
+        self.cmd_buf[env_ids, :2] *= linear_scale
+        self.cmd_buf[env_ids, 2] *= yaw_scale
+        mode = torch.randint(0, 5, (len(env_ids),), device=self.device)
+        self.cmd_buf[env_ids[mode == 0]] = 0.0
+        self.cmd_buf[env_ids[mode == 1], 2] = 0.0
+        self.cmd_buf[env_ids[mode == 2], :2] = 0.0
+        full_spin = env_ids[mode == 3]
+        self.cmd_buf[full_spin, 2] = torch.sign(self.cmd_buf[full_spin, 2]) * yaw_scale * self.cfg.cmd_ang_vel_z_range[1]
+
+    def _pre_physics_step(self, actions):
+        super()._pre_physics_step(actions.clamp(-1.0, 1.0))
+        # Negative residuals extend from the low reference; zero holds the baseline.
+        extension = (-self.actions).clamp_min(0.0)
+        self.leg_target = (self.q_cmd[:, None] - self.cfg.leg_extension_range * extension).clamp(
+            du.LEG_LOWER_LIMIT, self.cfg.leg_target_upper_limit)
+
+    def _apply_action(self):
+        # The inherited leg controller is unchanged except its corrected physics-step dt.
+        super()._apply_action()
+        _, points, normals, _, roll = self._wheel_geometry_w()
+        data = self.robot.data
+        q = data.joint_pos[:, self._legs_idx]
+        target = (du.omni_matrix(q) @ self._drive_cmd_b().unsqueeze(-1)).squeeze(-1)
+        self._wheel_target.copy_(target.clamp(-self.cfg.wheel_speed_limit, self.cfg.wheel_speed_limit))
+        wheel_speed = data.joint_vel[:, self._wheels_idx]
+        self._wheel_tau.copy_((self.cfg.wheel_velocity_kp * (self._wheel_target - wheel_speed)).clamp(
+            -self.cfg.wheel_torque_limit, self.cfg.wheel_torque_limit))
+        self.robot.set_joint_effort_target(self._wheel_tau, joint_ids=self._wheels_idx)
+
+        # Wheel-set motion includes suspension rates, but excludes driven wheel spin.
+        ws_ids = self._wheel_set_body_ids
+        velocity = data.body_com_lin_vel_w[:, ws_ids] + torch.cross(
+            data.body_com_ang_vel_w[:, ws_ids],
+            points - data.body_com_pos_w[:, ws_ids], dim=-1)
+        lateral = torch.nn.functional.normalize(torch.cross(normals, roll, dim=-1), dim=-1)
+        self._last_wheel_slip.copy_(du.WHEEL_RADIUS * wheel_speed - (velocity * roll).sum(-1))
+        load = self.wheel_normal_forces
+        # A stale force sample must never keep an already-separated tire active.
+        gap = points[..., 2] - self._ground_height(points)
+        load = torch.where(gap <= self.cfg.tire_contact_gap, load, torch.zeros_like(load))
+        fx, fy = du.wheel_traction(self._last_wheel_slip, (velocity * lateral).sum(-1),
+                                  load, self._friction, self.cfg.tire_slip_stiffness,
+                                  self.cfg.tire_lateral_drag)
+        forces = fx[..., None] * roll + fy[..., None] * lateral
+        # Force at contact generates wheel reaction torque r x F; motor effort supplies
+        # equal/opposite axle reactions through the articulation, without duplicate torque.
+        wheel_quat = data.body_link_quat_w[:, self._wheel_body_ids]
+        torque_w = torch.cross(points - data.body_com_pos_w[:, self._wheel_body_ids], forces, dim=-1)
+        # Explicit COM wrench avoids the permanent composer's cached global link poses
+        # in Isaac Lab 2.3.2. PhysX applies these local forces at the center of mass.
+        self.robot.set_external_force_and_torque(
+            quat_apply_inverse(wheel_quat, forces), quat_apply_inverse(wheel_quat, torque_w),
+            body_ids=self._wheel_body_ids, is_global=False)
+        self._last_servo_force.copy_(forces.sum(1))
+        self._last_servo_torque_z.copy_(torch.cross(points - data.root_com_pos_w[:, None], forces, dim=-1)[..., 2].sum(1))
+
+    def _leg_cascade_torque(self, joint_pos, joint_vel):
+        tau = super()._leg_cascade_torque(joint_pos, joint_vel)
+        q = joint_pos[:, self._legs_idx]
+        # Nominal load feedforward prevents collapse while PI integrators build up.
+        # Actual load transfer remains for feedback/policy to compensate.
+        height_jacobian = -0.029108 * q.cos() - 0.13694 * q.sin()
+        return tau + self.cfg.leg_nominal_load * height_jacobian
+
+    def _get_observations(self):
+        if self._obs_tick == self.common_step_counter and self._obs_cache is not None:
+            return self._obs_cache
+        data = self.robot.data
+        q = data.joint_pos[:, self._legs_idx]
+        wheel_speed = data.joint_vel[:, self._wheels_idx] + self._encoder_bias
+        wheel_speed = wheel_speed + torch.randn_like(wheel_speed) * self.cfg.encoder_noise_std
+        twist = du.estimate_twist(q, wheel_speed)
+        gyro = data.root_ang_vel_b + self._gyro_bias + torch.randn_like(data.root_ang_vel_b) * self.cfg.gyro_noise_std
+        gravity = data.projected_gravity_b + torch.randn_like(data.projected_gravity_b) * self.cfg.gravity_noise_std
+        # 32 = old 26 + wheel encoder4 + encoder-derived vx/vy2. No true velocity leaks.
+        frame = torch.cat((self.q_cmd[:, None], self._drive_cmd_b() * q.new_tensor((1.0, 1.0, 0.25)),
+                           gyro * 0.5, gravity, q, data.joint_vel[:, self._legs_idx] * 0.1,
+                           data.applied_torque[:, self._legs_idx] * 0.05, self.actions,
+                           wheel_speed * 0.05, twist[:, :2]), dim=-1)
+        frame = torch.nan_to_num(frame, nan=0.0, posinf=0.0, neginf=0.0).clamp(-10.0, 10.0)
+        fresh = ~self._history_valid
+        self._sensor_fifo = torch.roll(self._sensor_fifo, -1, dims=1)
+        self._sensor_fifo[:, -1] = frame
+        self._sensor_fifo[fresh] = frame[fresh, None]
+        delayed = self._sensor_fifo[torch.arange(self.num_envs, device=self.device),
+                                    self.cfg.max_sensor_delay_steps - self._delay].clone()
+        # Command and prior action are local controller state, not delayed sensors.
+        delayed[:, :4] = frame[:, :4]
+        delayed[:, 22:26] = frame[:, 22:26]
+        self._history = torch.roll(self._history, -1, dims=1)
+        self._history[:, -1] = delayed
+        self._history[fresh] = delayed[fresh, None]
+        self._history_valid[:] = True
+        critic = torch.cat((frame, data.root_lin_vel_b, self.body_top_height[:, None],
+                            self.wheel_normal_forces), dim=-1)
+        self._obs_cache = {"policy": self._history.flatten(1).clone(), "critic": critic.clone()}
+        self._obs_tick = self.common_step_counter
+        return self._obs_cache
+
+    def _get_dones(self):
+        terminated, timeout = super()._get_dones()
+        height_failure = (self.body_top_height > self.cfg.max_body_top_height + self.cfg.height_termination_margin)
+        terminated |= height_failure & (self.episode_length_buf > self.cfg.height_settle_steps)
+        return terminated, timeout
+
+    def _get_rewards(self):
+        reward = super()._get_rewards()
+        h = self.body_top_height
+        q = self.robot.data.joint_pos[:, self._legs_idx]
+        clearance = self.chassis_clearance
+        # Favor one corner remaining at the lowest reference, not all legs being equal.
+        extension = (self.q_cmd - q.amax(-1)).clamp_min(0.0)
+        height_excess = ((h - self.cfg.max_body_top_height).clamp_min(0.0) / 0.01).square().clamp(max=100.0)
+        reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
+        reward -= self.cfg.height_penalty_weight * height_excess
+        cmd = self._drive_cmd_b()
+        metrics = torch.stack((
+            (self.wheel_normal_forces > self.cfg.wheel_contact_force_threshold).all(-1).float(),
+            self.robot.data.projected_gravity_b[:, :2].square().sum(-1),
+            (h > self.cfg.max_body_top_height).float(), clearance,
+            (self.robot.data.root_lin_vel_b[:, :2] - cmd[:, :2]).norm(dim=-1),
+            (self.robot.data.root_ang_vel_b[:, 2] - cmd[:, 2]).abs(),
+            self._last_wheel_slip.abs().mean(-1),
+            (self.robot.data.applied_torque[:, self._legs_idx].abs() >= 0.99 * self.cfg.max_leg_torque).float().mean(-1),
+        ), dim=-1)
+        settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
+        self._metrics += metrics * settled[:, None]
+        self._metric_steps += settled
+        return reward.clamp(-self.cfg.reward_total_clip, self.cfg.reward_total_clip)
+
+    def _reset_idx(self, env_ids):
+        means = self._metrics[env_ids] / self._metric_steps[env_ids, None].clamp_min(1.0)
+        super()._reset_idx(env_ids)
+        if self._periodic:
+            data = self.robot.data
+            pose = torch.cat((data.root_link_pos_w[env_ids], data.root_link_quat_w[env_ids]), dim=-1).clone()
+            q = self.q_cmd[env_ids, None].expand(-1, 4).clone()
+            # Track width depends on q, so iterate height/geometry together at spawn.
+            for _ in range(6):
+                centers, _ = du.wheel_geometry(q)
+                world = pose[:, None, :3] + quat_apply(pose[:, None, 3:].expand(-1, 4, -1), centers)
+                ground = du.periodic_slope_height_torch(
+                    world[..., 0] + self._profile_x_offset, self._period_seg, self._slope_angle_table)
+                height = ground.amax(-1) + du.q_to_base_height(self.q_cmd[env_ids])
+                desired = height[:, None] - ground
+                lower = torch.zeros_like(q)
+                upper = self.q_cmd[env_ids, None].expand_as(q).clone()
+                for _ in range(20):
+                    mid = 0.5 * (lower + upper)
+                    too_high = du.q_to_base_height(mid) > desired
+                    lower = torch.where(too_high, mid, lower)
+                    upper = torch.where(too_high, upper, mid)
+                q = 0.5 * (lower + upper)
+            pose[:, 2] = height + self.cfg.reset_height_buffer
+            joints = data.joint_pos[env_ids].clone()
+            joints[:, self._legs_idx] = q
+            # Resolve passive joint order explicitly for unequal per-corner targets.
+            name_to_id = {name: i for i, name in enumerate(self.robot.joint_names)}
+            joints[:, [name_to_id[n] for n in du.ORDERED_WS_JOINT_NAMES]] = q
+            joints[:, [name_to_id[n] for n in du.ORDERED_UPPER_LEG_JOINT_NAMES]] = -q
+            self.robot.write_joint_state_to_sim(joints, torch.zeros_like(joints), env_ids=env_ids)
+            self.robot.write_root_pose_to_sim(pose, env_ids=env_ids)
+            self.leg_target[env_ids] = q
+        for i, name in enumerate(self._metric_names):
+            self.extras["log"][f"dynamic/{name}"] = means[:, i].mean().item()
+        self._metrics[env_ids] = 0.0
+        self._metric_steps[env_ids] = 0.0
+        self._friction[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(*self.cfg.tire_friction_range)
+        self._encoder_bias[env_ids] = torch.randn(len(env_ids), 4, device=self.device) * self.cfg.encoder_bias_std
+        self._gyro_bias[env_ids] = torch.randn(len(env_ids), 3, device=self.device) * self.cfg.gyro_bias_std
+        self._delay[env_ids] = torch.randint(0, self.cfg.max_sensor_delay_steps + 1, (len(env_ids),), device=self.device)
+        self._history_valid[env_ids] = False
+        self._history[env_ids] = 0.0
+        self._sensor_fifo[env_ids] = 0.0
+        self._obs_tick = -1
+        self._obs_cache = None
+        zeros = torch.zeros(len(env_ids), 4, 3, device=self.device)
+        self.robot.set_external_force_and_torque(zeros, zeros, body_ids=self._wheel_body_ids,
+                                                env_ids=env_ids, is_global=False)

@@ -76,6 +76,51 @@ def q_to_body_top(q: torch.Tensor | float) -> torch.Tensor | float:
     return q_to_base_height(q) + BODY_TOP_OFFSET
 
 
+def wheel_geometry(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sphere centers and positive wheel rolling axes in base frame, URDF leg order.
+
+    The parallelogram preserves wheel-axis orientation but changes track width.
+    Sphere-center offset (-5.5 mm along the axle) is included.
+    """
+    radial = 0.12921 * math.sqrt(2.0) + 0.029108 * q.cos() + 0.13694 * q.sin() + 0.08542
+    signs = q.new_tensor(((1, -1), (1, 1), (-1, 1), (-1, -1))) / math.sqrt(2.0)
+    centers = torch.cat(
+        (radial.unsqueeze(-1) * signs, (0.08195 + 0.029108 * q.sin() - 0.13694 * q.cos()).unsqueeze(-1)),
+        dim=-1,
+    )
+    roll = torch.stack((signs[:, 1], -signs[:, 0]), dim=-1)
+    return centers, roll.expand(*q.shape, 2)
+
+
+def omni_matrix(q: torch.Tensor, radius: float = 0.0769) -> torch.Tensor:
+    """Body twist -> wheel angular velocities, using current suspension geometry."""
+    centers, roll = wheel_geometry(q)
+    lever = centers[..., 0] * roll[..., 1] - centers[..., 1] * roll[..., 0]
+    return torch.cat((roll, lever.unsqueeze(-1)), dim=-1) / radius
+
+
+def estimate_twist(q: torch.Tensor, wheel_speed: torch.Tensor) -> torch.Tensor:
+    """Encoder odometry only, not ground truth: slip makes this estimate biased."""
+    matrix = omni_matrix(q)
+    eye = torch.eye(3, device=q.device, dtype=q.dtype)
+    return torch.linalg.solve(
+        matrix.transpose(-2, -1) @ matrix + 1.0e-5 * eye,
+        (matrix.transpose(-2, -1) @ wheel_speed.unsqueeze(-1)),
+    ).squeeze(-1)
+
+
+def wheel_traction(
+    slip: torch.Tensor, lateral_speed: torch.Tensor, normal_load: torch.Tensor,
+    friction: torch.Tensor, stiffness: float, lateral_drag: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Regularized Coulomb tire law with a shared per-wheel friction circle."""
+    longitudinal = stiffness * slip
+    lateral = -lateral_drag * lateral_speed
+    magnitude = torch.sqrt(longitudinal.square() + lateral.square()).clamp_min(1.0e-6)
+    scale = (friction * normal_load.clamp_min(0.0) / magnitude).clamp(max=1.0)
+    return longitudinal * scale, lateral * scale
+
+
 # ---------------------------------------------------------------------------
 # 2. 四全向轮几何（X 型 45° 布局）
 # ---------------------------------------------------------------------------
