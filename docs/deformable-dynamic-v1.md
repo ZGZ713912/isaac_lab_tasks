@@ -7,7 +7,9 @@
 - Critic: current frame(32), true body velocity(3), highest-wheel-ground-relative body top(1), wheel normal forces(4).
 - Transformer: 5 spatial tokens per frame plus learned time embedding; current-frame tokens output four actions. History is updated once per policy step and refilled on reset.
 - Action: q_target = clamp(q_baseline - Q_LOW * max(-action, 0), 0, q_baseline). Zero action holds the low reference; negative action extends a corner. This direction is the simulator convention, not an assertion about hardware encoder minangle.
-- Physics: 200 Hz, policy: 100 Hz. Cascade PI integrals use physics dt. V1 adds nominal gravity-load feedforward; deployment must reproduce the controller or re-identify gains before transfer.
+- Physics and leg ADRC: 1000 Hz, policy: 100 Hz (decimation 10). Legs use the RMCS TD + ESO + NLESF implementation in `adrc.py`; the previous cascade PI and nominal-load feedforward are no longer executed by V1. Wheel velocity P control remains unchanged in algorithm, but is updated at the new physics rate.
+- Physical angle: `alpha = radians(maxangle) - q_urdf`, velocity `alpha_dot = -q_dot`. No q_max/span normalization is used. ADRC runs entirely in physical-angle radians; positive motor effort increases URDF q, consistent with physical-angle b0=-1. The configurable maxangle defaults to 75 degrees; Q_LOW remains the CAD-derived safe reference, not a claim that the hardware minangle calibration is final.
+- ADRC defaults follow RMCS RL YAML: dt=td_h=0.001, td_r=50, eso_w0=250, auto-beta=(3*w0,3*w0^2,w0^3), k1=30, k2=17, alpha1=0.75, alpha2=0.7, delta=0.02, b0=-1, kt=1. Internal/control output saturates at +/-200, while simulated motor effort saturates at +/-25 Nm. ESO feeds back previous pre-motor-saturation output, matching RMCS, rather than measured torque. TD and ESO states are independently reset per environment after final spawn geometry is written.
 - Height: transformed body mesh maximum world z minus highest terrain height under the four wheel contact locations. Airborne wheels do not raise the reference. The training penalty starts at 255 mm; termination is at 280 mm after 0.5 s settling. **255 mm is not a hard safety guarantee.**
 - Clearance: conservative 7x7 samples over the transformed bottom bounding rectangle. This is not an exact mesh-to-terrain distance.
 
@@ -44,7 +46,13 @@ For 16-frame ablations set all three together: `env.policy_history_length=16 env
 
 Episode metrics are logged as `dynamic/*`: simultaneous contact, tilt squared, 255 mm violation fraction, mean per-step minimum clearance, velocity/yaw error, slip and leg torque saturation. Their first 0.5 s is excluded. These metrics are episode means, not P95 or worst-case safety bounds. The existing `deformable_eval_tilt.py` also now measures simultaneous normal-load contact instead of average per-wheel force magnitude.
 
-## Verification (2026-09-30)
+## ADRC Verification (2026-09-30)
+
+Four CPU tests pass, including 300-step float64 parity against scalar formulas matching RMCS, output/motor saturation, and selective environment reset. GPU plane probes (180 steps per command) and a rough PPO smoke run (4 environments, 2 iterations) complete with finite observations. **Performance acceptance fails:** plane probe four-wheel contact rate was 0 at policy sampling instants, combined motion caused resets, and rough smoke episodes lasted about 9 steps with high effort saturation. These indicate model/controller/contact-timing mismatch requiring diagnosis, not a trained suspension result. No gains were silently retuned to recover the old PI scores.
+
+New runs use `deformable_dynamic_adrc_history_v1`. The initial ADRC smoke checkpoint was generated before that directory rename under `logs/rsl_rl/deformable_dynamic_history_v1/2026-09-30_17-03-33/`; it is debug-only. Use fresh training, not the previous PI checkpoint. RMCS itself has not been modified in this training-only ADRC change; its observation/action contract still requires separate alignment before deployment.
+
+## Historical PI Verification (2026-09-30)
 
 Three CPU unit tests passed (geometry/odometry, airborne friction limit, temporal gradients and TorchScript tracing). GPU flat and rough PPO smoke runs completed. Fixed-low-pose plane tests with four robots, 600 steps per command, passed history/reset and airborne-zero-traction assertions:
 
@@ -56,4 +64,4 @@ Three CPU unit tests passed (geometry/odometry, airborne friction limit, tempora
 | wz=-2pi rad/s | -6.28283 rad/s | 100% | 242.8 mm | 9.8 mm |
 | vx=0.5, wz=+2pi | vx=0.444, vy=0.044, wz=6.28276 | 100% | 242.8 mm | 9.8 mm |
 
-These are physical motion sanity checks, **not trained slope suspension results**. No long training, real-robot validation, arbitrary terrain validation or 2 m/s benchmark has been completed. Existing V0 dynamics remain legacy; only the shared PID timestep bug was corrected there.
+These are historical PI physical motion sanity checks, **not current ADRC results or trained slope suspension results**. No long training, real-robot validation, arbitrary terrain validation or 2 m/s benchmark has been completed. Existing V0 dynamics remain legacy; only the shared PID timestep bug was corrected there.

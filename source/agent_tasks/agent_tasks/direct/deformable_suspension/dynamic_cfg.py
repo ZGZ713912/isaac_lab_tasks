@@ -27,10 +27,34 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     # q increases toward the low pose. V1 actions request extension away from it.
     leg_extension_range = du.Q_LOW
     leg_target_upper_limit = du.Q_LOW
-    leg_outer_ki = 3.0
-    leg_inner_ki = 20.0
-    leg_inner_int_limit = 0.65
-    leg_nominal_load = 25.5 * 9.81 / 4.0
+    # RMCS deformable-infantry-omni-rl.yaml; no normalized q_max/span scaling.
+    leg_max_physical_angle = math.radians(75.0)
+    adrc_dt = 0.001
+    adrc_b0 = -1.0
+    adrc_kt = 1.0
+    adrc_td_h = 0.001
+    adrc_td_r = 50.0
+    adrc_td_max_vel = float("inf")
+    adrc_td_max_acc = float("inf")
+    adrc_eso_w0 = 250.0
+    adrc_z3_limit = 1.0e9
+    adrc_k1 = 30.0
+    adrc_k2 = 17.0
+    adrc_alpha1 = 0.75
+    adrc_alpha2 = 0.7
+    adrc_delta = 0.02
+    adrc_u_min = -200.0
+    adrc_u_max = 200.0
+    adrc_output_min = -200.0
+    adrc_output_max = 200.0
+    max_leg_torque = 25.0
+    use_leg_cascade_pid = False  # V1 uses ADRC directly; neither legacy branch is executed.
+    decimation = 10
+    sim = DeformableSuspensionFlatEnvCfg().sim.copy()
+    sim.dt = adrc_dt
+    sim.render_interval = decimation
+    contact_sensor = DeformableSuspensionFlatEnvCfg().contact_sensor.copy()
+    contact_sensor.update_period = adrc_dt
     wheel_velocity_kp = 0.12
     wheel_torque_limit = 5.0
     wheel_speed_limit = 60.0
@@ -60,6 +84,8 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     rewards["track_q_cmd_exp"] = 0.0
     scene = InteractiveSceneCfg(num_envs=128, env_spacing=6.0, replicate_physics=True)
     robot_cfg = DeformableSuspensionFlatEnvCfg().robot_cfg.copy()
+    robot_cfg.actuators["legs"].effort_limit_sim = max_leg_torque
+    robot_cfg.actuators["legs"].effort_limit = None
     robot_cfg.actuators["wheels"].damping = 0.0
     robot_cfg.actuators["wheels"].effort_limit_sim = 5.0
     robot_cfg.actuators["wheels"].velocity_limit_sim = 60.0

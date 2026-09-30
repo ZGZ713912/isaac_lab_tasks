@@ -10,6 +10,7 @@ from isaaclab.utils.math import quat_apply, quat_apply_inverse
 from agent_world import AssetPath
 from . import cfg_utils as du
 from .env import DeformableSuspensionEnv
+from .adrc import LegADRC
 
 
 class DeformableDynamicEnv(DeformableSuspensionEnv):
@@ -19,6 +20,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if cfg.observation_space != 32 * cfg.policy_history_length or cfg.state_space != 40:
             raise ValueError("V1 contract requires policy=32*history_length and critic=40")
         super().__init__(cfg, render_mode, **kwargs)
+        if abs(self.physics_dt - cfg.adrc_dt) > 1.0e-9:
+            raise ValueError("ADRC must run once per 1 ms physics step; do not subcycle stale measurements")
+        self._leg_adrc = LegADRC((self.num_envs, 4), self.device, cfg)
         joints = {name: i for i, name in enumerate(self.robot.joint_names)}
         bodies = {name: i for i, name in enumerate(self.robot.body_names)}
         contacts = {name: i for i, name in enumerate(self.contact_sensor.body_names)}
@@ -160,8 +164,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             du.LEG_LOWER_LIMIT, self.cfg.leg_target_upper_limit)
 
     def _apply_action(self):
-        # The inherited leg controller is unchanged except its corrected physics-step dt.
-        super()._apply_action()
+        data = self.robot.data
+        leg_tau = self._leg_adrc.update(data.joint_pos[:, self._legs_idx], self.leg_target)
+        self.robot.set_joint_effort_target(leg_tau, joint_ids=self._legs_idx)
         _, points, normals, _, roll = self._wheel_geometry_w()
         data = self.robot.data
         q = data.joint_pos[:, self._legs_idx]
@@ -198,14 +203,6 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             body_ids=self._wheel_body_ids, is_global=False)
         self._last_servo_force.copy_(forces.sum(1))
         self._last_servo_torque_z.copy_(torch.cross(points - data.root_com_pos_w[:, None], forces, dim=-1)[..., 2].sum(1))
-
-    def _leg_cascade_torque(self, joint_pos, joint_vel):
-        tau = super()._leg_cascade_torque(joint_pos, joint_vel)
-        q = joint_pos[:, self._legs_idx]
-        # Nominal load feedforward prevents collapse while PI integrators build up.
-        # Actual load transfer remains for feedback/policy to compensate.
-        height_jacobian = -0.029108 * q.cos() - 0.13694 * q.sin()
-        return tau + self.cfg.leg_nominal_load * height_jacobian
 
     def _get_observations(self):
         if self._obs_tick == self.common_step_counter and self._obs_cache is not None:
@@ -306,6 +303,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.robot.write_joint_state_to_sim(joints, torch.zeros_like(joints), env_ids=env_ids)
             self.robot.write_root_pose_to_sim(pose, env_ids=env_ids)
             self.leg_target[env_ids] = q
+        self._leg_adrc.reset(env_ids, self.robot.data.joint_pos[env_ids][:, self._legs_idx],
+                             self.leg_target[env_ids])
         for i, name in enumerate(self._metric_names):
             self.extras["log"][f"dynamic/{name}"] = means[:, i].mean().item()
         self._metrics[env_ids] = 0.0

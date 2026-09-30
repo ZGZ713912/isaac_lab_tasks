@@ -14,6 +14,10 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser()
 parser.add_argument("--task", default="Robotics-Deformable-Suspension-Flat-History-Transformer-v1")
 parser.add_argument("--steps", type=int, default=500)
+parser.add_argument("--b0", type=float, default=None)
+parser.add_argument("--w0", type=float, default=None)
+parser.add_argument("--applied-feedback", action="store_true")
+parser.add_argument("--standing-only", action="store_true")
 parser.add_argument("--diagnose", action="store_true", help="Disable safety resets to inspect controller failure.")
 parser.add_argument("--strict", action="store_true", help="Assert settled flat-ground speed and clearance (use >=600 steps).")
 AppLauncher.add_app_launcher_args(parser)
@@ -36,6 +40,11 @@ def main():
     cfg.episode_length_s = 30.0
     cfg.boundary_reset_enabled = False
     cfg.seed = 42
+    if args.b0 is not None:
+        cfg.adrc_b0 = args.b0
+    if args.w0 is not None:
+        cfg.adrc_eso_w0 = args.w0
+    cfg.adrc_feedback_applied_torque = args.applied_feedback
     if args.diagnose:
         cfg.base_contact_death_after_iterations = 1000000000
         cfg.terminate_chassis_clearance = -1.0
@@ -44,8 +53,24 @@ def main():
     u = env.unwrapped
     actions = torch.zeros(4, 4, device=u.device)
     try:
-        for command in ((0, 0, 0), (1, 0, 0), (0, 0, 2 * math.pi),
-                        (0, 0, -2 * math.pi), (0.5, 0, 2 * math.pi)):
+        commands = ((0, 0, 0),) if args.standing_only else (
+            (0, 0, 0), (1, 0, 0), (0, 0, 2 * math.pi), (0, 0, -2 * math.pi), (0.5, 0, 2 * math.pi))
+        substeps = []
+        original_apply = u._apply_action
+        def record_apply():
+            original_apply()
+            substeps.append(torch.stack((
+                u.robot.data.joint_pos[:, u._legs_idx].mean(),
+                u.robot.data.joint_vel[:, u._legs_idx].abs().max(),
+                u._leg_adrc.last_u.abs().max(),
+                u._leg_adrc.applied_u.abs().max(),
+                u.wheel_normal_forces.min(),
+                (u.wheel_normal_forces > 3).all(-1).float().mean(),
+                (u._leg_adrc.applied_u.abs() >= 24.9).float().mean(),
+            )).detach())
+        u._apply_action = record_apply
+        for command in commands:
+            substeps.clear()
             obs, _ = env.reset()
             assert obs["policy"].shape == (4, 256) and obs["critic"].shape == (4, 40)
             repeat = u._get_observations()["policy"]
@@ -72,6 +97,9 @@ def main():
                                             u.body_top_height.mean(), u.chassis_clearance.min(),
                                             geometry_error)))
             values = torch.stack(acc).mean(0).tolist()
+            micro = torch.stack(substeps[len(substeps)//2:])
+            print(f"SUBSTEP mean={micro.mean(0).tolist()} std={micro.std(0).tolist()} "
+                  f"q={u.robot.data.joint_pos[:, u._legs_idx].mean(0).tolist()}", flush=True)
             print(f"PROBE cmd={command} vx/vy/wz={values[:3]} all_contact={values[3]:.3f} "
                   f"height={values[4]:.4f} clearance_min={values[5]:.4f} "
                   f"FK_error={values[6]:.6f} resets={resets}", flush=True)
