@@ -71,6 +71,48 @@ def _build_actor(state_dict: dict) -> tuple[nn.Sequential, int, int]:
     return actor, dims[0], dims[-1]
 
 
+def _is_transformer(state_dict: dict) -> bool:
+    return "actor.global_embed.weight" in state_dict
+
+
+def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn.Module, int, int]:
+    """重建 ActorCriticTransformer 的 actor；超参从同 run 的 params/agent.yaml 读取。"""
+    for pkg in ("agent_rl",):
+        pkg_root = os.path.join(_REPO_ROOT, "source", pkg)
+        if pkg_root not in sys.path:
+            sys.path.insert(0, pkg_root)
+    import yaml
+
+    from agent_rl.rsl_rl.modules.actor_critic_transformer import (
+        DEFORMABLE_ACTOR_LAYOUT,
+        LegTokenTransformer,
+    )
+
+    agent_yaml = os.path.join(os.path.dirname(checkpoint_path), "params", "agent.yaml")
+    if not os.path.isfile(agent_yaml):
+        raise SystemExit(f"transformer checkpoint 需要 {agent_yaml} 以读取网络超参")
+    with open(agent_yaml) as f:
+        pcfg = yaml.unsafe_load(f)["policy"]
+
+    layout = pcfg.get("actor_layout") or DEFORMABLE_ACTOR_LAYOUT
+    obs_dim = max(list(layout["global"]) + [i for l in layout["legs"] for i in l]) + 1
+    act_dim = int(state_dict["std"].shape[0]) if "std" in state_dict else int(state_dict["log_std"].shape[0])
+    actor = LegTokenTransformer(
+        obs_dim,
+        act_dim,
+        layout,
+        d_model=int(pcfg.get("d_model", 64)),
+        nhead=int(pcfg.get("nhead", 4)),
+        num_layers=int(pcfg.get("num_layers", 2)),
+        dim_ff=int(pcfg.get("dim_ff", 128)),
+        head_hidden=int(pcfg.get("head_hidden", 64)),
+        head=str(pcfg.get("actor_head", "per_leg")),
+    )
+    actor.load_state_dict({k[len("actor."):]: v for k, v in state_dict.items() if k.startswith("actor.")})
+    actor.eval()
+    return actor, obs_dim, act_dim
+
+
 def _verify_onnx(onnx_path: str, actor: nn.Module, obs_dim: int, device: torch.device) -> None:
     """打印 ONNX 输入/输出并做校验；若装了 onnxruntime 再做数值一致性对比。"""
     import onnx
@@ -130,9 +172,15 @@ def main() -> None:
     jit_path = os.path.join(out_dir, args.jit_filename)
 
     state_dict = _load_state_dict(ckpt)
-    actor, obs_dim, act_dim = _build_actor(state_dict)
+    transformer = _is_transformer(state_dict)
+    if transformer:
+        actor, obs_dim, act_dim = _build_transformer_actor(state_dict, ckpt)
+        desc = "LegTokenTransformer"
+    else:
+        actor, obs_dim, act_dim = _build_actor(state_dict)
+        desc = str([m for m in actor])
     print(f"[INFO] checkpoint : {ckpt}")
-    print(f"[INFO] actor      : obs_dim={obs_dim}  act_dim={act_dim}  layers={[m for m in actor]}")
+    print(f"[INFO] actor      : obs_dim={obs_dim}  act_dim={act_dim}  arch={desc}")
     print(f"[INFO] output_dir : {out_dir}")
 
     dummy = torch.zeros(1, obs_dim)
@@ -163,7 +211,7 @@ def main() -> None:
         print(f"[OK] 已内联为自包含单文件（{os.path.getsize(onnx_path)} bytes）")
 
     if not args.no_jit:
-        scripted = torch.jit.script(actor)
+        scripted = torch.jit.trace(actor, dummy) if transformer else torch.jit.script(actor)
         scripted.save(jit_path)
         print(f"[OK] TorchScript -> {jit_path}")
 

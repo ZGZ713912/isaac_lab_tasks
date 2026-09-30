@@ -46,3 +46,30 @@ class DeformableSuspensionPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class DeformableTransformerPolicyCfg(RslRlPpoActorCriticCfg):
+    """单帧结构化 token Transformer（1 全局 + 4 腿 token），见 agent_rl ActorCriticTransformer。"""
+
+    class_name: str = "ActorCriticTransformer"
+    d_model: int = 64
+    nhead: int = 4
+    num_layers: int = 2
+    dim_ff: int = 128
+    head_hidden: int = 64
+    actor_head: str = "per_leg"  # 每腿 token → 该腿动作；"global" = 全局 token → 4 维
+    # 基类必填字段（transformer 不使用 hidden_dims/activation）
+    actor_hidden_dims: list = []
+    critic_hidden_dims: list = []
+    activation: str = "elu"
+
+
+@configclass
+class DeformableSuspensionTransformerPPORunnerCfg(DeformableSuspensionPPORunnerCfg):
+    experiment_name = "deformable_suspension_transformer"
+    policy = DeformableTransformerPolicyCfg(init_noise_std=1.0)
+
+    def __post_init__(self):
+        # transformer 在 5e-5 下学得过慢；adaptive 调度会按 KL 自动回调
+        self.algorithm.learning_rate = 3.0e-4

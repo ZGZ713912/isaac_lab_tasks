@@ -97,3 +97,23 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableSuspensionPPORunnerCfg",
     },
 )
+
+# ---- Transformer 策略变体（env 相同，仅网络结构不同）----
+_TRANSFORMER_RUNNER = f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableSuspensionTransformerPPORunnerCfg"
+for _task_id, _env_cfg in (
+    ("Robotics-Deformable-Suspension-Rough-Transformer-v0", "DeformableSuspensionRoughEnvCfg"),
+    ("Robotics-Deformable-Suspension-Rough-Transformer-Play-v0", "DeformableSuspensionRoughPlayEnvCfg"),
+    (
+        "Robotics-Deformable-Suspension-Rough-Transformer-Keyboard-Play-v0",
+        "DeformableSuspensionRoughKeyboardPlayEnvCfg",
+    ),
+):
+    gym.register(
+        id=_task_id,
+        entry_point=f"{__name__}.env:DeformableSuspensionEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.env_cfg:{_env_cfg}",
+            "rsl_rl_cfg_entry_point": _TRANSFORMER_RUNNER,
+        },
+    )

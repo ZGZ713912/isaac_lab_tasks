@@ -68,6 +68,7 @@ from isaaclab.utils import math as math_utils  # noqa: E402
 
 import agent_world  # noqa: F401,E402
 import agent_tasks  # noqa: F401,E402
+import agent_rl.rsl_rl.modules  # noqa: F401,E402  注册 ActorCriticTransformer 到 OnPolicyRunner
 import cli_args as rsl_cli_args  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
