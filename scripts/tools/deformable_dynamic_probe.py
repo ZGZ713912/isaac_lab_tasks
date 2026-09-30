@@ -44,7 +44,8 @@ def main():
         cfg.adrc_b0 = args.b0
     if args.w0 is not None:
         cfg.adrc_eso_w0 = args.w0
-    cfg.adrc_feedback_applied_torque = args.applied_feedback
+    if args.applied_feedback:
+        cfg.adrc_feedback_applied_torque = True
     if args.diagnose:
         cfg.base_contact_death_after_iterations = 1000000000
         cfg.terminate_chassis_clearance = -1.0
@@ -57,8 +58,13 @@ def main():
             (0, 0, 0), (1, 0, 0), (0, 0, 2 * math.pi), (0, 0, -2 * math.pi), (0.5, 0, 2 * math.pi))
         substeps = []
         original_apply = u._apply_action
+        substep_count = 0
         def record_apply():
+            nonlocal substep_count
             original_apply()
+            substep_count += 1
+            if substep_count % 10 != 3:
+                return
             substeps.append(torch.stack((
                 u.robot.data.joint_pos[:, u._legs_idx].mean(),
                 u.robot.data.joint_vel[:, u._legs_idx].abs().max(),

@@ -31,7 +31,7 @@ class LegADRC:
         h = c.adrc_dt
         measurement = c.leg_max_physical_angle - q
         target = c.leg_max_physical_angle - q_target
-        # RMCS ESO uses the previous published output, not post-motor saturation.
+        # Raw RMCS mode uses published output; calibrated mode feeds back motor saturation.
         error = self.z1 - measurement
         self.z1 += h * (self.z2 - 3.0 * c.adrc_eso_w0 * error)
         observer_u = self.applied_u if getattr(c, "adrc_feedback_applied_torque", False) else self.last_u

@@ -271,6 +271,7 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         return reward.clamp(-self.cfg.reward_total_clip, self.cfg.reward_total_clip)
 
     def _reset_idx(self, env_ids):
+        valid_metrics = self._metric_steps[env_ids] > 0
         means = self._metrics[env_ids] / self._metric_steps[env_ids, None].clamp_min(1.0)
         super()._reset_idx(env_ids)
         if self._periodic:
@@ -306,7 +307,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._leg_adrc.reset(env_ids, self.robot.data.joint_pos[env_ids][:, self._legs_idx],
                              self.leg_target[env_ids])
         for i, name in enumerate(self._metric_names):
-            self.extras["log"][f"dynamic/{name}"] = means[:, i].mean().item()
+            if valid_metrics.any():
+                self.extras["log"][f"dynamic/{name}"] = means[valid_metrics, i].mean().item()
+        self.extras["log"]["dynamic/valid_episode_fraction"] = valid_metrics.float().mean().item()
         self._metrics[env_ids] = 0.0
         self._metric_steps[env_ids] = 0.0
         self._friction[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(*self.cfg.tire_friction_range)

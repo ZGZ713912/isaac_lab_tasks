@@ -115,3 +115,21 @@ def test_adrc_matches_rmcs_scalar_updates_and_resets():
     controller.reset(torch.tensor([0]), q[:1], q[:1])
     assert controller.last_u[0].count_nonzero() == 0 and controller.z3[0].count_nonzero() == 0
     torch.testing.assert_close(controller.z3[1], retained)
+
+
+def test_adrc_saturated_feedback_uses_bounded_motor_command():
+    adrc = load_file("adrc_feedback_test", "source/agent_tasks/agent_tasks/direct/deformable_suspension/adrc.py")
+    # Reuse only the update-independent observer state to isolate its feedback input.
+    cfg = types.SimpleNamespace(adrc_dt=.001, adrc_b0=-10., adrc_delta=.02,
+        leg_max_physical_angle=1.3, adrc_eso_w0=250., adrc_z3_limit=1e9,
+        adrc_td_r=50., adrc_td_h=.001, adrc_td_max_acc=math.inf, adrc_td_max_vel=math.inf,
+        adrc_k1=30., adrc_k2=17., adrc_alpha1=.75, adrc_alpha2=.7,
+        adrc_u_min=-200., adrc_u_max=200., adrc_kt=1., adrc_output_min=-200.,
+        adrc_output_max=200., max_leg_torque=25., adrc_feedback_applied_torque=True)
+    controller = adrc.LegADRC((1, 4), "cpu", cfg, dtype=torch.float64)
+    q = torch.ones(1, 4, dtype=torch.float64)
+    controller.reset(torch.tensor([0]), q, q)
+    controller.last_u.fill_(200.)
+    controller.applied_u.fill_(25.)
+    controller.update(q, q)
+    torch.testing.assert_close(controller.z2, torch.full_like(q, -.25))

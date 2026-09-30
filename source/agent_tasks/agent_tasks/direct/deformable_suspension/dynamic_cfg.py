@@ -30,7 +30,9 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     # RMCS deformable-infantry-omni-rl.yaml; no normalized q_max/span scaling.
     leg_max_physical_angle = math.radians(75.0)
     adrc_dt = 0.001
-    adrc_b0 = -1.0
+    # Simulation input-gain calibration; RMCS raw b0=-1 remains an explicit ablation.
+    adrc_b0 = -10.0
+    adrc_feedback_applied_torque = True
     adrc_kt = 1.0
     adrc_td_h = 0.001
     adrc_td_r = 50.0
