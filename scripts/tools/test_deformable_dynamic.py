@@ -48,6 +48,49 @@ def test_traction_airborne_friction_circle_and_slip_sign():
     assert (torch.sqrt(fx.square() + fy.square()) <= 0.6 * load + 1e-5).all()
 
 
+def wheel_controller():
+    module = load_file("wheel_drive_test", "source/agent_tasks/agent_tasks/direct/deformable_suspension/wheel_drive.py")
+    cfg = types.SimpleNamespace(adrc_dt=.001, wheel_velocity_kp=.8, wheel_velocity_ki=2.,
+        wheel_torque_limit=5., wheel_speed_limit=60., wheel_acceleration_limit=20.,
+        wheel_axial_inertia=.002092387)
+    return module.WheelVelocityPI((2, 4), "cpu", cfg, dtype=torch.float64)
+
+
+def test_wheel_pi_tracks_speed_under_load_with_bounded_acceleration():
+    controller = wheel_controller()
+    speed = torch.zeros_like(controller.target)
+    request = speed.new_tensor([[10., -10., 5., -5.]]).expand_as(speed)
+    contact = torch.ones_like(speed, dtype=torch.bool)
+    load = request.sign() * .6  # constant motor load, e.g. climbing a slope
+    for _ in range(10000):
+        previous = controller.target.clone()
+        torque = controller.update(request, speed, contact)
+        assert (controller.target - previous).abs().max() <= .0200000001
+        speed += .001 * (torque - load) / .002092387  # URDF axial wheel inertia
+    torch.testing.assert_close(speed, request, atol=1e-4, rtol=0)
+    torch.testing.assert_close(controller.torque, load, atol=1e-4, rtol=0)
+
+
+def test_wheel_pi_stall_airborne_and_selective_reset():
+    controller = wheel_controller()
+    speed = torch.zeros_like(controller.target)
+    contact = torch.ones_like(speed, dtype=torch.bool)
+    for _ in range(1000):
+        controller.update(torch.full_like(speed, 60.), speed, contact)
+    assert controller.torque.abs().max() <= 5.
+    # Saturating P effort freezes the integral instead of accumulating stall error.
+    integral = controller.integral.clone()
+    for _ in range(20):
+        controller.update(torch.full_like(speed, 60.), speed, contact)
+    torch.testing.assert_close(controller.integral, integral)
+    controller.update(torch.full_like(speed, 60.), speed, torch.zeros_like(contact))
+    assert controller.integral.count_nonzero() == 0
+    retained = controller.target[1].clone()
+    controller.reset(torch.tensor([0]))
+    assert controller.target[0].count_nonzero() == 0 and controller.torque[0].count_nonzero() == 0
+    torch.testing.assert_close(controller.target[1], retained)
+
+
 def test_temporal_transformer_uses_old_frames_and_exports():
     transformer = load_file("deformable_transformer_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
     layout = {"global": list(range(10)) + [30, 31],

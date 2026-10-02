@@ -77,11 +77,11 @@ class DeformablePlayVis:
                 import omni.ui as ui
 
                 self._ui = ui
-                self._window = ui.Window("Deformable Play HUD", width=400, height=280)
+                self._window = ui.Window("Deformable Play HUD", width=400, height=300)
                 with self._window.frame:
                     with ui.VStack(spacing=4):
                         for key in (
-                            "mode", "q_cmd", "cmd", "vel", "servo",
+                            "mode", "q_cmd", "cmd", "vel", "pos", "servo",
                             "roll", "pitch", "height", "force", "contact",
                         ):
                             self._labels[key] = ui.Label("", height=18)
@@ -145,6 +145,8 @@ class DeformablePlayVis:
         self._labels["vel"].text = (
             f"vel_b: vx={vel_b[0].item():+.2f} vy={vel_b[1].item():+.2f} wz={ang_b[2].item():+.2f}"
         )
+        pos = self._robot.data.root_pos_w[0]
+        self._labels["pos"].text = f"世界位置: x={pos[0].item():+.3f} y={pos[1].item():+.3f} m"
         self._labels["servo"].text = f"servo: {f_txt}"
         self._labels["roll"].text = f"roll (车身横滚): {roll:+.1f}°"
         self._labels["pitch"].text = f"pitch (车身俯仰): {pitch:+.1f}°"

@@ -11,6 +11,7 @@ from agent_world import AssetPath
 from . import cfg_utils as du
 from .env import DeformableSuspensionEnv
 from .adrc import LegADRC
+from .wheel_drive import WheelVelocityPI
 
 
 class DeformableDynamicEnv(DeformableSuspensionEnv):
@@ -40,8 +41,11 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._obs_tick = -1
         self._obs_cache = None
         self._last_wheel_slip = torch.zeros(self.num_envs, 4, device=self.device)
-        self._wheel_target = torch.zeros_like(self._last_wheel_slip)
-        self._wheel_tau = torch.zeros_like(self._last_wheel_slip)
+        self._tire_deflection = torch.zeros_like(self._last_wheel_slip)
+        self._wheel_drive = WheelVelocityPI((self.num_envs, 4), self.device, cfg)
+        self._wheel_target = self._wheel_drive.target
+        self._wheel_tau = self._wheel_drive.torque
+        self._drive_command = torch.zeros(self.num_envs, 3, device=self.device)
         self._metric_names = ("all_contact", "tilt_square", "height_violation", "clearance_min",
                               "speed_error", "yaw_error", "slip", "torque_saturation")
         self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
@@ -131,12 +135,20 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         # Ground surface at each wheel, so an airborne wheel cannot hide excess height.
         return top_z - self._ground_height(points).amax(-1)
 
-    def _drive_cmd_b(self):
-        cmd = self.cmd_buf.clone()
+    def _drive_cmd_b(self, command=None):
+        cmd = (self.cmd_buf if command is None else command).clone()
         if self.cfg.commands_world_frame:
             horizontal = torch.cat((cmd[:, :2], torch.zeros_like(cmd[:, :1])), dim=-1)
             cmd[:, :2] = quat_apply_inverse(self.robot.data.root_link_quat_w, horizontal)[:, :2]
         return cmd
+
+    def _filter_drive_command(self):
+        delta = self.cmd_buf - self._drive_command
+        scale = (self.cfg.drive_linear_acceleration_limit * self.physics_dt
+                 / delta[:, :2].norm(dim=-1, keepdim=True).clamp_min(1.0e-9)).clamp(max=1.0)
+        self._drive_command[:, :2].add_(delta[:, :2] * scale)
+        yaw_step = self.cfg.drive_yaw_acceleration_limit * self.physics_dt
+        self._drive_command[:, 2].add_(delta[:, 2].clamp(-yaw_step, yaw_step))
 
     def _resample_commands(self, env_ids):
         super()._resample_commands(env_ids)
@@ -170,11 +182,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         _, points, normals, _, roll = self._wheel_geometry_w()
         data = self.robot.data
         q = data.joint_pos[:, self._legs_idx]
-        target = (du.omni_matrix(q) @ self._drive_cmd_b().unsqueeze(-1)).squeeze(-1)
-        self._wheel_target.copy_(target.clamp(-self.cfg.wheel_speed_limit, self.cfg.wheel_speed_limit))
+        self._filter_drive_command()
+        target = (du.omni_matrix(q) @ self._drive_cmd_b(self._drive_command).unsqueeze(-1)).squeeze(-1)
         wheel_speed = data.joint_vel[:, self._wheels_idx]
-        self._wheel_tau.copy_((self.cfg.wheel_velocity_kp * (self._wheel_target - wheel_speed)).clamp(
-            -self.cfg.wheel_torque_limit, self.cfg.wheel_torque_limit))
+        load = self.wheel_normal_forces
+        # A stale force sample must never keep an already-separated tire active.
+        gap = points[..., 2] - self._ground_height(points)
+        load = torch.where(gap <= self.cfg.tire_contact_gap, load, torch.zeros_like(load))
+        self._wheel_drive.update(target, wheel_speed, load >= self.cfg.wheel_contact_force_threshold)
         self.robot.set_joint_effort_target(self._wheel_tau, joint_ids=self._wheels_idx)
 
         # Wheel-set motion includes suspension rates, but excludes driven wheel spin.
@@ -184,13 +199,16 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             points - data.body_com_pos_w[:, ws_ids], dim=-1)
         lateral = torch.nn.functional.normalize(torch.cross(normals, roll, dim=-1), dim=-1)
         self._last_wheel_slip.copy_(du.WHEEL_RADIUS * wheel_speed - (velocity * roll).sum(-1))
-        load = self.wheel_normal_forces
-        # A stale force sample must never keep an already-separated tire active.
-        gap = points[..., 2] - self._ground_height(points)
-        load = torch.where(gap <= self.cfg.tire_contact_gap, load, torch.zeros_like(load))
+        # A compliant tread patch can carry force at zero slip speed. Bound its
+        # deflection by the available friction so sliding cannot wind up stored force;
+        # zero load clears the patch, including during separation/landing.
+        deflection_limit = self._friction * load / self.cfg.tire_contact_stiffness
+        self._tire_deflection.copy_((self._tire_deflection + self.physics_dt * self._last_wheel_slip).clamp(
+            -deflection_limit, deflection_limit))
         fx, fy = du.wheel_traction(self._last_wheel_slip, (velocity * lateral).sum(-1),
                                   load, self._friction, self.cfg.tire_slip_stiffness,
-                                  self.cfg.tire_lateral_drag)
+                                  self.cfg.tire_lateral_drag,
+                                  elastic_force=self.cfg.tire_contact_stiffness * self._tire_deflection)
         forces = fx[..., None] * roll + fy[..., None] * lateral
         # Force at contact generates wheel reaction torque r x F; motor effort supplies
         # equal/opposite axle reactions through the articulation, without duplicate torque.
@@ -306,6 +324,10 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.leg_target[env_ids] = q
         self._leg_adrc.reset(env_ids, self.robot.data.joint_pos[env_ids][:, self._legs_idx],
                              self.leg_target[env_ids])
+        self._wheel_drive.reset(env_ids)
+        self._drive_command[env_ids] = 0.0
+        self._last_wheel_slip[env_ids] = 0.0
+        self._tire_deflection[env_ids] = 0.0
         for i, name in enumerate(self._metric_names):
             if valid_metrics.any():
                 self.extras["log"][f"dynamic/{name}"] = means[valid_metrics, i].mean().item()

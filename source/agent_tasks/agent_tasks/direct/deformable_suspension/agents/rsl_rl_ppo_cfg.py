@@ -90,6 +90,6 @@ class DeformableHistoryTransformerPolicyCfg(DeformableTransformerPolicyCfg):
 
 @configclass
 class DeformableDynamicPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg):
-    experiment_name = "deformable_dynamic_adrc_history_v1"
+    experiment_name = "deformable_dynamic_low_slip_history_v1"
     clip_actions = 1.0
     policy = DeformableHistoryTransformerPolicyCfg(init_noise_std=0.4)

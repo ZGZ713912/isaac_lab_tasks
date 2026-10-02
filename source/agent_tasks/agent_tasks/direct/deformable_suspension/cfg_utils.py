@@ -112,9 +112,12 @@ def estimate_twist(q: torch.Tensor, wheel_speed: torch.Tensor) -> torch.Tensor:
 def wheel_traction(
     slip: torch.Tensor, lateral_speed: torch.Tensor, normal_load: torch.Tensor,
     friction: torch.Tensor, stiffness: float, lateral_drag: float,
+    elastic_force: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Regularized Coulomb tire law with a shared per-wheel friction circle."""
+    """Bound elastic/viscous tire forces with a shared per-wheel friction circle."""
     longitudinal = stiffness * slip
+    if elastic_force is not None:
+        longitudinal = longitudinal + elastic_force
     lateral = -lateral_drag * lateral_speed
     magnitude = torch.sqrt(longitudinal.square() + lateral.square()).clamp_min(1.0e-6)
     scale = (friction * normal_load.clamp_min(0.0) / magnitude).clamp(max=1.0)

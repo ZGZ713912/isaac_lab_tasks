@@ -12,8 +12,13 @@
 因此不依赖任何任务代码/键盘分支，也不会触发仿真。
 
 产物（默认写到 checkpoint 同目录的 ``exported/``）：
-    policy.onnx   : 输入 ``obs`` (1, obs_dim)，输出 ``actions`` (1, act_dim)，opset 18
+    policy.onnx   : 输入 ``obs`` float32，输出 ``actions`` float32，opset 18，单文件内联
+                    - 单帧 MLP / 单帧 transformer: obs (1, obs_dim)
+                    - 历史 transformer: obs (1, history_length, frame_dim)，即 RMCS 约定的 rank-3
     policy.pt     : 对应的 TorchScript
+
+不写任何 ``rmcs_*`` metadata（布局/模型类型由 RMCS 的 stamp 工具盖章）。
+历史 transformer 如需 rank-2 兜底，加 ``--flat``（部署端 auto 会按 mlp 推断）。
 
 用法：
     python scripts/rsl_rl/export_onnx.py \
@@ -75,7 +80,7 @@ def _is_transformer(state_dict: dict) -> bool:
     return "actor.global_embed.weight" in state_dict
 
 
-def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn.Module, int, int]:
+def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn.Module, int, int, int]:
     """重建 ActorCriticTransformer 的 actor；超参从同 run 的 params/agent.yaml 读取。"""
     for pkg in ("agent_rl",):
         pkg_root = os.path.join(_REPO_ROOT, "source", pkg)
@@ -95,7 +100,11 @@ def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn
         pcfg = yaml.unsafe_load(f)["policy"]
 
     layout = pcfg.get("actor_layout") or DEFORMABLE_ACTOR_LAYOUT
-    obs_dim = max(list(layout["global"]) + [i for l in layout["legs"] for i in l]) + 1
+    # 历史策略的观测是 history_length 个 32 维帧拼成的扁平向量（V1 合同 = 8 * 32 = 256）。
+    # 单帧旧 checkpoint 没有 history_length 键，退回 1，行为与之前一致。
+    history_length = int(pcfg.get("history_length", 1))
+    frame_dim = max(list(layout["global"]) + [i for l in layout["legs"] for i in l]) + 1
+    obs_dim = history_length * frame_dim
     act_dim = int(state_dict["std"].shape[0]) if "std" in state_dict else int(state_dict["log_std"].shape[0])
     actor = LegTokenTransformer(
         obs_dim,
@@ -107,13 +116,14 @@ def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn
         dim_ff=int(pcfg.get("dim_ff", 128)),
         head_hidden=int(pcfg.get("head_hidden", 64)),
         head=str(pcfg.get("actor_head", "per_leg")),
+        history_length=history_length,
     )
     actor.load_state_dict({k[len("actor."):]: v for k, v in state_dict.items() if k.startswith("actor.")})
     actor.eval()
-    return actor, obs_dim, act_dim
+    return actor, obs_dim, act_dim, history_length
 
 
-def _verify_onnx(onnx_path: str, actor: nn.Module, obs_dim: int, device: torch.device) -> None:
+def _verify_onnx(onnx_path: str, actor: nn.Module, input_shape: tuple, act_dim: int, device: torch.device) -> None:
     """打印 ONNX 输入/输出并做校验；若装了 onnxruntime 再做数值一致性对比。"""
     import onnx
 
@@ -127,8 +137,17 @@ def _verify_onnx(onnx_path: str, actor: nn.Module, obs_dim: int, device: torch.d
     outputs = [(o.name, _shape(o)) for o in model.graph.output]
     print(f"[VERIFY] onnx inputs : {inputs}")
     print(f"[VERIFY] onnx outputs: {outputs}")
-    assert inputs and tuple(inputs[0][1]) == (1, obs_dim), f"input shape mismatch: {inputs}"
-    print("[VERIFY] onnx.checker: OK")
+    assert inputs and inputs[0][0] == "obs", f"primary input must be 'obs': {inputs}"
+    assert tuple(inputs[0][1]) == tuple(input_shape), f"input shape mismatch: {inputs} != {input_shape}"
+    assert len(outputs) == 1 and outputs[0][0] == "actions", f"single output must be 'actions': {outputs}"
+    assert tuple(outputs[0][1])[-1] == act_dim, f"output feature mismatch: {outputs}"
+    element_types = {i.type.tensor_type.elem_type for i in model.graph.input} | {
+        o.type.tensor_type.elem_type for o in model.graph.output
+    }
+    assert element_types == {onnx.TensorProto.FLOAT}, f"obs/actions must be float32: {element_types}"
+    rmcs_keys = [p.key for p in model.metadata_props if p.key.startswith("rmcs_")]
+    assert not rmcs_keys, f"导出文件不得携带 rmcs_* metadata（盖章工具负责写）: {rmcs_keys}"
+    print("[VERIFY] onnx.checker: OK  (obs/actions float32, 无 rmcs_* metadata)")
 
     try:
         import onnxruntime as ort
@@ -136,7 +155,7 @@ def _verify_onnx(onnx_path: str, actor: nn.Module, obs_dim: int, device: torch.d
         print("[VERIFY] onnxruntime 未安装，跳过数值一致性对比（可 pip install onnxruntime 后再跑）。")
         return
 
-    x = torch.randn(1, obs_dim, device=device)
+    x = torch.randn(*input_shape, device=device)
     with torch.no_grad():
         ref = actor(x).cpu().numpy()
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
@@ -161,6 +180,12 @@ def main() -> None:
     )
     parser.add_argument("--no_jit", action="store_true", default=False, help="Skip TorchScript export.")
     parser.add_argument("--verbose", action="store_true", default=False, help="Verbose torch.onnx.export.")
+    parser.add_argument(
+        "--flat",
+        action="store_true",
+        default=False,
+        help="历史 transformer 也按 rank-2 [1, obs_dim] 导出（兜底；RMCS 端 auto 只能推断成 mlp）。",
+    )
     args = parser.parse_args()
 
     ckpt = os.path.abspath(args.checkpoint)
@@ -173,17 +198,25 @@ def main() -> None:
 
     state_dict = _load_state_dict(ckpt)
     transformer = _is_transformer(state_dict)
+    history_length = 1
     if transformer:
-        actor, obs_dim, act_dim = _build_transformer_actor(state_dict, ckpt)
-        desc = "LegTokenTransformer"
+        actor, obs_dim, act_dim, history_length = _build_transformer_actor(state_dict, ckpt)
+        desc = f"LegTokenTransformer(history_length={history_length})"
     else:
         actor, obs_dim, act_dim = _build_actor(state_dict)
         desc = str([m for m in actor])
+    # RMCS 部署约定：历史 transformer 导出 rank-3 [1, history, frame]（auto 推断成 transformer）；
+    # 单帧模型仍为 rank-2 [1, obs]。--flat 可强制历史模型也走 rank-2 作为兜底。
+    if transformer and history_length > 1 and not args.flat:
+        input_shape = (1, history_length, obs_dim // history_length)
+    else:
+        input_shape = (1, obs_dim)
     print(f"[INFO] checkpoint : {ckpt}")
     print(f"[INFO] actor      : obs_dim={obs_dim}  act_dim={act_dim}  arch={desc}")
+    print(f"[INFO] obs_shape  : {list(input_shape)}  (rank-{len(input_shape)})")
     print(f"[INFO] output_dir : {out_dir}")
 
-    dummy = torch.zeros(1, obs_dim)
+    dummy = torch.zeros(*input_shape)
     torch.onnx.export(
         actor,
         dummy,
@@ -215,7 +248,7 @@ def main() -> None:
         scripted.save(jit_path)
         print(f"[OK] TorchScript -> {jit_path}")
 
-    _verify_onnx(onnx_path, actor, obs_dim, torch.device("cpu"))
+    _verify_onnx(onnx_path, actor, input_shape, act_dim, torch.device("cpu"))
 
 
 if __name__ == "__main__":

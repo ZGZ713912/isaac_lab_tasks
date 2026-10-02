@@ -53,6 +53,8 @@ parser.add_argument("--vy_max", type=float, default=1.6, help="Max lateral speed
 parser.add_argument("--wz_max", type=float, default=6.283185307179586, help="Max yaw rate (rad/s); 2*pi = 60 rpm.")
 parser.add_argument("--wz_step", type=float, default=0.6, help="Yaw-rate increment per Z/X press (rad/s).")
 parser.add_argument("--no_vis", action="store_true", default=False, help="Disable play visualization (contact/level/HUD).")
+parser.add_argument("--fixed_camera", action="store_true", help="Keep the camera stationary between resets to see world displacement.")
+parser.add_argument("--debug_motion", action="store_true", help="Print commanded and measured motion every 0.5 simulation seconds.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
@@ -195,9 +197,15 @@ def main() -> None:
     # ---- reset + loop -------------------------------------------------------
     obs, _ = env.reset()
     keyboard.reset()
+    camera_follow.smooth_camera_positions = []
+    if not getattr(args_cli, "headless", False):
+        camera_follow(env)
     print("[INFO] 键盘 play 已启动：W/S 前后，A/D 横移，X/Z 自旋，Q 切换高低车身，L 归零")
     print("[INFO] 请确保 Isaac Sim 窗口有焦点才能接收键盘输入")
-    print("[INFO] 相机自动跟随；WASD 已留给机器人（视口 orbit，不再 fly）")
+    print(f"[INFO] 相机模式：{'固定（可观察世界位移）' if args_cli.fixed_camera else '自动跟随（机器人会留在画面中央）'}")
+    motion_tick = 0
+    motion_interval = max(1, round(0.5 / env.unwrapped.step_dt))
+    motion_origin = env.unwrapped.robot.data.root_pos_w[0].clone()
 
     while simulation_app.is_running():
         keyboard.apply()
@@ -206,10 +214,28 @@ def main() -> None:
             obs, _, dones, _ = env.step(actions)
         if play_vis is not None:
             play_vis.update()
-        if not getattr(args_cli, "headless", False):
+        if not getattr(args_cli, "headless", False) and not args_cli.fixed_camera:
             camera_follow(env)
+        motion_tick += 1
+        if args_cli.debug_motion and motion_tick % motion_interval == 0:
+            u = env.unwrapped
+            data = u.robot.data
+            cmd = u.cmd_buf[0].tolist()
+            vel = data.root_lin_vel_b[0, :2].tolist()
+            delta = (data.root_pos_w[0, :2] - motion_origin[:2]).tolist()
+            print(
+                f"[motion] cmd=({cmd[0]:+.2f},{cmd[1]:+.2f},{cmd[2]:+.2f}) "
+                f"vel_b=({vel[0]:+.3f},{vel[1]:+.3f}) "
+                f"wz={data.root_ang_vel_b[0, 2].item():+.3f} "
+                f"delta_xy_w=({delta[0]:+.3f},{delta[1]:+.3f}) m",
+                flush=True,
+            )
         if bool(dones.any()):
             keyboard.reset()
+            motion_origin = env.unwrapped.robot.data.root_pos_w[0].clone()
+            camera_follow.smooth_camera_positions = []
+            if not getattr(args_cli, "headless", False):
+                camera_follow(env)
             print("[INFO] 环境重置，键盘命令已归零")
 
     env.close()

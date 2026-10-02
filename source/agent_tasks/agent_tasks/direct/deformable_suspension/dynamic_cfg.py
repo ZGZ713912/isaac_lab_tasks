@@ -57,12 +57,22 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     sim.render_interval = decimation
     contact_sensor = DeformableSuspensionFlatEnvCfg().contact_sensor.copy()
     contact_sensor.update_period = adrc_dt
-    wheel_velocity_kp = 0.12
+    drive_dynamics_version = "low_slip_v2"
+    wheel_velocity_kp = 0.8
+    wheel_velocity_ki = 2.0  # near-critical damping with the 26.34 kg chassis load
+    drive_linear_acceleration_limit = 2.0  # m/s^2, in the command frame
+    drive_yaw_acceleration_limit = 4.0  # rad/s^2
+    # Allow the continuous modulation required by simultaneous world translation/yaw.
+    wheel_acceleration_limit = 200.0  # rad/s^2; secondary actuator bound
+    wheel_axial_inertia = 0.002092387  # kg m^2; deformable_V2 URDF wheel ixx
     wheel_torque_limit = 5.0
     wheel_speed_limit = 60.0
-    tire_slip_stiffness = 12.0  # N/(m/s); stable at 200 Hz with the small wheel inertia
+    # Low longitudinal slip under normal loads, integrated at 1 kHz. This stiffness
+    # and the wheel PI gains are tuned together for the URDF wheel inertia.
+    tire_slip_stiffness = 500.0  # N/(m/s)
+    tire_contact_stiffness = 5000.0  # N/m; elastic contact supports static slope loads
     tire_lateral_drag = 0.2  # passive omni rollers have low transverse resistance
-    tire_friction_range = (0.5, 0.9)
+    tire_friction_range = (0.8, 1.0)
     tire_contact_gap = 0.003
     wheel_contact_force_threshold = 3.0
 
