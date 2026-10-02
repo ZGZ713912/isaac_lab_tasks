@@ -271,6 +271,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 runner.load(resume_path, load_optimizer=True, load_iteration=True)
             else:
                 runner.load(resume_path, load_optimizer=True)
+            # Adaptive PPO schedules use this scalar, not just the restored optimizer LR.
+            runner.alg.learning_rate = runner.alg.optimizer.param_groups[0]["lr"]
             runner.current_learning_iteration += 1
             print(
                 f"[INFO]: Resuming training from next iteration: {runner.current_learning_iteration}"

@@ -47,7 +47,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._wheel_tau = self._wheel_drive.torque
         self._drive_command = torch.zeros(self.num_envs, 3, device=self.device)
         self._metric_names = ("all_contact", "tilt_square", "height_violation", "clearance_min",
-                              "speed_error", "yaw_error", "slip", "torque_saturation")
+                              "speed_error", "yaw_error", "slip", "torque_saturation",
+                              "contact_and_horizontal", "min_wheel_force", "q_limit_fraction")
         self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
         self._metric_steps = torch.zeros(self.num_envs, device=self.device)
 
@@ -169,11 +170,15 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self.cmd_buf[full_spin, 2] = torch.sign(self.cmd_buf[full_spin, 2]) * yaw_scale * self.cfg.cmd_ang_vel_z_range[1]
 
     def _pre_physics_step(self, actions):
+        previous_target = self.leg_target.clone()
         super()._pre_physics_step(actions.clamp(-1.0, 1.0))
-        # Negative residuals extend from the low reference; zero holds the baseline.
-        extension = (-self.actions).clamp_min(0.0)
-        self.leg_target = (self.q_cmd[:, None] - self.cfg.leg_extension_range * extension).clamp(
-            du.LEG_LOWER_LIMIT, self.cfg.leg_target_upper_limit)
+        if self.cfg.action_contract_version == "legacy_v1":
+            self.leg_target = (self.q_cmd[:, None] - du.Q_LOW * (-self.actions).clamp_min(0.0)).clamp(
+                du.LEG_LOWER_LIMIT, self.cfg.leg_target_upper_limit)
+        else:
+            self.leg_target = du.suspension_target(self.actions, self.q_cmd[:, None], self.cfg.leg_target_upper_limit)
+            max_change = self.cfg.leg_target_rate_limit * self.step_dt
+            self.leg_target = previous_target + (self.leg_target - previous_target).clamp(-max_change, max_change)
 
     def _apply_action(self):
         data = self.robot.data
@@ -251,8 +256,11 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._history[:, -1] = delayed
         self._history[fresh] = delayed[fresh, None]
         self._history_valid[:] = True
-        critic = torch.cat((frame, data.root_lin_vel_b, self.body_top_height[:, None],
-                            self.wheel_normal_forces), dim=-1)
+        legacy = self.cfg.action_contract_version == "legacy_v1"
+        critic = torch.cat((frame, data.root_lin_vel_b, self.body_top_height[:, None] * (1.0 if legacy else 5.0),
+                             self.wheel_normal_forces * (1.0 if legacy else 0.02)), dim=-1)
+        if not legacy:
+            critic = torch.nan_to_num(critic, nan=0.0, posinf=0.0, neginf=0.0).clamp(-10.0, 10.0)
         self._obs_cache = {"policy": self._history.flatten(1).clone(), "critic": critic.clone()}
         self._obs_tick = self.common_step_counter
         return self._obs_cache
@@ -260,7 +268,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
     def _get_dones(self):
         terminated, timeout = super()._get_dones()
         height_failure = (self.body_top_height > self.cfg.max_body_top_height + self.cfg.height_termination_margin)
-        terminated |= height_failure & (self.episode_length_buf > self.cfg.height_settle_steps)
+        if self.cfg.enforce_tunnel_height:
+            terminated |= height_failure & (self.episode_length_buf > self.cfg.height_settle_steps)
         return terminated, timeout
 
     def _get_rewards(self):
@@ -272,7 +281,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         extension = (self.q_cmd - q.amax(-1)).clamp_min(0.0)
         height_excess = ((h - self.cfg.max_body_top_height).clamp_min(0.0) / 0.01).square().clamp(max=100.0)
         reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
-        reward -= self.cfg.height_penalty_weight * height_excess
+        if self.cfg.enforce_tunnel_height:
+            reward -= self.cfg.height_penalty_weight * height_excess
         cmd = self._drive_cmd_b()
         metrics = torch.stack((
             (self.wheel_normal_forces > self.cfg.wheel_contact_force_threshold).all(-1).float(),
@@ -282,37 +292,75 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             (self.robot.data.root_ang_vel_b[:, 2] - cmd[:, 2]).abs(),
             self._last_wheel_slip.abs().mean(-1),
             (self.robot.data.applied_torque[:, self._legs_idx].abs() >= 0.99 * self.cfg.max_leg_torque).float().mean(-1),
+            ((self.wheel_normal_forces > self.cfg.wheel_contact_force_threshold).all(-1)
+             & (self.robot.data.projected_gravity_b[:, :2].norm(dim=-1)
+                < torch.sin(q.new_tensor(self.cfg.horizontal_tolerance_deg * torch.pi / 180.0)))).float(),
+            self.wheel_normal_forces.amin(-1),
+            ((q < du.LEG_LOWER_LIMIT + 0.02)
+             | (q > self.cfg.leg_target_upper_limit - 0.02)).float().mean(-1),
         ), dim=-1)
         settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
         self._metrics += metrics * settled[:, None]
         self._metric_steps += settled
-        return reward.clamp(-self.cfg.reward_total_clip, self.cfg.reward_total_clip)
+        return self.cfg.reward_scale * reward.clamp(-self.cfg.reward_total_clip, self.cfg.reward_total_clip)
 
     def _reset_idx(self, env_ids):
+        if len(env_ids) == 0:
+            return
         valid_metrics = self._metric_steps[env_ids] > 0
         means = self._metrics[env_ids] / self._metric_steps[env_ids, None].clamp_min(1.0)
         super()._reset_idx(env_ids)
         if self._periodic:
             data = self.robot.data
             pose = torch.cat((data.root_link_pos_w[env_ids], data.root_link_quat_w[env_ids]), dim=-1).clone()
-            q = self.q_cmd[env_ids, None].expand(-1, 4).clone()
-            # Track width depends on q, so iterate height/geometry together at spawn.
-            for _ in range(6):
+
+            def contact_height(q):
                 centers, _ = du.wheel_geometry(q)
-                world = pose[:, None, :3] + quat_apply(pose[:, None, 3:].expand(-1, 4, -1), centers)
-                ground = du.periodic_slope_height_torch(
-                    world[..., 0] + self._profile_x_offset, self._period_seg, self._slope_angle_table)
-                height = ground.amax(-1) + du.q_to_base_height(self.q_cmd[env_ids])
-                desired = height[:, None] - ground
-                lower = torch.zeros_like(q)
-                upper = self.q_cmd[env_ids, None].expand_as(q).clone()
-                for _ in range(20):
-                    mid = 0.5 * (lower + upper)
-                    too_high = du.q_to_base_height(mid) > desired
-                    lower = torch.where(too_high, mid, lower)
-                    upper = torch.where(too_high, upper, mid)
-                q = 0.5 * (lower + upper)
-            pose[:, 2] = height + self.cfg.reset_height_buffer
+                shape = (len(env_ids),) + (1,) * (q.ndim - 1)
+                rotated = quat_apply(pose[:, 3:].reshape(*shape, 4).expand(*q.shape, 4), centers)
+                x = pose[:, 0].reshape(shape) + rotated[..., 0] + self._profile_x_offset
+                ground = du.periodic_slope_height_torch(x, self._period_seg, self._slope_angle_table)
+                k = torch.floor(x / (4.0 * self._period_seg)).long().clamp(0, self._slope_angle_table.numel() - 1)
+                phase = x - k.to(x.dtype) * (4.0 * self._period_seg)
+                slope = torch.tan(self._slope_angle_table[k] * (torch.pi / 180.0))
+                slope = torch.where(((phase >= 0) & (phase < self._period_seg))
+                                    | ((phase >= 2 * self._period_seg) & (phase < 3 * self._period_seg)),
+                                    slope, torch.zeros_like(slope))
+                nz = torch.rsqrt(1.0 + slope.square())
+                return ground - rotated[..., 2] + du.WHEEL_RADIUS / nz, nz
+
+            bottom = quat_apply(pose[:, None, 3:].expand(-1, len(self._bottom_samples), -1),
+                                self._bottom_samples[None].expand(len(env_ids), -1, -1))
+            bottom_ground = du.periodic_slope_height_torch(
+                pose[:, None, 0] + bottom[..., 0] + self._profile_x_offset,
+                self._period_seg, self._slope_angle_table)
+            clearance_height = (bottom_ground - bottom[..., 2]).amax(-1) + self.cfg.chassis_ground_threshold + 1.e-6
+            samples = torch.linspace(0.0, self.cfg.leg_target_upper_limit, 65,
+                                     device=self.device, dtype=pose.dtype)
+            sampled_q = samples[None, :, None].expand(len(env_ids), -1, 4)
+            sampled_height, _ = contact_height(sampled_q)
+            low_height = sampled_height.amin(1).amax(-1).maximum(clearance_height)
+            high_height = sampled_height.amax(1).amin(-1)
+            baseline, _ = contact_height(self.q_cmd[env_ids, None].expand(-1, 4))
+            height = baseline.amax(-1).maximum(low_height).minimum(high_height)
+            # Sample brackets also expose the small jumps in radius/n_z at slope breaks.
+            crossing = (sampled_height[:, :-1] >= height[:, None, None]) & (sampled_height[:, 1:] <= height[:, None, None])
+            bracket = crossing.to(torch.int64).argmax(1)
+            lower, upper = samples[bracket], samples[bracket + 1]
+            for _ in range(24):
+                mid = 0.5 * (lower + upper)
+                mid_height, _ = contact_height(mid)
+                too_high = mid_height > height[:, None]
+                lower = torch.where(too_high, mid, lower)
+                upper = torch.where(too_high, upper, mid)
+            q = 0.5 * (lower + upper)
+            solved_height, _ = contact_height(q)
+            feasible = ((low_height <= high_height) & crossing.any(1).all(-1)
+                        & ((solved_height - height[:, None]).abs().amax(-1) <= 2.e-6))
+            # Infeasible resets may be airborne, but must not embed wheels or chassis.
+            safe_height = solved_height.amax(-1).maximum(clearance_height)
+            height = torch.where(feasible, height, safe_height)
+            pose[:, 2] = height.maximum(safe_height) + max(0.0, self.cfg.reset_height_buffer) + 1.e-6
             joints = data.joint_pos[env_ids].clone()
             joints[:, self._legs_idx] = q
             # Resolve passive joint order explicitly for unequal per-corner targets.
@@ -322,6 +370,15 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.robot.write_joint_state_to_sim(joints, torch.zeros_like(joints), env_ids=env_ids)
             self.robot.write_root_pose_to_sim(pose, env_ids=env_ids)
             self.leg_target[env_ids] = q
+            initial_actions = du.suspension_action(q, self.q_cmd[env_ids, None], self.cfg.leg_target_upper_limit)
+            self.actions[env_ids] = initial_actions
+            self.last_actions[env_ids] = initial_actions
+            self._prev2_actions[env_ids] = initial_actions
+            gap = pose[:, 2, None] - solved_height
+            self.extras["log"]["dynamic/reset_gap_max"] = gap.amax().item()
+            self.extras["log"]["dynamic/reset_penetration_max"] = (-gap).clamp_min(0.0).amax().item()
+            self.extras["log"]["dynamic/reset_infeasible_fraction"] = (~feasible).float().mean().item()
+            self.extras["log"]["dynamic/reset_clearance_min"] = (pose[:, 2, None] + bottom[..., 2] - bottom_ground).amin().item()
         self._leg_adrc.reset(env_ids, self.robot.data.joint_pos[env_ids][:, self._legs_idx],
                              self.leg_target[env_ids])
         self._wheel_drive.reset(env_ids)

@@ -174,7 +174,7 @@ def main() -> None:
             vy_max=args_cli.vy_max,
             wz_max=args_cli.wz_max,
             wz_step=args_cli.wz_step,
-            q_choices=(du.Q_LOW,),
+            q_choices=tuple(env.unwrapped.cfg.q_cmd_choices),
         )
     )
     keyboard.set_env(env)

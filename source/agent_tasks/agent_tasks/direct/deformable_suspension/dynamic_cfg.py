@@ -22,11 +22,16 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     cmd_lin_vel_y_range = (-1.0, 1.0)
     cmd_ang_vel_z_range = (-2.0 * math.pi, 2.0 * math.pi)
     cmd_resample_time_range = (2.0, 4.0)
-    motion_curriculum_iterations = 4000
+    motion_curriculum_iterations = 2000
 
-    # q increases toward the low pose. V1 actions request extension away from it.
-    leg_extension_range = du.Q_LOW
+    action_contract_version = "minangle_residual_v2"
+    leg_min_physical_angle = du.PHYSICAL_MIN_ANGLE
+    q_cmd_choices = (du.Q_MINANGLE,)
+    q_cmd_range = (du.Q_MINANGLE, du.Q_MINANGLE)
+    default_q_cmd = du.Q_MINANGLE
+    leg_action_scale = 0.35  # inherited V0 hook only; V2 uses full-stroke signed spans
     leg_target_upper_limit = du.Q_LOW
+    leg_target_rate_limit = 2.0  # rad/s, separate from the ADRC tracking differentiator
     # RMCS deformable-infantry-omni-rl.yaml; no normalized q_max/span scaling.
     leg_max_physical_angle = math.radians(75.0)
     adrc_dt = 0.001
@@ -77,11 +82,14 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     wheel_contact_force_threshold = 3.0
 
     max_body_top_height = 0.255
+    enforce_tunnel_height = False
     height_termination_margin = 0.025  # warmup training permits transient overshoot, logs enforce 255 mm
     height_settle_steps = 50
     reset_height_buffer = 0.01
     height_penalty_weight = 2.0
     baseline_reward_weight = 0.3
+    reward_scale = 0.1
+    horizontal_tolerance_deg = 3.0
     base_contact_death_after_iterations = 0
     terminate_body_top = None  # V1 uses highest wheel's local ground, not root ground
 
@@ -94,6 +102,8 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     rewards = OrderedDict(DeformableSuspensionFlatEnvCfg().rewards)
     rewards["tilt_leg_position_error"] = 0.0
     rewards["track_q_cmd_exp"] = 0.0
+    rewards["all_wheel_contact"] = 5.0
+    rewards["wheel_load_balance"] = 0.5
     scene = InteractiveSceneCfg(num_envs=128, env_spacing=6.0, replicate_physics=True)
     robot_cfg = DeformableSuspensionFlatEnvCfg().robot_cfg.copy()
     robot_cfg.actuators["legs"].effort_limit_sim = max_leg_torque
@@ -109,12 +119,12 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
 
 @configclass
 class DeformableDynamicRoughEnvCfg(DeformableDynamicFlatEnvCfg):
-    terrain = _make_periodic_slope_terrain(angle_range=(2.0, 8.0), seed=0)
+    terrain = _make_periodic_slope_terrain(angle_range=(0.0, 5.0), seed=0)
 
 
 @configclass
 class DeformableDynamicRoughSteepEnvCfg(DeformableDynamicRoughEnvCfg):
-    terrain = _make_periodic_slope_terrain(angle_range=(8.0, 17.0), seed=1)
+    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 8.0), seed=1)
 
 
 @configclass
@@ -126,3 +136,45 @@ class DeformableDynamicKeyboardPlayEnvCfg(DeformableDynamicRoughEnvCfg):
     boundary_reset_enabled = False
     episode_length_s = 120.0
     scene = InteractiveSceneCfg(num_envs=1, env_spacing=6.0, replicate_physics=True)
+
+
+def _legacy_config(cfg):
+    cfg.action_contract_version = "legacy_v1"
+    cfg.q_cmd_choices = (du.Q_LOW,)
+    cfg.q_cmd_range = (du.Q_LOW, du.Q_LOW)
+    cfg.default_q_cmd = du.Q_LOW
+    cfg.motion_curriculum_iterations = 4000
+    cfg.enforce_tunnel_height = True
+    cfg.reward_scale = 1.0
+    cfg.rewards["all_wheel_contact"] = 2.5
+    cfg.rewards.pop("wheel_load_balance", None)
+
+
+@configclass
+class DeformableLegacyFlatEnvCfg(DeformableDynamicFlatEnvCfg):
+    def __post_init__(self):
+        _legacy_config(self)
+
+
+@configclass
+class DeformableLegacyRoughEnvCfg(DeformableDynamicRoughEnvCfg):
+    terrain = _make_periodic_slope_terrain(angle_range=(2.0, 8.0), seed=0)
+
+    def __post_init__(self):
+        _legacy_config(self)
+
+
+@configclass
+class DeformableLegacySteepEnvCfg(DeformableDynamicRoughSteepEnvCfg):
+    terrain = _make_periodic_slope_terrain(angle_range=(8.0, 17.0), seed=1)
+
+    def __post_init__(self):
+        _legacy_config(self)
+
+
+@configclass
+class DeformableLegacyKeyboardEnvCfg(DeformableDynamicKeyboardPlayEnvCfg):
+    terrain = _make_periodic_slope_terrain(angle_range=(2.0, 8.0), seed=0)
+
+    def __post_init__(self):
+        _legacy_config(self)

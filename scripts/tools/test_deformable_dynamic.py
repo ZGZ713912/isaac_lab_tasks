@@ -8,6 +8,7 @@ import math
 from unittest.mock import patch
 
 import torch
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,6 +37,17 @@ def test_encoder_twist_roundtrip_and_track_width():
     assert centers[1, 0, 0] > centers[0, 0, 0]
     assert (du.omni_matrix(q)[..., 2] < 0).all()  # positive axle rotation drives negative yaw
     assert speed.abs().max() < 60.0
+
+
+def test_suspension_action_full_stroke_and_roundtrip():
+    du = utilities()
+    baseline = torch.full((2, 1), du.Q_MINANGLE)
+    actions = torch.tensor([[-1.0, -0.5, 0.0, 1.0], [0.1, 0.5, -0.2, -0.9]])
+    targets = du.suspension_target(actions, baseline, du.Q_LOW)
+    torch.testing.assert_close(du.suspension_action(targets, baseline, du.Q_LOW), actions)
+    assert targets[0, 0] == 0.0
+    assert targets[0, 2] == du.Q_MINANGLE
+    assert targets[0, 3] == du.Q_LOW
 
 
 def test_traction_airborne_friction_circle_and_slip_sign():
@@ -176,3 +188,114 @@ def test_adrc_saturated_feedback_uses_bounded_motor_command():
     controller.applied_u.fill_(25.)
     controller.update(q, q)
     torch.testing.assert_close(controller.z2, torch.full_like(q, -.25))
+
+
+def test_physical_urdf_and_deployment_angle_roundtrips():
+    du = utilities()
+    angles = torch.linspace(du.PHYSICAL_MIN_ANGLE, du.PHYSICAL_MAX_ANGLE, 101, dtype=torch.float64)
+    for forward, inverse in ((du.physical_angle_to_urdf_q, du.urdf_q_to_physical_angle),
+                             (du.physical_angle_to_deployment_q, du.deployment_q_to_physical_angle)):
+        torch.testing.assert_close(inverse(forward(angles)), angles, atol=1e-15, rtol=0)
+        for angle in (du.PHYSICAL_MIN_ANGLE, math.radians(45), du.PHYSICAL_MAX_ANGLE):
+            assert inverse(forward(angle)) == pytest.approx(angle, abs=1e-15)
+    assert du.Q_MINANGLE == pytest.approx(math.radians(75 - 17))
+    assert du.physical_angle_to_deployment_q(du.PHYSICAL_MIN_ANGLE) == pytest.approx(du.LEG_UPPER_LIMIT)
+    assert du.physical_angle_to_urdf_q(du.PHYSICAL_MAX_ANGLE) == 0
+    assert du.physical_angle_to_deployment_q(du.PHYSICAL_MAX_ANGLE) == 0
+    assert du.Q_MINANGLE != pytest.approx(du.LEG_UPPER_LIMIT)
+
+
+@pytest.mark.parametrize("noise_std_type", ["scalar", "log"])
+def test_transformer_inherited_act_applies_distribution_floor(noise_std_type):
+    transformer = load_file("deformable_floor_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
+    obs = {"policy": torch.randn(3, 26), "critic": torch.randn(3, 34)}
+    policy = transformer.ActorCriticTransformer(
+        obs, {"policy": ["policy"], "critic": ["critic"]}, 4,
+        noise_std_type=noise_std_type, min_noise_std=0.15)
+    assert "act" not in transformer.ActorCriticTransformer.__dict__
+    with torch.no_grad():
+        if noise_std_type == "scalar":
+            policy.std.copy_(torch.tensor([-1.0, 0.0, 0.1, 0.3]))
+        else:
+            policy.log_std.copy_(torch.tensor([-100.0, -10.0, math.log(0.1), math.log(0.3)]))
+    with patch.object(policy, "update_distribution", wraps=policy.update_distribution) as update:
+        actions = policy.act(obs)
+        assert isinstance(update.call_args.args[0], torch.Tensor)
+        torch.testing.assert_close(update.call_args.args[0], obs["policy"])
+    expected = torch.tensor([0.15, 0.15, 0.15, 0.3]).expand(3, -1)
+    torch.testing.assert_close(policy.distribution.stddev, expected)
+    assert actions.shape == (3, 4) and torch.isfinite(actions).all()
+    assert torch.isfinite(policy.get_actions_log_prob(actions)).all()
+    assert torch.isfinite(policy.entropy).all()
+
+
+def test_geometry_scan_contact_clearance_and_infeasible_cases():
+    scan = load_file("deformable_feasibility_test", "scripts/tools/deformable_feasibility.py")
+    du = utilities()
+    bounds = (-0.13, 0.13, -0.13, 0.13, du.BODY_BOTTOM_OFFSET)
+    outcomes = []
+    for slope in scan.SLOPES:
+        for yaw in scan.YAWS:
+            result = scan.scan_pose(du, slope, yaw, bounds)
+            outcomes.append(result["feasible"])
+            if result["feasible"]:
+                q = torch.tensor(result["q_urdf"], dtype=torch.float64)
+                assert ((q >= 0) & (q <= du.Q_LOW)).all()
+                centers, _ = du.wheel_geometry(q)
+                theta, psi = math.radians(slope), math.radians(yaw)
+                x = centers[:, 0] * math.cos(psi) - centers[:, 1] * math.sin(psi)
+                normal_gap = ((result["base_height_m"] + centers[:, 2]) * math.cos(theta)
+                              - x * math.sin(theta) - du.WHEEL_RADIUS)
+                torch.testing.assert_close(normal_gap, torch.zeros(4, dtype=torch.float64), atol=1e-11, rtol=0)
+                assert result["body_normal_clearance_m"] >= 0.006 - 1e-11
+                if slope:
+                    vertical_gap = result["base_height_m"] + centers[:, 2] - x * math.tan(theta) - du.WHEEL_RADIUS
+                    assert vertical_gap.abs().min() > 1e-5
+            else:
+                assert "q_urdf" not in result
+                assert result["reason"] in ("no_four_wheel_contact_height", "body_clearance")
+    assert any(outcomes) and not all(outcomes)
+    assert not scan.scan_pose(du, 0, 0, bounds, safety=1.0)["feasible"]
+    flat = scan.scan_pose(du, 0, 0, bounds)
+    assert flat["feasible"]
+    assert flat["q_urdf"] == pytest.approx([du.Q_LOW] * 4, abs=1e-10)
+
+
+def test_height_polynomial_comparison_and_mismatch_not_used_for_contact():
+    scan = load_file("deformable_height_test", "scripts/tools/deformable_feasibility.py")
+    du = utilities()
+    report = scan.height_comparison(du)
+    assert report["max_abs_error_m"] < 1e-6
+    bounds = (-0.13, 0.13, -0.13, 0.13, du.BODY_BOTTOM_OFFSET)
+    original = scan.scan_pose(du, 5, 30, bounds)
+    polynomial = du.q_to_base_height
+    with patch.object(du, "q_to_base_height", side_effect=lambda q: polynomial(q) + 0.01):
+        assert scan.height_comparison(du)["max_abs_error_m"] > 0.009
+        assert scan.scan_pose(du, 5, 30, bounds) == original
+
+
+def test_geometry_scan_actual_chassis_envelope_outcomes():
+    import trimesh
+
+    scan = load_file("deformable_mesh_scan_test", "scripts/tools/deformable_feasibility.py")
+    du = utilities()
+    mesh = trimesh.load(ROOT / "source/agent_world/agent_world/assets/usd_files/deformable_V2/meshes/base_link.STL",
+                        force="mesh")
+    vertices = torch.as_tensor(mesh.vertices.copy(), dtype=torch.float64)
+    vertices = torch.stack((vertices[:, 0], -vertices[:, 2], vertices[:, 1]), dim=-1)
+    lo, hi = vertices.amin(0), vertices.amax(0)
+    bounds = [lo[0].item(), hi[0].item(), lo[1].item(), hi[1].item(), lo[2].item()]
+    counts = []
+    for slope in scan.SLOPES:
+        results = [scan.scan_pose(du, slope, yaw, bounds) for yaw in scan.YAWS]
+        counts.append(sum(result["feasible"] for result in results))
+        for result in results:
+            if result["feasible"]:
+                assert max(abs(gap) for gap in result["wheel_normal_gap_m"]) < 1e-11
+                assert result["body_normal_clearance_m"] >= 0.006 - 1e-11
+        if slope == 10:
+            assert [result["yaw_deg"] for result in results if result["feasible"]] == [90, 180, 270]
+        if slope == 8:
+            assert sum(result["reason"] == "body_clearance" for result in results) == 4
+            assert sum(result["reason"] == "no_four_wheel_contact_height" for result in results) == 4
+    assert counts == [24, 24, 24, 16, 3, 0]

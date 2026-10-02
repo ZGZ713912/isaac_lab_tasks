@@ -52,6 +52,43 @@ LEG_UPPER_LIMIT = 1.36
 # 低基准按“底盘网格最低点离地 1cm”标定（q=1.254 会让底盘插地 1.7cm，已弃用）。
 Q_HIGH = 0.0
 Q_LOW = 1.0563
+PHYSICAL_MIN_ANGLE = math.radians(17.0)
+PHYSICAL_MAX_ANGLE = math.radians(75.0)
+
+
+def physical_angle_to_urdf_q(angle, max_angle=PHYSICAL_MAX_ANGLE):
+    """Direct CAD joint radians, not the deployment's normalized RL coordinate."""
+    return max_angle - angle
+
+
+def urdf_q_to_physical_angle(q, max_angle=PHYSICAL_MAX_ANGLE):
+    return max_angle - q
+
+
+def physical_angle_to_deployment_q(angle, min_angle=PHYSICAL_MIN_ANGLE,
+                                   max_angle=PHYSICAL_MAX_ANGLE):
+    return LEG_UPPER_LIMIT * (max_angle - angle) / (max_angle - min_angle)
+
+
+def deployment_q_to_physical_angle(q, min_angle=PHYSICAL_MIN_ANGLE,
+                                   max_angle=PHYSICAL_MAX_ANGLE):
+    return max_angle - q * (max_angle - min_angle) / LEG_UPPER_LIMIT
+
+
+Q_MINANGLE = physical_angle_to_urdf_q(PHYSICAL_MIN_ANGLE)
+
+
+def suspension_target(action, baseline, upper_limit):
+    """Zero holds minangle; each signed half covers its entire available stroke."""
+    action = action.clamp(-1.0, 1.0)
+    span = torch.where(action < 0, baseline - LEG_LOWER_LIMIT, upper_limit - baseline)
+    return baseline + action * span
+
+
+def suspension_action(target, baseline, upper_limit):
+    delta = target - baseline
+    span = torch.where(delta < 0, baseline - LEG_LOWER_LIMIT, upper_limit - baseline)
+    return (delta / span.clamp_min(1.e-8)).clamp(-1.0, 1.0)
 H_HIGH = 0.13189
 H_LOW = 0.03700
 

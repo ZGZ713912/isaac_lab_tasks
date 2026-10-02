@@ -107,6 +107,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
             self.num_envs, len(self._wheels_contact_idx), device=self.device
         )
         self._all_wheel_contact_steps = torch.zeros(self.num_envs, device=self.device)
+        self._contact_sample_steps = torch.zeros(self.num_envs, device=self.device)
         self._last_servo_force = torch.zeros(self.num_envs, 3, device=self.device)
         self._last_servo_torque_z = torch.zeros(self.num_envs, device=self.device)
 
@@ -244,6 +245,9 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self.cmd_timer[env_ids] = torch.rand(n, device=device) * (
             self.cfg.cmd_resample_time_range[1] - self.cfg.cmd_resample_time_range[0]
         ) + self.cfg.cmd_resample_time_range[0]
+
+    def set_training_progress(self, iteration: int) -> None:
+        self.common_step_counter = int(iteration) * self.cfg.training_progress_steps_per_iteration
 
     # ------------------------------------------------------------------
     # scene
@@ -518,8 +522,12 @@ class DeformableSuspensionEnv(DirectRLEnv):
             1.0,
         )
         terms["all_wheel_contact"] = contact_ratio.min(dim=-1).values
+        mean_load = normal_forces.mean(-1).clamp_min(1.0)
+        terms["wheel_load_balance"] = terms["all_wheel_contact"] * torch.exp(
+            -normal_forces.var(-1, unbiased=False) / mean_load.square())
         self._wheel_contact_counts += wheel_contact.float()
         self._all_wheel_contact_steps += wheel_contact.all(dim=-1).float()
+        self._contact_sample_steps += 1
 
         # 1) IMU -> 四腿主动调平：直接给出每条腿的可实现修正目标。
         tilt_q_target, _ = self._get_tilt_leg_targets(pgb)
@@ -534,7 +542,9 @@ class DeformableSuspensionEnv(DirectRLEnv):
         terms["tilt_quadratic"] = tilt_energy
 
         # 2) 车身水平。接触门控只要求四轮都接地，不约束轮间载荷分配。
-        contact_gate = 0.2 + 0.8 * terms["all_wheel_contact"]
+        contact_gate = terms["all_wheel_contact"]
+        if getattr(self.cfg, "action_contract_version", "legacy_v1") == "legacy_v1":
+            contact_gate = 0.2 + 0.8 * contact_gate
         terms["flat_orientation_x_exp"] = contact_gate * torch.exp(
             -torch.square(pgb[:, 1]) / self.cfg.orientation_x_exp_sigma
         )
@@ -760,10 +770,16 @@ class DeformableSuspensionEnv(DirectRLEnv):
                 root_pos[:, 0] += (torch.rand(n, device=device) * 2.0 - 1.0) * half
                 root_pos[:, 1] += (torch.rand(n, device=device) * 2.0 - 1.0) * half
                 yaw = torch.rand(n, device=device) * 2 * math.pi - math.pi
-            ground = du.periodic_slope_height_torch(
-                root_pos[:, 0] + self._profile_x_offset, self._period_seg, self._slope_angle_table
+            # Place the root above the highest wheel footprint, rather than the
+            # terrain value at the root. This avoids starting rough episodes with
+            # one wheel embedded or airborne when yaw changes the footprint.
+            centers, _ = du.wheel_geometry(self.q_cmd[env_ids, None].expand(-1, 4))
+            cy, sy = torch.cos(yaw), torch.sin(yaw)
+            wheel_x = root_pos[:, None, 0] + cy[:, None] * centers[..., 0] - sy[:, None] * centers[..., 1]
+            wheel_ground = du.periodic_slope_height_torch(
+                wheel_x + self._profile_x_offset, self._period_seg, self._slope_angle_table
             )
-            root_pos[:, 2] = origin[:, 2] + ground
+            root_pos[:, 2] = origin[:, 2] + wheel_ground.amax(-1)
         else:
             yaw = torch.rand(n, device=device) * 2 * math.pi - math.pi
         root_pos[:, 2] += du.q_to_base_height(self.q_cmd[env_ids]) + self.cfg.reset_height_buffer
@@ -796,7 +812,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
 
         # 日志：先读计数再清零，否则 contact rate 恒为 0
         self.extras["log"] = {}
-        episode_steps = self.episode_sums["alive"][env_ids].clamp_min(1.0)
+        episode_steps = self._contact_sample_steps[env_ids].clamp_min(1.0)
         contact_counts = self._wheel_contact_counts[env_ids] / episode_steps.unsqueeze(-1)
         all_four_rate = self._all_wheel_contact_steps[env_ids] / episode_steps
         for name, sums in self.episode_sums.items():
@@ -807,6 +823,7 @@ class DeformableSuspensionEnv(DirectRLEnv):
         self.extras["log"]["contact/all_four_rate"] = all_four_rate.mean().item()
         self._wheel_contact_counts[env_ids] = 0.0
         self._all_wheel_contact_steps[env_ids] = 0.0
+        self._contact_sample_steps[env_ids] = 0.0
         self._log_direction_metrics()
 
     def _log_direction_metrics(self) -> None:

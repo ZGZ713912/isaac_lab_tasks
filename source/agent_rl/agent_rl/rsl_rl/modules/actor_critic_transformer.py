@@ -171,6 +171,7 @@ class ActorCriticTransformer(ActorCritic):
         actor_layout: dict | None = None,
         critic_layout: dict | None = None,
         history_length: int = 1,
+        min_noise_std: float = 0.0,
         **kwargs,
     ):
         # RslRlPpoActorCriticCfg 基类自带字段，对 transformer 无意义
@@ -212,6 +213,9 @@ class ActorCriticTransformer(ActorCritic):
         print(f"Critic Transformer ({n_c} params)")
 
         self.noise_std_type = noise_std_type
+        if init_noise_std <= 0 or min_noise_std < 0:
+            raise ValueError("Noise standard deviations must be positive/nonnegative")
+        self.min_noise_std = min_noise_std
         if noise_std_type == "scalar":
             self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
         elif noise_std_type == "log":
@@ -221,3 +225,8 @@ class ActorCriticTransformer(ActorCritic):
 
         self.distribution = None
         Normal.set_default_validate_args(False)
+
+    def update_distribution(self, obs):
+        mean = self.actor(obs)
+        std = self.log_std.exp() if self.noise_std_type == "log" else self.std
+        self.distribution = Normal(mean, std.clamp_min(max(self.min_noise_std, 1.0e-6)).expand_as(mean))

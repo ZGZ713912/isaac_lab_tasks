@@ -77,6 +77,7 @@ class DeformableSuspensionTransformerPPORunnerCfg(DeformableSuspensionPPORunnerC
 
 @configclass
 class DeformableHistoryTransformerPolicyCfg(DeformableTransformerPolicyCfg):
+    min_noise_std: float = 0.03
     history_length: int = 8
     actor_layout: dict = {
         "global": list(range(10)) + [30, 31],
@@ -90,6 +91,26 @@ class DeformableHistoryTransformerPolicyCfg(DeformableTransformerPolicyCfg):
 
 @configclass
 class DeformableDynamicPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg):
+    experiment_name = "deformable_minangle_residual_v2"
+    max_iterations = 10000
+    obs_groups = {"policy": ["policy"], "critic": ["critic"]}
+    clip_actions = 1.0
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.3, noise_std_type="log",
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        self.algorithm.class_name = "DiagnosticPPO"
+        self.algorithm.separate_grad_clip = True
+        self.algorithm.learning_rate = 1.0e-4
+        self.algorithm.schedule = "fixed"
+        self.algorithm.value_loss_coef = 1.0
+        self.algorithm.entropy_coef = 0.005
+        self.algorithm.num_learning_epochs = 3
+
+
+@configclass
+class DeformableLegacyPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg):
     experiment_name = "deformable_dynamic_low_slip_history_v1"
     clip_actions = 1.0
-    policy = DeformableHistoryTransformerPolicyCfg(init_noise_std=0.4)
+    policy = DeformableHistoryTransformerPolicyCfg(init_noise_std=0.4, min_noise_std=0.0)

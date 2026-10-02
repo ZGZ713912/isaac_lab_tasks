@@ -130,6 +130,19 @@ for _suffix, _cfg in (
         entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
         disable_env_checker=True,
         kwargs={
+            "env_cfg_entry_point": f"{__name__}.dynamic_cfg:" + {
+                "Flat": "DeformableLegacyFlatEnvCfg", "Rough": "DeformableLegacyRoughEnvCfg",
+                "Rough-Steep": "DeformableLegacySteepEnvCfg", "Rough-Keyboard-Play": "DeformableLegacyKeyboardEnvCfg",
+            }[_suffix],
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableLegacyPPORunnerCfg",
+        },
+    )
+
+    gym.register(
+        id=f"Robotics-Deformable-Suspension-{_suffix}-History-Transformer-v2",
+        entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
+        disable_env_checker=True,
+        kwargs={
             "env_cfg_entry_point": f"{__name__}.dynamic_cfg:{_cfg}",
             "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableDynamicPPORunnerCfg",
         },
