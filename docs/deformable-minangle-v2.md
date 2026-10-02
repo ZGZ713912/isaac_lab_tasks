@@ -2,6 +2,44 @@
 
 ## Implementation And Current Evidence
 
+### Best-Effort Leveling Beyond 10 Degrees
+
+Registered staged tasks (same observation and action contracts):
+
+| Task suffix | Terrain grades |
+| --- | --- |
+| BestEffort-Foundation-v2 | 0-5 degrees |
+| BestEffort-TenDegree-v2 | 5-10 degrees |
+| BestEffort-Overload-v2 | 10-15 degrees |
+
+Prefix each suffix with `Robotics-Deformable-Suspension-`. These are explicit
+training stages, not an automatic terrain curriculum. Train Foundation, initialize
+TenDegree from its checkpoint, then initialize Overload. Do not start a random
+policy directly on Overload expecting convergence.
+
+All stages keep q in [0, Q_LOW] and the 2 rad/s target slew limit. They do not
+claim that URDF q=1.36 is collision-safe. Minangle preference drops from 0.3 to
+0.02; load-equality preference is removed to allow necessary slope load transfer.
+Contact reward increases to 8. A contact-gated true tilt angle penalty remains
+active above 10 degrees: reducing 15 degrees to 12 or 8 always improves this term.
+There is no reward for hitting a limit and no termination at 10 degrees. The
+45-degree attitude safety termination, chassis clearance and collision checks
+remain active. Full contact loss removes the positive leveling reward as well as
+the gated penalty; contact safety still needs empirical verification.
+
+When a horizontal reset is infeasible, BestEffort tasks start tangent to the
+local terrain and above all wheel/body samples. Breakpoints can still leave small
+wheel gaps; these are logged, not declared a perfect four-contact reset.
+Logs include residual_tilt_deg, target_limit_fraction, q_limit_fraction and
+target_tracking_error. A large target-limit fraction alone does not prove the
+minimum physically achievable tilt; a constrained static optimum reference is
+not yet implemented. The existing evaluator's 3-degree strict criterion remains
+for achievable cases and must not be treated as an overload acceptance test.
+
+Verification: 45 CPU tests pass, including tilt monotonicity beyond 10 degrees
+and tangent reset on 15-degree slopes. Overload GPU smoke (4 envs, 2 updates)
+completed at `2026-10-02_22-44-45` but random-policy stability did not pass.
+
 Physical angles and deployment-normalized q are separate coordinates. With
 17-degree minangle and 75-degree maxangle, the direct CAD coordinate baseline is
 `q_urdf = radians(75 - 17) = 1.01229`. The deployment-normalized coordinate at

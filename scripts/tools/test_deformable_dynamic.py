@@ -50,6 +50,16 @@ def test_suspension_action_full_stroke_and_roundtrip():
     assert targets[0, 3] == du.Q_LOW
 
 
+def test_best_effort_tilt_remains_active_above_ten_degrees():
+    du = utilities()
+    angles = torch.deg2rad(torch.tensor([0., 5., 10., 15., 30.]))
+    gravity = torch.stack((angles.sin(), torch.zeros_like(angles), -angles.cos()), -1)
+    costs = du.suspension_tilt_cost(gravity, torch.ones_like(angles))
+    torch.testing.assert_close(costs, angles)
+    assert (costs[1:] > costs[:-1]).all()
+    assert du.suspension_tilt_cost(gravity, torch.zeros_like(angles)).count_nonzero() == 0
+
+
 def test_traction_airborne_friction_circle_and_slip_sign():
     du = utilities()
     slip = torch.tensor([[100.0, -100.0, 0.01, 1.0]])

@@ -128,6 +128,30 @@ class DeformableDynamicRoughSteepEnvCfg(DeformableDynamicRoughEnvCfg):
 
 
 @configclass
+class DeformableBestEffortEnvCfg(DeformableDynamicRoughEnvCfg):
+    """Stage one: learn continuous correction before adding impossible slopes."""
+    best_effort_leveling = True
+    baseline_reward_weight = 0.02
+    # Contact and clearance outweigh any benefit from unloading a wheel to level.
+    rewards = OrderedDict(DeformableDynamicRoughEnvCfg().rewards)
+    rewards["all_wheel_contact"] = 8.0
+    rewards["wheel_load_balance"] = 0.0
+    best_effort_tilt_weight = 6.0  # radians, active at every tilt, not cut off at 10 deg
+    termination_roll_deg = 45.0
+    termination_pitch_deg = 45.0
+
+
+@configclass
+class DeformableBestEffortTenDegreeEnvCfg(DeformableBestEffortEnvCfg):
+    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 10.0), seed=2)
+
+
+@configclass
+class DeformableBestEffortOverloadEnvCfg(DeformableBestEffortEnvCfg):
+    terrain = _make_periodic_slope_terrain(angle_range=(10.0, 15.0), seed=3)
+
+
+@configclass
 class DeformableDynamicKeyboardPlayEnvCfg(DeformableDynamicRoughEnvCfg):
     play = True
     external_cmd_override = True

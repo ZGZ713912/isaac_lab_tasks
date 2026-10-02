@@ -119,6 +119,21 @@ for _task_id, _env_cfg in (
     )
 
 # V1 changes the observation/action contract and must not load V0 checkpoints.
+for _stage, _cfg in (
+    ("Foundation", "DeformableBestEffortEnvCfg"),
+    ("TenDegree", "DeformableBestEffortTenDegreeEnvCfg"),
+    ("Overload", "DeformableBestEffortOverloadEnvCfg"),
+):
+    gym.register(
+        id=f"Robotics-Deformable-Suspension-BestEffort-{_stage}-v2",
+        entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.dynamic_cfg:{_cfg}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableDynamicPPORunnerCfg",
+        },
+    )
+
 for _suffix, _cfg in (
     ("Flat", "DeformableDynamicFlatEnvCfg"),
     ("Rough", "DeformableDynamicRoughEnvCfg"),

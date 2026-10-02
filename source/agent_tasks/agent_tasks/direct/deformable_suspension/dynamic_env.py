@@ -48,7 +48,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._drive_command = torch.zeros(self.num_envs, 3, device=self.device)
         self._metric_names = ("all_contact", "tilt_square", "height_violation", "clearance_min",
                               "speed_error", "yaw_error", "slip", "torque_saturation",
-                              "contact_and_horizontal", "min_wheel_force", "q_limit_fraction")
+                              "contact_and_horizontal", "min_wheel_force", "q_limit_fraction",
+                              "target_limit_fraction", "target_tracking_error", "residual_tilt_deg")
         self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
         self._metric_steps = torch.zeros(self.num_envs, device=self.device)
 
@@ -283,6 +284,11 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
         if self.cfg.enforce_tunnel_height:
             reward -= self.cfg.height_penalty_weight * height_excess
+        if getattr(self.cfg, "best_effort_leveling", False):
+            contact_ratio = (self.wheel_normal_forces.amin(-1)
+                             / self.cfg.wheel_contact_force_threshold).clamp(0.0, 1.0)
+            reward -= self.cfg.best_effort_tilt_weight * du.suspension_tilt_cost(
+                self.robot.data.projected_gravity_b, contact_ratio)
         cmd = self._drive_cmd_b()
         metrics = torch.stack((
             (self.wheel_normal_forces > self.cfg.wheel_contact_force_threshold).all(-1).float(),
@@ -298,6 +304,11 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.wheel_normal_forces.amin(-1),
             ((q < du.LEG_LOWER_LIMIT + 0.02)
              | (q > self.cfg.leg_target_upper_limit - 0.02)).float().mean(-1),
+            ((self.leg_target < du.LEG_LOWER_LIMIT + 0.02)
+             | (self.leg_target > self.cfg.leg_target_upper_limit - 0.02)).float().mean(-1),
+            (q - self.leg_target).abs().mean(-1),
+            torch.atan2(self.robot.data.projected_gravity_b[:, :2].norm(dim=-1),
+                        -self.robot.data.projected_gravity_b[:, 2]) * (180.0 / torch.pi),
         ), dim=-1)
         settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
         self._metrics += metrics * settled[:, None]
@@ -361,6 +372,33 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             safe_height = solved_height.amax(-1).maximum(clearance_height)
             height = torch.where(feasible, height, safe_height)
             pose[:, 2] = height.maximum(safe_height) + max(0.0, self.cfg.reset_height_buffer) + 1.e-6
+            if getattr(self.cfg, "best_effort_leveling", False) and (~feasible).any():
+                # A horizontal reset is impossible here. Start tangent to the
+                # local plane instead, then let the policy reduce residual tilt.
+                ids = (~feasible).nonzero(as_tuple=False).squeeze(-1)
+                x = pose[ids, 0] + self._profile_x_offset
+                eps = 0.01
+                slope = (du.periodic_slope_height_torch(x + eps, self._period_seg, self._slope_angle_table)
+                         - du.periodic_slope_height_torch(x - eps, self._period_seg, self._slope_angle_table)) / (2 * eps)
+                theta = torch.atan(slope)
+                yaw = 2 * torch.atan2(pose[ids, 6], pose[ids, 3])
+                ct, st = torch.cos(theta / 2), torch.sin(theta / 2)
+                cy, sy = torch.cos(yaw / 2), torch.sin(yaw / 2)
+                pose[ids, 3:] = torch.stack((ct * cy, -st * sy, -st * cy, ct * sy), -1)
+                q[ids] = self.q_cmd[env_ids[ids], None]
+                centers, _ = du.wheel_geometry(q[ids])
+                rotated = quat_apply(pose[ids, None, 3:].expand(-1, 4, -1), centers)
+                wx = pose[ids, None, 0] + rotated[..., 0] + self._profile_x_offset
+                ground = du.periodic_slope_height_torch(wx, self._period_seg, self._slope_angle_table)
+                wheel_height = ground - rotated[..., 2] + du.WHEEL_RADIUS / torch.cos(theta[:, None])
+                bottom[ids] = quat_apply(pose[ids, None, 3:].expand(-1, len(self._bottom_samples), -1),
+                                         self._bottom_samples[None].expand(len(ids), -1, -1))
+                bottom_ground[ids] = du.periodic_slope_height_torch(
+                    pose[ids, None, 0] + bottom[ids, :, 0] + self._profile_x_offset,
+                    self._period_seg, self._slope_angle_table)
+                body_height = (bottom_ground[ids] - bottom[ids, :, 2]).amax(-1) + self.cfg.chassis_ground_threshold
+                pose[ids, 2] = wheel_height.amax(-1).maximum(body_height) + max(0.0, self.cfg.reset_height_buffer) + 1.e-6
+                solved_height[ids] = wheel_height
             joints = data.joint_pos[env_ids].clone()
             joints[:, self._legs_idx] = q
             # Resolve passive joint order explicitly for unequal per-corner targets.

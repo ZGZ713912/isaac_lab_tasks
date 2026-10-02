@@ -89,6 +89,12 @@ def suspension_action(target, baseline, upper_limit):
     delta = target - baseline
     span = torch.where(delta < 0, baseline - LEG_LOWER_LIMIT, upper_limit - baseline)
     return (delta / span.clamp_min(1.e-8)).clamp(-1.0, 1.0)
+
+
+def suspension_tilt_cost(gravity, contact_ratio):
+    """A non-saturating tilt cost; contact loss must not buy better attitude."""
+    tilt = torch.atan2(gravity[..., :2].norm(dim=-1), -gravity[..., 2])
+    return tilt * contact_ratio.clamp(0.0, 1.0)
 H_HIGH = 0.13189
 H_LOW = 0.03700
 

@@ -106,6 +106,20 @@ def mock_env(x, yaw, threshold=0.005, periodic=True, buffer=0.0):
     return env, du
 
 
+def test_best_effort_infeasible_reset_starts_tangent_to_slope():
+    env, du = mock_env([0.5, 4.5], [0.0, 1.0])
+    env.cfg.best_effort_leveling = True
+    env._slope_angle_table.fill_(15.0)
+    env._reset_idx(torch.tensor([0, 1]))
+    assert env.extras["log"]["dynamic/reset_infeasible_fraction"] == 1.0
+    quat = env.robot.data.root_link_quat_w
+    up = quat_apply(quat, torch.tensor([[0., 0., 1.]]).expand(2, -1))
+    expected = torch.tensor([-math.sin(math.radians(15)), 0., math.cos(math.radians(15))])
+    torch.testing.assert_close(up, expected.expand(2, -1), atol=1e-5, rtol=1e-5)
+    assert env.extras["log"]["dynamic/reset_penetration_max"] < 1e-5
+    assert env.actions.abs().max() <= 1
+
+
 def geometry(env, du, ids):
     q = env.robot.data.joint_pos[ids, :4]
     centers, _ = du.wheel_geometry(q)
