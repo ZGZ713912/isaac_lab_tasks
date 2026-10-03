@@ -110,6 +110,18 @@ class DeformableDynamicPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg)
 
 
 @configclass
+class DeformablePrecisionPPORunnerCfg(DeformableDynamicPPORunnerCfg):
+    experiment_name = "deformable_foundation_precision_v2"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.15, noise_std_type="log",
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.001
+
+
+@configclass
 class DeformableLegacyPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg):
     experiment_name = "deformable_dynamic_low_slip_history_v1"
     clip_actions = 1.0

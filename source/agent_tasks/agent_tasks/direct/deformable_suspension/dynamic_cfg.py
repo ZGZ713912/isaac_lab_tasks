@@ -147,6 +147,13 @@ class DeformableBestEffortTenDegreeEnvCfg(DeformableBestEffortEnvCfg):
 
 
 @configclass
+class DeformableBestEffortPrecisionEnvCfg(DeformableBestEffortEnvCfg):
+    """Foundation precision trial: distinguish small tilt while retaining contact."""
+    orientation_x_exp_sigma = 0.004
+    orientation_y_exp_sigma = 0.004
+
+
+@configclass
 class DeformableBestEffortOverloadEnvCfg(DeformableBestEffortEnvCfg):
     terrain = _make_periodic_slope_terrain(angle_range=(10.0, 15.0), seed=3)
 

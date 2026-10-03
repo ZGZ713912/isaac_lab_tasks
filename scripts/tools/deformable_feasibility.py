@@ -16,7 +16,7 @@ from unittest.mock import patch
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
-SLOPES = (0, 2, 5, 8, 10, 17)
+SLOPES = (0, 2, 5, 8, 10, 17, 20)
 YAWS = tuple(range(0, 360, 15))
 
 
@@ -121,9 +121,77 @@ def height_comparison(du, samples=1001):
                 polynomial_endpoint_heights_m=[polynomial[0].item(), polynomial[-1].item()])
 
 
+def best_effort_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006):
+    """Find a feasible minimum-tilt witness; not a certified global/dynamic optimum."""
+    import numpy as np
+    from scipy.optimize import minimize
+
+    horizontal = scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety)
+    if horizontal["feasible"]:
+        return dict(slope_deg=slope_deg, yaw_deg=yaw_deg, best_feasible_tilt_deg=0.0,
+                    roll_deg=0.0, pitch_deg=0.0, base_height_m=horizontal["base_height_m"],
+                    q_urdf=horizontal["q_urdf"], body_normal_clearance_m=horizontal["body_normal_clearance_m"],
+                    max_abs_wheel_normal_gap_m=max(abs(x) for x in horizontal["wheel_normal_gap_m"]),
+                    horizontal_feasible=True, globally_horizontal_optimal=True, certified_global_optimum=True)
+    theta, yaw = math.radians(slope_deg), math.radians(yaw_deg)
+    normal = np.array([-math.sin(theta), 0., math.cos(theta)])
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rz = np.array([[cy, -sy, 0.], [sy, cy, 0.], [0., 0., 1.]])
+    xmin, xmax, ymin, ymax, zb = bottom_bounds
+    corners = np.array([[x, y, zb] for x in (xmin, xmax) for y in (ymin, ymax)])
+
+    def rotation(v):
+        roll, pitch = v[:2]
+        cr, sr, cp, sp = math.cos(roll), math.sin(roll), math.cos(pitch), math.sin(pitch)
+        return rz @ np.array([[cp, sp * sr, sp * cr], [0., cr, -sr], [-sp, cp * sr, cp * cr]])
+
+    def contacts(v):
+        centers, _ = du.wheel_geometry(torch.tensor(v[3:], dtype=torch.float64))
+        return (centers.numpy() @ rotation(v).T) @ normal + v[2] * normal[2] - du.WHEEL_RADIUS
+
+    def clearance(v):
+        return (corners @ rotation(v).T) @ normal + v[2] * normal[2]
+
+    def objective(v):
+        return 1.0 - math.cos(v[0]) * math.cos(v[1])
+
+    # Tangent-to-plane starts are feasible and cover different common extensions.
+    local_normal = rz.T @ normal
+    initial_roll = -math.asin(local_normal[1])
+    initial_pitch = math.atan2(local_normal[0], local_normal[2])
+    witnesses = []
+    for q0 in (.15, .5, .8, du.Q_MINANGLE):
+        initial = np.array([initial_roll, initial_pitch, 0., q0, q0, q0, q0])
+        initial[2] = -contacts(initial).mean() / normal[2]
+        solved = minimize(objective, initial, method="SLSQP",
+                          bounds=[(-math.pi / 4, math.pi / 4)] * 2 + [(0., 1.)] + [(0., du.Q_LOW)] * 4,
+                          constraints=[{"type": "eq", "fun": lambda v: 100. * contacts(v)},
+                                       {"type": "ineq", "fun": lambda v: 100. * (clearance(v) - safety)}],
+                          options={"ftol": 1.e-12, "maxiter": 300})
+        v = solved.x
+        if (np.isfinite(v).all() and np.abs(contacts(v)).max() < 2.e-5
+                and clearance(v).min() >= safety - 2.e-5
+                and v[3:].min() >= -1.e-6 and v[3:].max() <= du.Q_LOW + 1.e-6):
+            witnesses.append((objective(v), v, bool(solved.success)))
+    if not witnesses:
+        return dict(slope_deg=slope_deg, yaw_deg=yaw_deg, horizontal_feasible=False,
+                    best_feasible_tilt_deg=None, certified_global_optimum=False,
+                    reason="no_valid_numerical_witness")
+    _, v, converged = min(witnesses, key=lambda item: item[0])
+    return dict(slope_deg=slope_deg, yaw_deg=yaw_deg, horizontal_feasible=False,
+                best_feasible_tilt_deg=math.degrees(math.acos(max(-1., min(1., 1. - objective(v))))),
+                roll_deg=math.degrees(v[0]), pitch_deg=math.degrees(v[1]), base_height_m=float(v[2]),
+                q_urdf=v[3:].tolist(), body_normal_clearance_m=float(clearance(v).min()),
+                max_abs_wheel_normal_gap_m=float(np.abs(contacts(v)).max()),
+                solver_converged=converged, valid_multistart_witnesses=len(witnesses),
+                certified_global_optimum=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--safety", type=float, default=0.006, help="Normal body clearance, metres")
+    parser.add_argument("--slopes", nargs="+", type=float, default=list(SLOPES))
+    parser.add_argument("--best-effort", action="store_true", help="Also compute feasible partial-leveling witnesses.")
     args = parser.parse_args()
     import trimesh
 
@@ -134,12 +202,17 @@ def main():
     lo, hi = vertices.amin(0), vertices.amax(0)
     bounds = [lo[0].item(), hi[0].item(), lo[1].item(), hi[1].item(), lo[2].item()]
     du = utilities()
-    cases = [scan_pose(du, slope, yaw, bounds, args.safety) for slope in SLOPES for yaw in YAWS]
-    print(json.dumps(dict(q_range_urdf=[0, du.Q_LOW], q_minangle_urdf=du.Q_MINANGLE,
+    cases = [scan_pose(du, slope, yaw, bounds, args.safety) for slope in args.slopes for yaw in YAWS]
+    report = dict(q_range_urdf=[0, du.Q_LOW], q_minangle_urdf=du.Q_MINANGLE,
                           bottom_bounds_m=bounds, height_comparison=height_comparison(du),
                           summary=[dict(slope_deg=slope,
                                         feasible=sum(case["feasible"] for case in cases if case["slope_deg"] == slope),
-                                        total=len(YAWS)) for slope in SLOPES], cases=cases), indent=2))
+                                        total=len(YAWS)) for slope in args.slopes], cases=cases)
+    if args.best_effort:
+        report["reference_limits"] = "Conservative geometry only; no torque, friction, speed or certified nonzero global optimum."
+        report["best_effort_cases"] = [best_effort_pose(du, slope, yaw, bounds, args.safety)
+                                       for slope in args.slopes for yaw in YAWS]
+    print(json.dumps(report, indent=2))
 
 
 if __name__ == "__main__":

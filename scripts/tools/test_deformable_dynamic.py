@@ -308,4 +308,4 @@ def test_geometry_scan_actual_chassis_envelope_outcomes():
         if slope == 8:
             assert sum(result["reason"] == "body_clearance" for result in results) == 4
             assert sum(result["reason"] == "no_four_wheel_contact_height" for result in results) == 4
-    assert counts == [24, 24, 24, 16, 3, 0]
+    assert counts == [24, 24, 24, 16, 3, 0, 0]  # includes the requested 20-degree scan

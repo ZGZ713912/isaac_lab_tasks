@@ -53,6 +53,8 @@ parser.add_argument(
     default=False,
     help="Resume optimizer state and iteration counter from --checkpoint, then continue from the next iteration.",
 )
+parser.add_argument("--finetune_noise_std", type=float, default=None,
+                    help="Reset action noise after loading fine-tune weights; incompatible with optimizer resume.")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
@@ -61,6 +63,12 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.finetune_noise_std is not None:
+    import math
+    if not args_cli.checkpoint or args_cli.resume_training:
+        parser.error("--finetune_noise_std requires --checkpoint without --resume_training")
+    if not math.isfinite(args_cli.finetune_noise_std) or args_cli.finetune_noise_std <= 0:
+        parser.error("--finetune_noise_std must be finite and positive")
 
 # always enable cameras to record video
 if args_cli.video:
@@ -185,6 +193,7 @@ def _attach_checkpoint_metadata(env_cfg, agent_cfg, checkpoint_path: str | None)
         "dir": os.path.dirname(checkpoint_path),
         "file": os.path.basename(checkpoint_path),
         "resume_training": bool(args_cli.resume_training),
+        "finetune_noise_std": args_cli.finetune_noise_std,
     }
     setattr(env_cfg, "launch_checkpoint", checkpoint_metadata)
     setattr(agent_cfg, "launch_checkpoint", checkpoint_metadata)
@@ -280,6 +289,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             # Weight initialization / finetune-from-checkpoint workflow.
             _load_policy_for_finetune(runner, resume_path)
+            if args_cli.finetune_noise_std is not None:
+                from finetune_utils import reset_policy_noise
+                before = reset_policy_noise(runner.alg.policy, args_cli.finetune_noise_std)
+                print(f"[INFO]: Fine-tune action noise: {before:.6f} -> {args_cli.finetune_noise_std:.6f}")
 
     _notify_env_training_progress(env, int(getattr(runner, "current_learning_iteration", 0)))
     _attach_checkpoint_metadata(env_cfg, agent_cfg, args_cli.checkpoint)

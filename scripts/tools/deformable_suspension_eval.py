@@ -78,7 +78,7 @@ def summarize(episodes):
         return sum(s[column] for s in samples) / n if n else None
     def adjusted(column):
         return sum(s[column] for s in samples) / (n + short_failures) if n + short_failures else None
-    return {
+    result = {
         "settled_samples": n, "short_failed_episodes": short_failures,
         "all_contact_rate": rate(3), "contact_and_horizontal_rate": rate(4),
         "failure_adjusted_all_contact_rate": adjusted(3),
@@ -95,6 +95,16 @@ def summarize(episodes):
         "episode_success_rate": sum(e.get("success", False) for e in episodes) / len(episodes) if episodes else 0.0,
         "episodes": episodes,
     }
+    if samples and len(samples[0]) > 9:
+        result.update({
+            "q_limit_fraction": rate(9), "target_limit_fraction": rate(10),
+            "target_tracking_error_rad": rate(11), "mean_abs_slip_m_s": rate(12),
+            "mean_velocity_world": [rate(i) for i in (13, 14, 15)],
+            "mean_command_world": [rate(i) for i in (16, 17, 18)],
+            "body_top_height_m": distribution([s[19] for s in samples]),
+            "leg_target_rate_saturation_rate": rate(20),
+        })
+    return result
 
 
 def acceptance(result):
@@ -121,7 +131,23 @@ def parser():
     p.add_argument("--history", type=int, choices=(1, 4, 8), help="Baseline history, or assert checkpoint history")
     p.add_argument("--scenarios", nargs="+", choices=SCENARIOS, default=list(SCENARIOS))
     p.add_argument("--strict", action="store_true", help="Exit 1 on POLICY acceptance failure (ZERO if no checkpoint)")
+    p.add_argument("--policy-only", action="store_true", help="Skip ZERO when comparing matching checkpoints.")
+    p.add_argument("--grade-deg", type=float,
+                   help="Constant long ramp (0..20 deg); retains physical safety and disables cell-boundary resets.")
     return p
+
+
+def configure_grade(cfg, grade):
+    """A long ramp isolates grade capability from periodic crests and cell resets."""
+    if grade is None:
+        return
+    if not math.isfinite(grade) or not 0 <= grade <= 20:
+        raise ValueError("Constant test grade must be finite and in [0, 20]")
+    sub = cfg.terrain.terrain_generator.sub_terrains["periodic_slope"]
+    sub.angle_range = (grade, grade)
+    sub.segment_length = 20.0
+    cfg.boundary_reset_enabled = False
+    cfg.spawn_dir_jitter = False
 
 
 def evaluate(args, agent_cfg, history, app):
@@ -152,6 +178,8 @@ def evaluate(args, agent_cfg, history, app):
     cfg.policy_history_length = history
     cfg.observation_space = 32 * history
     cfg.events = None
+    grade = getattr(args, "grade_deg", None)
+    configure_grade(cfg, grade)
     # Eliminate stochastic observation streams whose RNG draw counts depend on resets.
     for field in ("encoder_noise_std", "encoder_bias_std", "gyro_noise_std", "gyro_bias_std", "gravity_noise_std"):
         setattr(cfg, field, 0.0)
@@ -160,6 +188,11 @@ def evaluate(args, agent_cfg, history, app):
     cfg.tire_friction_range = (friction, friction)
     env = gym.make(args.task, cfg=cfg)
     u = env.unwrapped
+    if grade is not None:
+        # Keep all reset cells in one uphill ramp, at least 7.5 m from its ends.
+        u.scene.env_origins[:, 0] = 90.0 - u._profile_x_offset
+        u.scene.env_origins[:, 1] = 4.0 * (torch.arange(u.num_envs, device=u.device) - (u.num_envs - 1) / 2)
+        u.scene.env_origins[:, 2] = 0.0
     original_dones = u._get_dones
     original_reset = u._reset_idx
     try:
@@ -176,7 +209,11 @@ def evaluate(args, agent_cfg, history, app):
                   "seed": args.seed, "num_envs": args.num_envs, "steps": args.steps,
                   "step_dt_s": u.step_dt, "settle_s": 0.5, "history": history,
                   "friction": friction, "command_frame": "world", "results": {}}
-        for mode in (("POLICY", "ZERO") if policy else ("ZERO",)):
+        output["terrain"] = {"kind": "constant_ramp" if grade is not None else "registered_task",
+                             "grade_deg": grade, "boundary_resets": cfg.boundary_reset_enabled}
+        modes = ("POLICY",) if policy and getattr(args, "policy_only", False) else (
+            ("POLICY", "ZERO") if policy else ("ZERO",))
+        for mode in modes:
             output["results"][mode] = {}
             for scenario_index, scenario in enumerate(args.scenarios):
                 seed = args.seed + scenario_index * 1000003
@@ -185,6 +222,7 @@ def evaluate(args, agent_cfg, history, app):
                 pending = [[] for _ in range(u.num_envs)]
                 episodes = []
                 reset_hash = hashlib.sha256()
+                previous_target = u.leg_target.clone()
 
                 def controlled_reset(ids):
                     # Match each env's nth reset, even when the other mode survives longer.
@@ -222,6 +260,10 @@ def evaluate(args, agent_cfg, history, app):
                 def capture_dones():
                     terminated, timeout = original_dones()
                     data = u.robot.data
+                    if grade is not None:
+                        phase = (data.body_link_pos_w[:, u._wheel_body_ids, 0] + u._profile_x_offset) % 80.0
+                        if not ((phase >= 0.0) & (phase <= 20.0)).all():
+                            raise RuntimeError("Constant-grade evaluation left the validated uphill ramp interior")
                     g = data.projected_gravity_b
                     norm = g.norm(dim=-1).clamp_min(1.e-9)
                     roll = torch.atan2(-g[:, 1], -g[:, 2]) * (180 / math.pi)
@@ -229,10 +271,22 @@ def evaluate(args, agent_cfg, history, app):
                     tilt = torch.acos((-g[:, 2] / norm).clamp(-1, 1)) * (180 / math.pi)
                     load = u.wheel_normal_forces
                     contact = (load > cfg.wheel_contact_force_threshold).all(-1)
+                    q = data.joint_pos[:, u._legs_idx]
+                    low, high = 0.0, cfg.leg_target_upper_limit
+                    target = u.leg_target
+                    vel = data.root_link_lin_vel_w
+                    limit = cfg.leg_target_rate_limit * u.step_dt
                     rows = torch.stack((roll, pitch, tilt, contact.float(),
                                         (contact & (tilt < 3.0)).float(), load.amin(-1), u.chassis_clearance,
                                         (data.applied_torque[:, u._legs_idx].abs() >= 0.99 * cfg.max_leg_torque).float().mean(-1),
-                                        (data.applied_torque[:, u._wheels_idx].abs() >= 0.99 * cfg.wheel_torque_limit).float().mean(-1)), -1)
+                                        (data.applied_torque[:, u._wheels_idx].abs() >= 0.99 * cfg.wheel_torque_limit).float().mean(-1),
+                                        ((q < low + .02) | (q > high - .02)).float().mean(-1),
+                                        ((target < low + .02) | (target > high - .02)).float().mean(-1),
+                                        (q - target).abs().mean(-1), u._last_wheel_slip.abs().mean(-1),
+                                        vel[:, 0], vel[:, 1], data.root_ang_vel_b[:, 2],
+                                        u.cmd_buf[:, 0], u.cmd_buf[:, 1], u.cmd_buf[:, 2],
+                                        u.body_top_height,
+                                        ((target - previous_target).abs() >= .99 * limit).float().mean(-1)), -1)
                     if not torch.isfinite(rows).all():
                         raise RuntimeError("Nonfinite physical evaluation metrics")
                     for env_id, (row, term, tout) in enumerate(zip(rows.cpu().tolist(), terminated.tolist(), timeout.tolist())):
@@ -266,7 +320,10 @@ def evaluate(args, agent_cfg, history, app):
                         actions = policy(obs) if mode == "POLICY" else torch.zeros(u.num_envs, cfg.action_space, device=u.device)
                         if not torch.isfinite(actions).all():
                             raise RuntimeError("Nonfinite policy actions")
+                        previous_target.copy_(u.leg_target)
                         obs, _, _, _ = wrapped.step(actions)
+                        if (step + 1) % 100 == 0:
+                            print(f"EVAL_PROGRESS {mode} {scenario} {step + 1}/{args.steps}", file=sys.stderr, flush=True)
                 for env_id in range(u.num_envs):
                     if ages[env_id]:
                         finish(env_id, False, False, censored=True)
@@ -275,6 +332,9 @@ def evaluate(args, agent_cfg, history, app):
                 result["scenario_seed"] = seed
                 result["acceptance"] = acceptance(result)
                 output["results"][mode][scenario] = result
+                print(f"EVAL_RESULT {mode} {scenario} contact={result['all_contact_rate']} "
+                      f"joint={result['contact_and_horizontal_rate']} p95={result['tilt_deg']['abs_p95']}",
+                      file=sys.stderr, flush=True)
         target = "POLICY" if policy else "ZERO"
         output["strict_target"] = target
         output["passed"] = all(r["acceptance"]["passed"] for r in output["results"][target].values())
@@ -301,6 +361,12 @@ def main():
             p.error("scenarios must be unique")
         if args.agent_yaml and not args.checkpoint:
             p.error("--agent-yaml requires --checkpoint")
+        if args.policy_only and not args.checkpoint:
+            p.error("--policy-only requires --checkpoint")
+        if args.grade_deg is not None and (not math.isfinite(args.grade_deg) or not 0 <= args.grade_deg <= 20):
+            p.error("--grade-deg must be finite and in [0, 20]")
+        if args.grade_deg is not None and (args.num_envs > 24 or args.steps > 600):
+            p.error("Constant-ramp budget supports at most 24 envs and 600 steps within the plane interior")
         agent_cfg = None
         history = args.history or 8
         yaml_path = None
