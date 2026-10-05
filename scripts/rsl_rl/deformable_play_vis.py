@@ -20,6 +20,7 @@ import torch
 
 import isaaclab.sim as sim_utils
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from agent_tasks.direct.deformable_suspension import cfg_utils as du
 
 
 class DeformablePlayVis:
@@ -77,11 +78,11 @@ class DeformablePlayVis:
                 import omni.ui as ui
 
                 self._ui = ui
-                self._window = ui.Window("Deformable Play HUD", width=400, height=300)
+                self._window = ui.Window("Deformable Play HUD", width=430, height=330)
                 with self._window.frame:
                     with ui.VStack(spacing=4):
                         for key in (
-                            "mode", "q_cmd", "cmd", "vel", "pos", "servo",
+                            "mode", "q_cmd", "leg_angles", "cmd", "vel", "pos", "servo",
                             "roll", "pitch", "height", "force", "contact",
                         ):
                             self._labels[key] = ui.Label("", height=18)
@@ -123,11 +124,11 @@ class DeformablePlayVis:
         roll = math.degrees(math.atan2(-pgb[1].item(), -pgb[2].item()))
         pitch = math.degrees(math.atan2(pgb[0].item(), -pgb[2].item()))
         height = float(unwrapped.base_height[0].item())
-        forces = unwrapped.wheel_contact_forces[0]
+        forces = getattr(unwrapped, "wheel_normal_forces", unwrapped.wheel_contact_forces)[0]
         q_cmd = float(unwrapped.q_cmd[0].item())
         low = q_cmd > float(unwrapped.cfg.low_mode_q_threshold)
         cmd = unwrapped.cmd_buf[0]
-        vel_b = self._robot.data.root_lin_vel_b[0]
+        vel_b = self._robot.data.root_link_lin_vel_b[0]
         ang_b = self._robot.data.root_ang_vel_b[0]
         f = getattr(unwrapped, "_last_servo_force", None)
         tz = getattr(unwrapped, "_last_servo_torque_z", None)
@@ -137,8 +138,11 @@ class DeformablePlayVis:
             else "F_b=n/a"
         )
 
-        self._labels["mode"].text = f"模式: {'低车身' if low else '高车身'}"
-        self._labels["q_cmd"].text = f"q_cmd: {q_cmd:.4f} rad"
+        physical_zero = float(getattr(unwrapped.cfg, "leg_physical_angle_zero", du.PHYSICAL_MAX_ANGLE))
+        angles = torch.rad2deg(physical_zero - self._robot.data.joint_pos[0, unwrapped._legs_idx])
+        self._labels["mode"].text = f"基准模式: {'低位' if low else '高位'}"
+        self._labels["q_cmd"].text = f"悬挂基准: {math.degrees(physical_zero - q_cmd):.1f}°"
+        self._labels["leg_angles"].text = "腿角 RF/LF/LB/RB: " + " / ".join(f"{a.item():.1f}°" for a in angles)
         self._labels["cmd"].text = (
             f"cmd: vx={cmd[0].item():+.2f} vy={cmd[1].item():+.2f} wz={cmd[2].item():+.2f}"
         )
@@ -150,10 +154,13 @@ class DeformablePlayVis:
         self._labels["servo"].text = f"servo: {f_txt}"
         self._labels["roll"].text = f"roll (车身横滚): {roll:+.1f}°"
         self._labels["pitch"].text = f"pitch (车身俯仰): {pitch:+.1f}°"
-        self._labels["height"].text = f"base 离地高度: {height:.3f} m"
+        body_top = getattr(unwrapped, "body_top_height", None)
+        self._labels["height"].text = (
+            f"车体顶部: {body_top[0].item() * 1000:.1f} mm；base: {height * 1000:.1f} mm"
+            if body_top is not None else f"base 离地高度: {height:.3f} m")
         self._labels["force"].text = (
             "四轮接触力: " + "  ".join(f"{f.item():5.1f}" for f in forces) + " N"
         )
         self._labels["contact"].text = (
-            "四轮触地: " + "  ".join("●" if f.item() > 1.0 else "○" for f in forces)
+            "四轮触地: " + "  ".join("●" if f.item() > getattr(unwrapped.cfg, "wheel_contact_force_threshold", 1.0) else "○" for f in forces)
         )

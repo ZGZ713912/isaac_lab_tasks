@@ -62,11 +62,12 @@ def test_state_dependent_noise_is_rejected():
 
 
 def test_grade_configuration_and_invalid_bounds():
-    sub = SimpleNamespace(angle_range=(0, 5), segment_length=1)
+    sub = SimpleNamespace(angle_range=(0, 5), segment_length=1, angle_choices=(5, 10, 17, 20))
     cfg = SimpleNamespace(terrain=SimpleNamespace(terrain_generator=SimpleNamespace(sub_terrains={"periodic_slope": sub})),
                           boundary_reset_enabled=True, spawn_dir_jitter=True)
     evaluate.configure_grade(cfg, 17)
     assert sub.angle_range == (17, 17) and sub.segment_length == 20
+    assert sub.angle_choices is None
     assert not cfg.boundary_reset_enabled and not cfg.spawn_dir_jitter
     with pytest.raises(ValueError):
         evaluate.configure_grade(cfg, 21)
@@ -116,3 +117,79 @@ def test_geometric_reference_checks_all_contact_and_clearance():
     assert steep["max_abs_wheel_normal_gap_m"] < 2.e-5
     assert steep["body_normal_clearance_m"] >= .006 - 2.e-5
     assert min(steep["q_urdf"]) >= -1.e-6 and max(steep["q_urdf"]) <= du.Q_LOW + 1.e-6
+
+
+def test_v3_geometry_respects_actual_stroke_and_clearance():
+    du = geometry.utilities()
+    bounds = [-.13, .13, -.13, .13, -.027]
+    limits = (du.URDF_ZERO_PHYSICAL_ANGLE - math.radians(75),
+              du.URDF_ZERO_PHYSICAL_ANGLE - math.radians(16))
+    steep = geometry.best_effort_pose(du, 20, 45, bounds, q_range=limits)
+    assert steep["best_feasible_tilt_deg"] is not None
+    assert min(steep["q_urdf"]) >= limits[0] - 1.e-6
+    assert max(steep["q_urdf"]) <= limits[1] + 1.e-6
+    assert steep["max_abs_wheel_normal_gap_m"] < 2.e-5
+    assert steep["body_normal_clearance_m"] >= .006 - 2.e-5
+    with pytest.raises(ValueError):
+        geometry.scan_pose(du, 0, 0, bounds, q_range=(limits[1], limits[0]))
+
+
+def test_velocity_error_metrics_use_individual_errors_not_error_of_mean():
+    base = [0, 0, 0, 1, 1, 20, .01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, .25, 0]
+    result = evaluate.summarize([{
+        "samples": [base + [1., 2.], base + [3., 4.]], "terminated": False, "timeout": False,
+        "settled_samples": 2, "success": False,
+    }])
+    assert result["linear_speed_error_m_s"]["rms"] == pytest.approx(math.sqrt(5))
+    assert result["yaw_error_rad_s"]["rms"] == pytest.approx(math.sqrt(10))
+
+
+def test_play_command_profile_matches_gui_amplitudes_and_preserves_stress_commands():
+    assert evaluate.command_at('forward', 0, 600) == (1., 0., 0.)
+    assert evaluate.command_at('spin_positive', 0, 600) == (0., 0., 2 * math.pi)
+    assert evaluate.command_at('forward', 0, 600, 'play') == (.8, 0., 0.)
+    assert evaluate.command_at('lateral', 0, 600, 'play') == (0., .5, 0.)
+    assert evaluate.command_at('spin_negative', 0, 600, 'play') == (0., 0., -1.5)
+    assert evaluate.command_at('dynamic', 150, 600, 'play') == (.4, 0., 1.5)
+    assert evaluate.command_at('dynamic', 300, 600, 'play') == (-.4, 0., -1.5)
+    with pytest.raises(ValueError, match='profile'):
+        evaluate.command_at('static', 0, 600, 'unknown')
+
+
+def test_velocity_tracking_uses_command_frame_at_a_rotated_heading():
+    # A robot facing +world-Y correctly follows its body-forward command.
+    velocity_world = torch.tensor([[0., .8, 0.]])
+    velocity_body = torch.tensor([[.8, 0., 0.]])
+    command = torch.tensor([[.8, 0., 0.]])
+    assert evaluate.linear_velocity_error(velocity_world, velocity_body, command, 'body').item() == 0
+    assert evaluate.linear_velocity_error(velocity_world, velocity_body, command, 'world').item() == pytest.approx(math.sqrt(1.28))
+    with pytest.raises(ValueError, match='frame'):
+        evaluate.linear_velocity_error(velocity_world, velocity_body, command, 'invalid')
+
+
+def test_body_commands_are_not_reported_as_world_commands():
+    sample = [0, 0, 0, 1, 1, 20, .01, 0, 0, 0, 0, 0, 0, 0, .8, 0, .8, 0, 0, .25, 0, 0, 0]
+    result = evaluate.summarize([dict(samples=[sample], terminated=False, timeout=False,
+                                     settled_samples=1, success=True)], 'body')
+    assert 'mean_command_world' not in result
+    assert result['mean_command_body'] == [.8, 0, 0]
+    assert result['mean_velocity_world'] == [0, .8, 0]
+
+
+def test_pre_settle_failure_retains_missing_tilt_and_fails_acceptance():
+    result = evaluate.summarize([dict(samples=[], terminated=True, timeout=False,
+                                     settled_samples=0, success=False)])
+    assert result['tilt_deg']['abs_p95'] is None
+    assert result['failure_adjusted_all_contact_rate'] == 0
+    assert result['short_failed_episodes'] == 1
+    assert not evaluate.acceptance(result)['passed']
+
+
+def test_ramp_boundary_exit_is_counted_separately_and_cannot_pass():
+    row = [0, 0, 0, 1, 1, 20, .01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, .25, 0]
+    result = evaluate.summarize([dict(samples=[row], terminated=True, physical_terminated=False,
+                                     terrain_boundary=True, timeout=False, settled_samples=1, success=False)])
+    assert result['terminated_resets'] == 1
+    assert result['physical_terminated_resets'] == 0
+    assert result['terrain_boundary_violations'] == 1
+    assert not evaluate.acceptance(result)['passed']

@@ -88,7 +88,11 @@ class PlayLifecycle:
         self.app = app
         self.install_signals()
         import carb.eventdispatcher
+        import carb.settings
         import omni.kit.app
+        # The generated play stage is disposable. Kit's file extension otherwise
+        # cancels window shutdown to ask whether to save that stage.
+        carb.settings.get_settings().set_bool("/app/file/ignoreUnsavedOnExit", True)
         self._shutdown_sub = carb.eventdispatcher.get_eventdispatcher().observe_event(
             event_name=omni.kit.app.GLOBAL_EVENT_POST_QUIT,
             on_event=lambda event: self.begin_shutdown(),

@@ -89,7 +89,6 @@ import agent_world  # noqa: F401,E402
 import agent_tasks  # noqa: F401,E402
 import agent_rl.rsl_rl.modules  # noqa: F401,E402  注册 ActorCriticTransformer 到 OnPolicyRunner
 import agent_rl.rsl_rl.algorithms  # noqa: F401,E402  注册 DiagnosticPPO 到 OnPolicyRunner
-import cli_args as rsl_cli_args  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
@@ -171,6 +170,7 @@ def _configure_grade(env_cfg, grade_deg: float | None) -> None:
     # A 20 m segment keeps the vehicle on one uphill ramp instead of hiding the
     # behavior at a short crest/flat transition.
     sub.angle_range = (grade_deg, grade_deg)
+    sub.angle_choices = None
     sub.segment_length = 20.0
     env_cfg.boundary_reset_enabled = False
     env_cfg.spawn_dir_jitter = False
@@ -204,16 +204,17 @@ def _print_suspension_reference(env) -> None:
     if not q_choices and q_cmd is None:
         return
     q_ref = q_cmd if q_cmd is not None else q_choices[0]
-    q_low = float(du.Q_LOW)
+    zero = float(getattr(unwrapped.cfg,"leg_physical_angle_zero",du.PHYSICAL_MAX_ANGLE))
+    q_limit = float(unwrapped.cfg.leg_target_upper_limit)
     print(
         "[INFO] 悬挂基准: "
-        f"q_cmd={q_ref:.4f} rad, physical={math.degrees(float(du.urdf_q_to_physical_angle(q_ref))):.2f} deg, "
+        f"q_cmd={q_ref:.4f} rad, physical={math.degrees(zero-q_ref):.2f} deg, "
         f"base_h={float(du.q_to_base_height(q_ref)):.4f} m; "
-        f"Q_LOW={q_low:.4f} rad, base_h={float(du.q_to_base_height(q_low)):.4f} m",
+        f"q_target_max={q_limit:.4f} rad, base_h={float(du.q_to_base_height(q_limit)):.4f} m",
         flush=True,
     )
     print(
-        "[INFO] q 越大车体越低；q_cmd 是零动作基准，Q_LOW 是底盘余量上限，"
+        "[INFO] q 越大车体越低；q_cmd 是零动作基准，q_target_max 是目标范围上限，"
         "不是同一个量。",
         flush=True,
     )
@@ -235,25 +236,17 @@ def main() -> None:
         **{name: -q_ref for name in du.ORDERED_UPPER_LEG_JOINT_NAMES},
         **{name: 0.0 for name in du.ORDERED_WHEEL_JOINT_NAMES},
     }
-
-    ns = argparse.Namespace(
-        task=args_cli.task,
-        device=args_cli.device,
-        seed=None,
-        run_name=None,
-        logger=None,
-        log_project_name=None,
-        clip_actions=None,
-        cmoe_router_temperature=None,
-        moe_load_balancing_coef=None,
-        cmoe_aux=None,
-        experiment_name=None,
-        resume=None,
-        load_run=None,
-        checkpoint=None,
+    initial_pos = env_cfg.robot_cfg.init_state.pos
+    env_cfg.robot_cfg.init_state.pos = (
+        initial_pos[0], initial_pos[1],
+        float(du.q_to_base_height(q_ref)) + max(0.0, env_cfg.reset_height_buffer),
     )
-    agent_cfg = rsl_cli_args.parse_rsl_rl_cfg(args_cli.task, ns)
-    agent_cfg.device = args_cli.device
+
+    from scripts.utils.deformable_checkpoint import load_deformable_agent_config
+    agent_cfg = load_deformable_agent_config(resume_path, args_cli.device)
+    if hasattr(env_cfg, "policy_history_length"):
+        env_cfg.policy_history_length = agent_cfg["policy"].get("history_length", 1)
+        env_cfg.observation_space = 32 * env_cfg.policy_history_length
 
     # ---- environment --------------------------------------------------------
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
@@ -261,7 +254,7 @@ def main() -> None:
     if args_cli.grade_deg is not None:
         _place_on_grade_ramp(env)
         print(f"[INFO] 固定坡度 play: {args_cli.grade_deg:.1f}°，已放置在 20 m 上坡段内部", flush=True)
-    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.get("clip_actions"))
     obs, _ = env.reset()
     _print_suspension_reference(env)
     q = env.unwrapped.robot.data.joint_pos[0, env.unwrapped._legs_idx]
@@ -290,7 +283,7 @@ def main() -> None:
         print("[INFO] 可视化已开启：红球=接触, 绿杆=世界竖直/红杆=车身z轴, HUD=姿态/高度/接触力")
 
     # ---- runner + checkpoint ------------------------------------------------
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=args_cli.device)
     print(f"[INFO] Loading checkpoint: {resume_path}")
     runner.load(resume_path, load_optimizer=False)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
@@ -321,10 +314,12 @@ def main() -> None:
             u = env.unwrapped
             data = u.robot.data
             cmd = u.cmd_buf[0].tolist()
-            vel = data.root_lin_vel_b[0, :2].tolist()
+            vel = data.root_link_lin_vel_b[0, :2].tolist()
             delta = (data.root_pos_w[0, :2] - motion_origin[:2]).tolist()
             q = data.joint_pos[0, u._legs_idx]
             target = u.leg_target[0]
+            physical_zero = float(getattr(u.cfg, "leg_physical_angle_zero", du.PHYSICAL_MAX_ANGLE))
+            physical_angles = torch.rad2deg(physical_zero - q).tolist()
             gravity = data.projected_gravity_b[0]
             tilt = math.degrees(math.atan2(float(gravity[:2].norm()), -float(gravity[2])))
             loads = u.wheel_normal_forces[0]
@@ -336,6 +331,8 @@ def main() -> None:
                 f"delta_xy_w=({delta[0]:+.3f},{delta[1]:+.3f}) m "
                 f"q=[{q.min().item():.3f},{q.max().item():.3f}] "
                 f"target=[{target.min().item():.3f},{target.max().item():.3f}] "
+                f"physical_deg=[{','.join(f'{angle:.1f}' for angle in physical_angles)}] "
+                f"body_top={u.body_top_height[0].item() * 1000:.1f}mm "
                 f"q_cmd={u.q_cmd[0].item():.3f} tilt={tilt:.2f}deg "
                 f"contact={contacts}/4 min_load={loads.min().item():.1f}N "
                 f"slip={u._last_wheel_slip[0].abs().mean().item():.3f}m/s",

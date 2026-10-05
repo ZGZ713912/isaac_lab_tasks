@@ -87,6 +87,8 @@ class LegTokenTransformer(nn.Module):
         head: str = "global",
         out_gain: float = 1.0,
         history_length: int = 1,
+        use_leg_geometry_features: bool = False,
+        previous_action_pair_filter: bool = False,
     ):
         super().__init__()
         global_idx = list(layout["global"])
@@ -111,9 +113,25 @@ class LegTokenTransformer(nn.Module):
         )
         self.num_legs = num_legs
         self.leg_dim = leg_dim
+        self.previous_action_pair_filter = previous_action_pair_filter
+        if previous_action_pair_filter and (
+            history_length < 2 or num_legs != 4 or self.frame_size != 32 or leg_dim != 5
+            or any(leg[4] != 26 + i for i, leg in enumerate(legs_idx))
+        ):
+            raise ValueError("Previous-action pair filtering requires the deformable 32D actor with history >=2")
+        self.use_leg_geometry_features = use_leg_geometry_features
+        if use_leg_geometry_features and (num_legs != 4 or self.frame_size not in (32, 40)):
+            raise ValueError("Leg geometry features require the deformable 32/40D four-leg frame")
+        self.register_buffer("gravity_xy_idx", torch.tensor([7, 8], dtype=torch.long), persistent=False)
+        self.register_buffer("corner_xy_unit", torch.tensor([[1., -1.], [1., 1.], [-1., 1.], [-1., -1.]])
+                             / math.sqrt(2.), persistent=False)
 
         self.global_embed = nn.Linear(len(global_idx), d_model)
-        self.leg_embed = nn.Linear(leg_dim, d_model)
+        self.leg_embed = nn.Linear(leg_dim + int(use_leg_geometry_features), d_model)
+        if use_leg_geometry_features:
+            # A fine-tune expands the old embedding without changing its
+            # initial output; learning can then use the new directional cue.
+            nn.init.zeros_(self.leg_embed.weight[:, leg_dim:])
         # token 身份编码：0=global，1..L=各腿
         self.token_pos = nn.Parameter(torch.zeros(1, 1 + num_legs, d_model))
         nn.init.normal_(self.token_pos, std=0.02)
@@ -134,6 +152,15 @@ class LegTokenTransformer(nn.Module):
         obs = obs.reshape(b * self.history_length, self.frame_size)
         g = self.global_embed(obs.index_select(-1, self.global_idx)).unsqueeze(1)
         legs = obs.index_select(-1, self.legs_idx).reshape(b * self.history_length, self.num_legs, self.leg_dim)
+        if self.previous_action_pair_filter:
+            sequence = legs.reshape(b, self.history_length, self.num_legs, self.leg_dim)
+            action = sequence[..., 4:5]
+            previous = torch.cat((action[:, :1], action[:, :-1]), dim=1)
+            legs = torch.cat((sequence[..., :4], 0.5 * (action + previous)), dim=-1)
+            legs = legs.reshape(b * self.history_length, self.num_legs, self.leg_dim)
+        if self.use_leg_geometry_features:
+            tilt = obs.index_select(-1, self.gravity_xy_idx) @ self.corner_xy_unit.T
+            legs = torch.cat((legs, tilt.unsqueeze(-1)), dim=-1)
         l = self.leg_embed(legs)  # (b,L,d)
         x = torch.cat([g, l], dim=1) + self.token_pos
         if self.history_length > 1:
@@ -172,6 +199,8 @@ class ActorCriticTransformer(ActorCritic):
         critic_layout: dict | None = None,
         history_length: int = 1,
         min_noise_std: float = 0.0,
+        use_leg_geometry_features: bool = False,
+        previous_action_pair_filter: bool = False,
         **kwargs,
     ):
         # RslRlPpoActorCriticCfg 基类自带字段，对 transformer 无意义
@@ -192,10 +221,11 @@ class ActorCriticTransformer(ActorCritic):
         actor_layout = actor_layout or DEFORMABLE_ACTOR_LAYOUT
         critic_layout = critic_layout or DEFORMABLE_CRITIC_LAYOUT
 
-        common = dict(d_model=d_model, nhead=nhead, num_layers=num_layers, dim_ff=dim_ff, head_hidden=head_hidden)
+        common = dict(d_model=d_model, nhead=nhead, num_layers=num_layers, dim_ff=dim_ff, head_hidden=head_hidden,
+                      use_leg_geometry_features=use_leg_geometry_features)
         self.actor = LegTokenTransformer(
             num_actor_obs, num_actions, actor_layout, head=actor_head, out_gain=0.01,
-            history_length=history_length, **common
+            history_length=history_length, previous_action_pair_filter=previous_action_pair_filter, **common
         )
         self.critic = LegTokenTransformer(num_critic_obs, 1, critic_layout, head="global", out_gain=1.0, **common)
 

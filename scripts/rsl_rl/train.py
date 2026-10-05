@@ -15,6 +15,8 @@
 """Launch Isaac Sim Simulator first."""
 
 import os
+from pathlib import Path
+import math
 import sys
 
 # ensure the repository root is importable regardless of how the script is invoked
@@ -55,6 +57,8 @@ parser.add_argument(
 )
 parser.add_argument("--finetune_noise_std", type=float, default=None,
                     help="Reset action noise after loading fine-tune weights; incompatible with optimizer resume.")
+parser.add_argument("--steep_teacher_checkpoint", type=str, default=None,
+                    help="Training-only compatible actor reference for 20 deg terrain; requires fresh fine-tuning.")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
@@ -63,6 +67,11 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.steep_teacher_checkpoint:
+    if not args_cli.checkpoint or args_cli.resume_training:
+        parser.error("--steep_teacher_checkpoint requires --checkpoint without optimizer resume")
+    if not Path(args_cli.steep_teacher_checkpoint).is_file():
+        parser.error("Steep teacher checkpoint must exist")
 if args_cli.finetune_noise_std is not None:
     import math
     if not args_cli.checkpoint or args_cli.resume_training:
@@ -207,6 +216,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     from scripts.utils.deformable_checkpoint import validate_deformable_checkpoint, snapshot_real2sim_model
     if args_cli.checkpoint:
         validate_deformable_checkpoint(env_cfg, args_cli.checkpoint)
+    if args_cli.steep_teacher_checkpoint:
+        validate_deformable_checkpoint(env_cfg, args_cli.steep_teacher_checkpoint)
+        if not getattr(agent_cfg.algorithm, "steep_preservation_weight", 0.):
+            raise ValueError("Steep teacher requires enabled policy preservation")
+        if any("training_steep_reference_mix" in groups for groups in agent_cfg.obs_groups.values()):
+            raise ValueError("Training ground grade selector must be excluded from actor and critic inputs")
+        env_cfg.training_steep_reference_mix = True
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -297,6 +313,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 from finetune_utils import reset_policy_noise
                 before = reset_policy_noise(runner.alg.policy, args_cli.finetune_noise_std)
                 print(f"[INFO]: Fine-tune action noise: {before:.6f} -> {args_cli.finetune_noise_std:.6f}")
+
+    if getattr(runner.alg, "steep_preservation_weight", 0.0):
+        if not args_cli.checkpoint or args_cli.resume_training:
+            raise ValueError("Steep policy preservation requires a fine-tune checkpoint without optimizer resume")
+        import hashlib
+        runner.alg.initialize_steep_reference()
+        if args_cli.steep_teacher_checkpoint:
+            teacher_state = torch.load(args_cli.steep_teacher_checkpoint, map_location=agent_cfg.device,
+                                       weights_only=False)["model_state_dict"]
+            actor_state = {name.removeprefix("actor."): value for name, value in teacher_state.items()
+                           if name.startswith("actor.")}
+            runner.alg.initialize_steep_grade_reference(actor_state)
+            agent_cfg.steep_grade_policy_reference = {
+                "checkpoint": os.path.abspath(args_cli.steep_teacher_checkpoint),
+                "sha256": hashlib.sha256(Path(args_cli.steep_teacher_checkpoint).read_bytes()).hexdigest(),
+                "scope": "Training-only actor mean reference; wheel ground grade selector excluded from policy and critic",
+                "grade_start_deg": env_cfg.steep_teacher_start_grade_deg,
+                "grade_full_deg": env_cfg.steep_teacher_full_grade_deg,
+            }
+        agent_cfg.steep_policy_reference = {
+            "checkpoint": os.path.abspath(args_cli.checkpoint),
+            "sha256": hashlib.sha256(Path(args_cli.checkpoint).read_bytes()).hexdigest(),
+            "scope": "Frozen initial actor on current actor-observable histories; training only",
+        }
+        print(f"[INFO]: Frozen steep reference actor from {agent_cfg.steep_policy_reference['checkpoint']}")
+
+    if getattr(runner.alg, "flat_posture_weight", 0.0):
+        if (env_cfg.action_contract_version != "minangle_physical_v3"
+                or abs(math.degrees(env_cfg.leg_min_physical_angle) - 17.0) > 1.e-6
+                or abs(math.degrees(env_cfg.leg_max_physical_angle) - 75.0) > 1.e-6
+                or abs(math.degrees(env_cfg.leg_physical_angle_zero - env_cfg.leg_target_upper_limit) - 16.0) > 1.e-6
+                or any(abs(math.degrees(env_cfg.leg_physical_angle_zero - q) - 17.0) > 1.e-6
+                       for q in (*env_cfg.q_cmd_choices, *env_cfg.q_cmd_range))):
+            raise ValueError("Flat posture preference requires the calibrated native V3 angle contract")
 
     _notify_env_training_progress(env, int(getattr(runner, "current_learning_iteration", 0)))
     _attach_checkpoint_metadata(env_cfg, agent_cfg, args_cli.checkpoint)

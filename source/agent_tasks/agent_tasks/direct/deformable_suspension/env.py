@@ -152,7 +152,8 @@ class DeformableSuspensionEnv(DirectRLEnv):
         size = gen.size
         num_periods = int(math.ceil(float(size[0]) / (4.0 * self._period_seg))) + 2
         self._slope_angle_table = du.build_periodic_slope_angle_table(
-            self._period_seg, tuple(sub.angle_range), int(sub.angle_seed), num_periods, self.device
+            self._period_seg, tuple(sub.angle_range), int(sub.angle_seed), num_periods, self.device,
+            getattr(sub, "angle_choices", None),
         )
         # 地形网格以世界原点为中心（[-size/2, size/2]）；剖面坐标 p = world_x + size/2。
         # 出生网格 scene.env_origins 本身即以原点为中心，故无需再偏移。
@@ -242,6 +243,10 @@ class DeformableSuspensionEnv(DirectRLEnv):
             )
         ):
             self.cmd_buf[env_ids, axis] = torch.rand(n, device=device) * (rng[1] - rng[0]) + rng[0]
+        standing_fraction = self.cfg.cmd_rel_standing_envs
+        if standing_fraction:
+            standing = torch.rand(n, device=device) < standing_fraction
+            self.cmd_buf[env_ids[standing]] = 0.0
         self.cmd_timer[env_ids] = torch.rand(n, device=device) * (
             self.cfg.cmd_resample_time_range[1] - self.cfg.cmd_resample_time_range[0]
         ) + self.cfg.cmd_resample_time_range[0]

@@ -79,6 +79,8 @@ class DeformableSuspensionTransformerPPORunnerCfg(DeformableSuspensionPPORunnerC
 class DeformableHistoryTransformerPolicyCfg(DeformableTransformerPolicyCfg):
     min_noise_std: float = 0.03
     history_length: int = 8
+    use_leg_geometry_features: bool = False
+    previous_action_pair_filter: bool = False
     actor_layout: dict = {
         "global": list(range(10)) + [30, 31],
         "legs": [[10 + i, 14 + i, 18 + i, 22 + i, 26 + i] for i in range(4)],
@@ -136,3 +138,142 @@ class DeformableReal2SimPPORunnerCfg(DeformableDynamicPPORunnerCfg):
 @configclass
 class DeformableReal2SimPrecisionPPORunnerCfg(DeformablePrecisionPPORunnerCfg):
     experiment_name = "deformable_real2sim_precision_current_v1"
+
+
+@configclass
+class DeformableFittedPPORunnerCfg(DeformableDynamicPPORunnerCfg):
+    experiment_name = "deformable_real2sim_fitted_v3"
+
+
+@configclass
+class DeformableFittedPrecisionPPORunnerCfg(DeformablePrecisionPPORunnerCfg):
+    experiment_name = "deformable_real2sim_fitted_precision_v3"
+
+
+@configclass
+class DeformableFittedAdaptivePPORunnerCfg(DeformableFittedPrecisionPPORunnerCfg):
+    experiment_name = "deformable_real2sim_adaptive_v3"
+    num_steps_per_env = 24
+    max_iterations = 4000
+    save_interval = 100
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.1, noise_std_type="log", use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.003
+
+
+@configclass
+class DeformableFittedBalancedPPORunnerCfg(DeformableFittedAdaptivePPORunnerCfg):
+    experiment_name = "deformable_real2sim_balanced_v3"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.06, noise_std_type="log", use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.001
+
+
+@configclass
+class DeformableFittedMobilityPPORunnerCfg(DeformableFittedBalancedPPORunnerCfg):
+    experiment_name = "deformable_real2sim_mobility_v3"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.05, noise_std_type="log", use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+
+@configclass
+class DeformableFittedSafeMobilityPPORunnerCfg(DeformableFittedMobilityPPORunnerCfg):
+    experiment_name = "deformable_real2sim_safe_mobility_v3"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.04, noise_std_type="log", use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+
+@configclass
+class DeformableFittedNativePrecisionPPORunnerCfg(DeformableFittedSafeMobilityPPORunnerCfg):
+    experiment_name = "deformable_real2sim_native_precision_v3"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.01, min_noise_std=0.005, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.0002
+        self.algorithm.schedule = "adaptive"
+
+
+@configclass
+class DeformableFittedSteepExposurePPORunnerCfg(DeformableFittedSafeMobilityPPORunnerCfg):
+    experiment_name = "deformable_real2sim_steep_exposure_v3"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.03, min_noise_std=0.01, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.0005
+
+
+@configclass
+class DeformableFittedTractionReservePPORunnerCfg(DeformableFittedSteepExposurePPORunnerCfg):
+    experiment_name = "deformable_real2sim_traction_reserve_v3"
+
+
+@configclass
+class DeformableFittedLowProfilePPORunnerCfg(DeformableFittedTractionReservePPORunnerCfg):
+    experiment_name = "deformable_real2sim_low_profile_v3"
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.015, min_noise_std=0.005, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.0003
+
+
+@configclass
+class DeformableFittedTerrainLowProfilePPORunnerCfg(DeformableFittedLowProfilePPORunnerCfg):
+    experiment_name = "deformable_real2sim_terrain_low_profile_v3"
+
+
+@configclass
+class DeformableFittedAnchoredLowProfilePPORunnerCfg(DeformableFittedTerrainLowProfilePPORunnerCfg):
+    experiment_name = "deformable_real2sim_anchored_low_profile_v3"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.steep_preservation_weight = 1.0
+        self.algorithm.steep_reference_start_deg = 3.0
+        self.algorithm.steep_reference_full_deg = 8.0
+        self.algorithm.steep_reference_action_scale = 0.03
+
+
+@configclass
+class DeformableFittedNativeLowProfilePPORunnerCfg(DeformableFittedAnchoredLowProfilePPORunnerCfg):
+    experiment_name = "deformable_real2sim_native_low_profile_v3"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.flat_posture_weight = 1.0
+        self.algorithm.flat_posture_target_deg = 19.0
+        self.algorithm.flat_posture_tilt_deg = 3.0
+        self.algorithm.flat_posture_max_spread_deg = 0.0
+        self.algorithm.reference_all_postures = False
+
+
+@configclass
+class DeformableFittedMixedCornerPPORunnerCfg(DeformableFittedNativeLowProfilePPORunnerCfg):
+    experiment_name = "deformable_real2sim_mixed_corner_v3"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.flat_posture_anchor = "lowest"
+        self.algorithm.steep_reference_start_deg = 8.0
+        self.algorithm.steep_reference_full_deg = 12.0

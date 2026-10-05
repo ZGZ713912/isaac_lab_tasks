@@ -1,6 +1,7 @@
 """Batched RMCS DeformableJointController: physical-angle TD + ESO + NLESF.
 
-URDF q is zero at the high posture: alpha = alpha_max - q (radians).
+Physical angle is alpha = calibrated_zero - q (radians). Legacy tasks retain
+their historical offset; V3 uses the CAD rod direction as calibrated_zero.
 Motor torque is positive along URDF q, hence negative physical-alpha acceleration.
 """
 
@@ -16,6 +17,9 @@ class LegADRC:
             raise ValueError("ADRC requires positive dt/delta and nonzero b0")
         self.current_mode = getattr(cfg, "adrc_output_domain", "torque") == "current_raw"
         self.current_scale = float(getattr(cfg, "adrc_controller_output_to_current_raw", 1.0))
+        self.angle_zero = float(getattr(cfg, "leg_physical_angle_zero", cfg.leg_max_physical_angle))
+        if not math.isfinite(self.angle_zero):
+            raise ValueError("ADRC physical-angle zero must be finite")
         if self.current_mode and (not math.isfinite(self.current_scale) or self.current_scale <= 0):
             raise ValueError("ADRC controller-to-current scale must be finite and positive")
         self.x1 = torch.zeros(shape, device=device, dtype=dtype)
@@ -27,16 +31,16 @@ class LegADRC:
         self.applied_u = torch.zeros_like(self.x1)
 
     def reset(self, env_ids, q, q_target):
-        self.x1[env_ids] = self.cfg.leg_max_physical_angle - q_target
-        self.z1[env_ids] = self.cfg.leg_max_physical_angle - q
+        self.x1[env_ids] = self.angle_zero - q_target
+        self.z1[env_ids] = self.angle_zero - q
         for state in (self.x2, self.z2, self.z3, self.last_u, self.applied_u):
             state[env_ids] = 0.0
 
-    def update(self, q, q_target, *, applied_current_raw=None):
+    def update(self, q, q_target, *, applied_current_raw=None, target_physical_velocity=None):
         c = self.cfg
         h = c.adrc_dt
-        measurement = c.leg_max_physical_angle - q
-        target = c.leg_max_physical_angle - q_target
+        measurement = self.angle_zero - q
+        target = self.angle_zero - q_target
         error = self.z1 - measurement
         self.z1 += h * (self.z2 - 3.0 * c.adrc_eso_w0 * error)
         if self.current_mode:
@@ -59,11 +63,23 @@ class LegADRC:
         a = torch.where(y.abs() > d, a0 + y.sign() * (a1 - d) * 0.5, a0 + y)
         fh = torch.where(a.abs() <= d, -c.adrc_td_r * a / d, -c.adrc_td_r * a.sign())
         fh = fh.clamp(-c.adrc_td_max_acc, c.adrc_td_max_acc)
-        self.x1 += c.adrc_td_h * self.x2
-        self.x2 += c.adrc_td_h * fh
-        self.x2.clamp_(-c.adrc_td_max_vel, c.adrc_td_max_vel)
+        if target_physical_velocity is None:
+            self.x1 += c.adrc_td_h * self.x2
+            self.x2 += c.adrc_td_h * fh
+            self.x2.clamp_(-c.adrc_td_max_vel, c.adrc_td_max_vel)
+            reference_angle, reference_velocity = self.x1, self.x2
+        else:
+            # Identification sweeps supply a finite physical-angle velocity;
+            # RMCS bypasses TD and leaves its hidden state unchanged per joint.
+            supplied = torch.as_tensor(target_physical_velocity,device=q.device,dtype=q.dtype)
+            finite = torch.isfinite(supplied)
+            self.x1 += torch.where(finite,0.,c.adrc_td_h*self.x2)
+            next_x2 = (self.x2+c.adrc_td_h*fh).clamp(-c.adrc_td_max_vel,c.adrc_td_max_vel)
+            self.x2.copy_(torch.where(finite,self.x2,next_x2))
+            reference_angle = torch.where(finite,target,self.x1)
+            reference_velocity = torch.where(finite,supplied,self.x2)
 
-        e1, e2 = self.x1 - self.z1, self.x2 - self.z2
+        e1, e2 = reference_angle - self.z1, reference_velocity - self.z2
         fal1 = torch.where(e1.abs() <= c.adrc_delta, e1 / c.adrc_delta**(1.0 - c.adrc_alpha1),
                            e1.abs().pow(c.adrc_alpha1) * e1.sign())
         fal2 = torch.where(e2.abs() <= c.adrc_delta, e2 / c.adrc_delta**(1.0 - c.adrc_alpha2),

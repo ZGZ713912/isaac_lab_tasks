@@ -89,9 +89,12 @@ class DeformableKeyboard:
             unwrapped.q_cmd[:] = self.q_cmd
 
     def status(self) -> str:
+        zero = math.radians(75.)
+        if self._env is not None:
+            zero = getattr(self._env.unwrapped.cfg,"leg_physical_angle_zero",zero)
         return (
             f"vx={self._vx:+.2f} vy={self._vy:+.2f} wz={self._wz:+.2f} "
-            f"q_cmd={self.q_cmd:.4f} (physical_angle={75.0 - math.degrees(self.q_cmd):.2f}°)"
+            f"q_cmd={self.q_cmd:.4f} (physical_angle={math.degrees(zero-self.q_cmd):.2f}°)"
         )
 
     # ------------------------------------------------------------------

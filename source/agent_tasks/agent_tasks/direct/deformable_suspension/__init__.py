@@ -169,6 +169,32 @@ for _task_id, _env_cfg, _runner_cfg in (
         },
     )
 
+for _suffix, _cfg, _runner in (
+    ("Flat", "DeformableFittedFlatEnvCfg", "DeformableFittedPPORunnerCfg"),
+    ("Rough", "DeformableFittedRoughEnvCfg", "DeformableFittedPPORunnerCfg"),
+    ("BestEffort-Precision", "DeformableFittedPrecisionEnvCfg", "DeformableFittedPrecisionPPORunnerCfg"),
+    ("BestEffort-Adaptive", "DeformableFittedAdaptiveEnvCfg", "DeformableFittedAdaptivePPORunnerCfg"),
+    ("BestEffort-Balanced", "DeformableFittedBalancedEnvCfg", "DeformableFittedBalancedPPORunnerCfg"),
+    ("BestEffort-Mobility", "DeformableFittedMobilityEnvCfg", "DeformableFittedMobilityPPORunnerCfg"),
+    ("BestEffort-SafeMobility", "DeformableFittedSafeMobilityEnvCfg", "DeformableFittedSafeMobilityPPORunnerCfg"),
+    ("BestEffort-NativePrecision", "DeformableFittedNativePrecisionEnvCfg", "DeformableFittedNativePrecisionPPORunnerCfg"),
+    ("BestEffort-SteepExposure", "DeformableFittedSteepExposureEnvCfg", "DeformableFittedSteepExposurePPORunnerCfg"),
+    ("BestEffort-TractionReserve", "DeformableFittedTractionReserveEnvCfg", "DeformableFittedTractionReservePPORunnerCfg"),
+    ("BestEffort-LowProfile", "DeformableFittedLowProfileEnvCfg", "DeformableFittedLowProfilePPORunnerCfg"),
+    ("BestEffort-TerrainLowProfile", "DeformableFittedTerrainLowProfileEnvCfg", "DeformableFittedTerrainLowProfilePPORunnerCfg"),
+    ("BestEffort-AnchoredLowProfile", "DeformableFittedTerrainLowProfileEnvCfg", "DeformableFittedAnchoredLowProfilePPORunnerCfg"),
+    ("BestEffort-NativeLowProfile", "DeformableFittedTerrainLowProfileEnvCfg", "DeformableFittedNativeLowProfilePPORunnerCfg"),
+    ("BestEffort-MixedCorner", "DeformableFittedMixedCornerEnvCfg", "DeformableFittedMixedCornerPPORunnerCfg"),
+    ("Rough-Keyboard-Play", "DeformableFittedKeyboardPlayEnvCfg", "DeformableFittedPPORunnerCfg"),
+):
+    gym.register(
+        id=f"Robotics-Deformable-Suspension-{_suffix}-Real2Sim-v3",
+        entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
+        disable_env_checker=True,
+        kwargs={"env_cfg_entry_point": f"{__name__}.dynamic_cfg:{_cfg}",
+                "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:{_runner}"},
+    )
+
 for _stage, _cfg in (
     ("Foundation", "DeformableBestEffortEnvCfg"),
     ("TenDegree", "DeformableBestEffortTenDegreeEnvCfg"),

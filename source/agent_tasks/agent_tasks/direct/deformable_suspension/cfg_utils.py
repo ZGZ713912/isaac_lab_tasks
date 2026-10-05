@@ -54,10 +54,11 @@ Q_HIGH = 0.0
 Q_LOW = 1.0563
 PHYSICAL_MIN_ANGLE = math.radians(17.0)
 PHYSICAL_MAX_ANGLE = math.radians(75.0)
+URDF_ZERO_PHYSICAL_ANGLE = math.atan2(0.13694, 0.029108)
 
 
 def physical_angle_to_urdf_q(angle, max_angle=PHYSICAL_MAX_ANGLE):
-    """Direct CAD joint radians, not the deployment's normalized RL coordinate."""
+    """Legacy 75-degree offset by default; pass the CAD zero for physical V3."""
     return max_angle - angle
 
 
@@ -78,23 +79,70 @@ def deployment_q_to_physical_angle(q, min_angle=PHYSICAL_MIN_ANGLE,
 Q_MINANGLE = physical_angle_to_urdf_q(PHYSICAL_MIN_ANGLE)
 
 
-def suspension_target(action, baseline, upper_limit):
+def suspension_target(action, baseline, upper_limit, lower_limit=LEG_LOWER_LIMIT):
     """Zero holds minangle; each signed half covers its entire available stroke."""
     action = action.clamp(-1.0, 1.0)
-    span = torch.where(action < 0, baseline - LEG_LOWER_LIMIT, upper_limit - baseline)
+    span = torch.where(action < 0, baseline - lower_limit, upper_limit - baseline)
     return baseline + action * span
 
 
-def suspension_action(target, baseline, upper_limit):
+def suspension_action(target, baseline, upper_limit, lower_limit=LEG_LOWER_LIMIT):
     delta = target - baseline
-    span = torch.where(delta < 0, baseline - LEG_LOWER_LIMIT, upper_limit - baseline)
+    span = torch.where(delta < 0, baseline - lower_limit, upper_limit - baseline)
     return (delta / span.clamp_min(1.e-8)).clamp(-1.0, 1.0)
 
 
-def suspension_tilt_cost(gravity, contact_ratio):
-    """A non-saturating tilt cost; contact loss must not buy better attitude."""
+def suspension_tilt_cost(gravity, contact_ratio, gate_by_contact=True):
+    """Non-saturating tilt cost with an optional legacy contact gate.
+
+    Ungated attitude cost cannot be reduced by unloading a wheel; contact is
+    then rewarded separately. Preserve the legacy gate for existing tasks.
+    """
     tilt = torch.atan2(gravity[..., :2].norm(dim=-1), -gravity[..., 2])
-    return tilt * contact_ratio.clamp(0.0, 1.0)
+    return tilt * contact_ratio.clamp(0.0, 1.0) if gate_by_contact else tilt
+
+
+def suspension_baseline_extension(q, baseline):
+    """Raise penalty anchored to the lowest chassis corner, allowing leveling.
+
+    Unlike an exponential bonus, this remains informative when every corner
+    has moved far above the low-body baseline. Unequal leg angles are free when
+    at least one corner retains the baseline.
+    """
+    return (baseline - q.amax(-1)).clamp_min(0.0)
+
+
+def suspension_flat_grade_gate(ground_normal, fade_grade_deg=5.0):
+    """Fade an extra low-body cost to zero before sustained steep terrain."""
+    if fade_grade_deg <= 0:
+        raise ValueError("Fade grade must be positive")
+    grade = torch.atan2(ground_normal[..., :2].norm(dim=-1), ground_normal[..., 2])
+    return (1.0 - grade / math.radians(fade_grade_deg)).clamp(0.0, 1.0)
+
+
+def suspension_steep_reference_mix(wheel_ground_normals, start_grade_deg=17.0, full_grade_deg=20.0):
+    """Training-only expert weight from the steepest wheel footprint grade."""
+    if not 0 <= start_grade_deg < full_grade_deg < 90:
+        raise ValueError("Invalid steep expert ground grade interval")
+    grade = torch.atan2(wheel_ground_normals[..., :2].norm(dim=-1),
+                        wheel_ground_normals[..., 2]).amax(-1) * (180.0 / math.pi)
+    return ((grade - start_grade_deg) / (full_grade_deg - start_grade_deg)).clamp(0.0, 1.0)
+
+
+def suspension_drive_tracking_cost(velocity_xy, yaw_velocity, command):
+    """Measured motion error in the same frame as the filtered drive command."""
+    linear = (velocity_xy - command[..., :2]).square().sum(-1)
+    yaw = (yaw_velocity - command[..., 2]).square()
+    return linear, yaw
+
+
+def suspension_clearance_cost(clearance, margin_m):
+    """Grow a soft cost before contact without changing physical termination."""
+    if margin_m <= 0:
+        raise ValueError("Clearance margin must be positive")
+    return ((margin_m - clearance).clamp_min(0.0) / margin_m).square()
+
+
 H_HIGH = 0.13189
 H_LOW = 0.03700
 
@@ -274,10 +322,11 @@ def build_periodic_slope_angle_table(
     seed: int,
     num_periods: int,
     device: torch.device | str = "cpu",
+    angle_choices: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
     """预生成坡角表（每周期一个角，度），供 torch 求高用。"""
     return torch.tensor(
-        [periodic_slope_angle(k, angle_range, seed) for k in range(int(num_periods))],
+        [periodic_slope_angle(k, angle_range, seed, angle_choices) for k in range(int(num_periods))],
         dtype=torch.float32,
         device=device,
     )

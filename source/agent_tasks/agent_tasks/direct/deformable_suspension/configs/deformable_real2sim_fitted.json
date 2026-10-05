@@ -1,0 +1,1267 @@
+{
+  "schema_version": 2,
+  "status": "conditional_fit_with_out_of_fit_diagnostics",
+  "absolute_shaft_torque_calibrated": false,
+  "simulation_effort_mapping": {
+    "effort_unit": "N*m at the URDF actuated leg joint",
+    "nominal_torque_per_current_raw_nm": 0.021663417980643397,
+    "effort_limit_nm": 300.0,
+    "motor_command_limit_current_raw": 2048.0,
+    "passive_stop_shares_motor_limit": false
+  },
+  "fitted_mechanism": {
+    "model_version": "assembly_current_v3_candidate",
+    "absolute_shaft_torque_calibrated": false,
+    "scope": "simulation_equivalent_conditional_on_CAD_mass_and_common_ground_contact_assumptions",
+    "diagnostic_is_blind_acceptance": false,
+    "joint_order": [
+      "right_front",
+      "left_front",
+      "left_back",
+      "right_back"
+    ],
+    "urdf_sha256": "1c17f2275830f88de6ef7770f0d6a72b1fa97fd963ae66172abedd248bcd7f3d",
+    "source_files": [
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+        "sha256": "b7ea640b7ab57c9736c863d4f332662520312f881b1ff2ac9459eb6288ae27f0",
+        "completed": true
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+        "sha256": "5f32c77f6981c20f57fe8dc7f2ca674d5cbde401e39a5b2c119cd34260034a4b",
+        "completed": true
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+        "sha256": "a5bfe6c34d14121519de1c24d29e8a81a104b30d016d8888d62066a8cb061705",
+        "completed": true
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-01-48_run1.csv",
+        "sha256": "f5dcd7cb70272ec037c381c7f6ed8048a1e9640acac20183fc1c846f49c5df3c",
+        "completed": false
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+        "sha256": "e3de4665e442f93dbd9c8424eab90dd66dd842ade70b0a943b87df330f897442",
+        "completed": true
+      }
+    ],
+    "urdf_zero_physical_angle_deg": 77.99979806364479,
+    "cad_inertia_kg_m2": [
+      0.04040728151428125,
+      0.04040729189726922,
+      0.04040729189726924,
+      0.040407291897269215
+    ],
+    "cad_total_mass_kg": 26.33653122562697,
+    "linear_parameters": [
+      0.021663417980643397,
+      0.03360011671482829,
+      0.10402353159108772,
+      0.5850546026511572,
+      -0.10624840853121202,
+      -0.20476711658696414,
+      0.023370930223156876,
+      0.02902006003630885,
+      0.10592301583897612,
+      0.5870907964199741,
+      -0.014455051581840609,
+      -0.24363139617340768,
+      -0.07790852057808076,
+      0.03127508874111449,
+      0.112618481786432,
+      0.5789545039391628,
+      0.04675704094267108,
+      -0.26414727503530827,
+      0.4148885147258987,
+      0.031031285743197367,
+      0.18883666595780743,
+      0.644126527236853,
+      -0.14141202916015838,
+      -0.02857617675554839,
+      0.01310481844855732
+    ],
+    "training_files": [
+      "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+      "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv"
+    ],
+    "grounded_fit_interval": "stage3_first60seconds",
+    "out_of_fit_diagnostic_files": [
+      "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv"
+    ],
+    "models": {
+      "right_front": {
+        "parameters": [
+          0.021663417980643397,
+          0.03360011671482829,
+          0.10402353159108772,
+          0.5850546026511572,
+          -0.10624840853121202
+        ],
+        "torque_per_count": 0.021663417980643397,
+        "extra_inertia": 0.03360011671482829,
+        "viscous_friction": 0.10402353159108772,
+        "coulomb_friction": 0.5850546026511572,
+        "constant_effort_bias": -0.10624840853121202,
+        "assembly_residual_cos_nm": -0.20476711658696414,
+        "assembly_residual_sin_nm": 0.023370930223156876,
+        "upper_stop_physical_angle_deg": 74.24535540495086,
+        "stop_stiffness_nm_rad": 1303.6288682512825,
+        "stop_compression_damping_nm_s_rad": 4.90651888448927
+      },
+      "left_front": {
+        "parameters": [
+          0.021663417980643397,
+          0.02902006003630885,
+          0.10592301583897612,
+          0.5870907964199741,
+          -0.014455051581840609
+        ],
+        "torque_per_count": 0.021663417980643397,
+        "extra_inertia": 0.02902006003630885,
+        "viscous_friction": 0.10592301583897612,
+        "coulomb_friction": 0.5870907964199741,
+        "constant_effort_bias": -0.014455051581840609,
+        "assembly_residual_cos_nm": -0.24363139617340768,
+        "assembly_residual_sin_nm": -0.07790852057808076,
+        "upper_stop_physical_angle_deg": 75.13569126278067,
+        "stop_stiffness_nm_rad": 1310.0051470511046,
+        "stop_compression_damping_nm_s_rad": 3.3286293563008638
+      },
+      "left_back": {
+        "parameters": [
+          0.021663417980643397,
+          0.03127508874111449,
+          0.112618481786432,
+          0.5789545039391628,
+          0.04675704094267108
+        ],
+        "torque_per_count": 0.021663417980643397,
+        "extra_inertia": 0.03127508874111449,
+        "viscous_friction": 0.112618481786432,
+        "coulomb_friction": 0.5789545039391628,
+        "constant_effort_bias": 0.04675704094267108,
+        "assembly_residual_cos_nm": -0.26414727503530827,
+        "assembly_residual_sin_nm": 0.4148885147258987,
+        "upper_stop_physical_angle_deg": 74.63621710990667,
+        "stop_stiffness_nm_rad": 508.2253032035626,
+        "stop_compression_damping_nm_s_rad": 8.395214355794234
+      },
+      "right_back": {
+        "parameters": [
+          0.021663417980643397,
+          0.031031285743197367,
+          0.18883666595780743,
+          0.644126527236853,
+          -0.14141202916015838
+        ],
+        "torque_per_count": 0.021663417980643397,
+        "extra_inertia": 0.031031285743197367,
+        "viscous_friction": 0.18883666595780743,
+        "coulomb_friction": 0.644126527236853,
+        "constant_effort_bias": -0.14141202916015838,
+        "assembly_residual_cos_nm": -0.02857617675554839,
+        "assembly_residual_sin_nm": 0.01310481844855732,
+        "upper_stop_physical_angle_deg": 75.47943686865867,
+        "stop_stiffness_nm_rad": 834.2859879146149,
+        "stop_compression_damping_nm_s_rad": 3.0316339012939744
+      }
+    },
+    "measured_current_rollout_diagnostic": {
+      "3": {
+        "right_front": {
+          "horizon_s": 0.5,
+          "windows": 239,
+          "angle_rmse_deg": 1.9661535938326389,
+          "angle_abs_p95_deg": 4.097876845035942,
+          "final_angle_rmse_deg": 3.47395240915299,
+          "velocity_rmse_rad_s": 0.15196873079364412
+        },
+        "left_front": {
+          "horizon_s": 0.5,
+          "windows": 239,
+          "angle_rmse_deg": 2.134425646188851,
+          "angle_abs_p95_deg": 4.61307373284776,
+          "final_angle_rmse_deg": 3.791994857667931,
+          "velocity_rmse_rad_s": 0.14985923487199226
+        },
+        "left_back": {
+          "horizon_s": 0.5,
+          "windows": 239,
+          "angle_rmse_deg": 2.2833874409739887,
+          "angle_abs_p95_deg": 5.207101707440377,
+          "final_angle_rmse_deg": 4.058158453390215,
+          "velocity_rmse_rad_s": 0.15980535678430338
+        },
+        "right_back": {
+          "horizon_s": 0.5,
+          "windows": 239,
+          "angle_rmse_deg": 1.95280277706612,
+          "angle_abs_p95_deg": 4.207286362615246,
+          "final_angle_rmse_deg": 3.339082499577708,
+          "velocity_rmse_rad_s": 0.1344811059200481
+        }
+      },
+      "7": {
+        "right_front": {
+          "horizon_s": 0.5,
+          "windows": 119,
+          "angle_rmse_deg": 2.1240683385424663,
+          "angle_abs_p95_deg": 4.518635863724569,
+          "final_angle_rmse_deg": 3.6379071905039972,
+          "velocity_rmse_rad_s": 0.1662571070781101
+        },
+        "left_front": {
+          "horizon_s": 0.5,
+          "windows": 119,
+          "angle_rmse_deg": 2.8962798050385414,
+          "angle_abs_p95_deg": 5.896759773782005,
+          "final_angle_rmse_deg": 5.225262167066347,
+          "velocity_rmse_rad_s": 0.2052171354650561
+        },
+        "left_back": {
+          "horizon_s": 0.5,
+          "windows": 119,
+          "angle_rmse_deg": 2.421602521266634,
+          "angle_abs_p95_deg": 5.110899142242396,
+          "final_angle_rmse_deg": 4.234690893354578,
+          "velocity_rmse_rad_s": 0.17241617021668815
+        },
+        "right_back": {
+          "horizon_s": 0.5,
+          "windows": 119,
+          "angle_rmse_deg": 2.2022404672376616,
+          "angle_abs_p95_deg": 4.4383996105081005,
+          "final_angle_rmse_deg": 3.6995524100389625,
+          "velocity_rmse_rad_s": 0.14822787720447683
+        }
+      },
+      "8": {
+        "right_front": {
+          "horizon_s": 0.5,
+          "windows": 19,
+          "angle_rmse_deg": 3.410108493560372,
+          "angle_abs_p95_deg": 7.949754572768353,
+          "final_angle_rmse_deg": 1.8635894495070566,
+          "velocity_rmse_rad_s": 2.212378191863523
+        },
+        "left_front": {
+          "horizon_s": 0.5,
+          "windows": 19,
+          "angle_rmse_deg": 6.1622139512134195,
+          "angle_abs_p95_deg": 12.773632445594348,
+          "final_angle_rmse_deg": 7.797585598228764,
+          "velocity_rmse_rad_s": 3.0121383996783937
+        },
+        "left_back": {
+          "horizon_s": 0.5,
+          "windows": 19,
+          "angle_rmse_deg": 5.365751428632147,
+          "angle_abs_p95_deg": 11.075553114632571,
+          "final_angle_rmse_deg": 8.876074677184755,
+          "velocity_rmse_rad_s": 1.6057182670801429
+        },
+        "right_back": {
+          "horizon_s": 0.5,
+          "windows": 19,
+          "angle_rmse_deg": 4.956745964649341,
+          "angle_abs_p95_deg": 11.367393820130427,
+          "final_angle_rmse_deg": 3.7644146632531728,
+          "velocity_rmse_rad_s": 2.596548004843188
+        }
+      },
+      "10": {
+        "right_front": {
+          "horizon_s": 0.5,
+          "windows": 59,
+          "angle_rmse_deg": 4.573377438144738,
+          "angle_abs_p95_deg": 10.832824494443043,
+          "final_angle_rmse_deg": 7.2230714016402935,
+          "velocity_rmse_rad_s": 0.5383614798804629
+        },
+        "left_front": {
+          "horizon_s": 0.5,
+          "windows": 59,
+          "angle_rmse_deg": 3.6960825549012477,
+          "angle_abs_p95_deg": 8.44803903571254,
+          "final_angle_rmse_deg": 5.195841028004357,
+          "velocity_rmse_rad_s": 0.39498810631489223
+        },
+        "left_back": {
+          "horizon_s": 0.5,
+          "windows": 59,
+          "angle_rmse_deg": 2.2516205315545084,
+          "angle_abs_p95_deg": 6.149121783555706,
+          "final_angle_rmse_deg": 2.500855741303306,
+          "velocity_rmse_rad_s": 0.24061785967160146
+        },
+        "right_back": {
+          "horizon_s": 0.5,
+          "windows": 59,
+          "angle_rmse_deg": 2.648109954738885,
+          "angle_abs_p95_deg": 7.739539441098667,
+          "final_angle_rmse_deg": 3.200943726684149,
+          "velocity_rmse_rad_s": 0.4234901522736258
+        }
+      }
+    },
+    "grounded_out_of_fit_checks": {
+      "3": {
+        "rows": 8784,
+        "assumption": "common_q_virtual_work_quasistatic",
+        "sum_effort_rmse_nm": 2.068634129641303,
+        "sum_effort_abs_p95_nm": 3.966030545009446,
+        "reference_effort_rms_nm": 17.658399593341695,
+        "residual_mean_nm": 1.4254490457313334
+      },
+      "7": {
+        "rows": 8739,
+        "assumption": "common_q_virtual_work_quasistatic",
+        "sum_effort_rmse_nm": 2.029485888104212,
+        "sum_effort_abs_p95_nm": 3.94844962250286,
+        "reference_effort_rms_nm": 17.561790624510675,
+        "residual_mean_nm": 1.256165188285559
+      }
+    }
+  },
+  "validation": {
+    "blind_acceptance": false,
+    "isaac_replay": {
+      "fit": "/home/noir/Documents/workspace/example/wheeled-legged_RL/outputs/deformable_real2sim_20261005/dynamics_fit_v3.json",
+      "fit_sha256": "d0da6ac0be12621a1302965d792dcff7bdb49aff99ca503fe3ef6ea7b1fee47c",
+      "recording": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+      "csv_sha256": "e3de4665e442f93dbd9c8424eab90dd66dd842ade70b0a943b87df330f897442",
+      "horizon_s": 0.5,
+      "future_state_feedback": false,
+      "fixed_base": true,
+      "windows": 436,
+      "all_finite": true,
+      "metrics": {
+        "3": {
+          "right_front": {
+            "angle_rmse_deg": 1.9470052386943681,
+            "angle_abs_p95_deg": 4.108163237279445,
+            "windows": 239
+          },
+          "left_front": {
+            "angle_rmse_deg": 2.0915566063594593,
+            "angle_abs_p95_deg": 4.628043135776583,
+            "windows": 239
+          },
+          "left_back": {
+            "angle_rmse_deg": 2.249574085416395,
+            "angle_abs_p95_deg": 5.2213824652327325,
+            "windows": 239
+          },
+          "right_back": {
+            "angle_rmse_deg": 1.9119604141622708,
+            "angle_abs_p95_deg": 4.232169047985364,
+            "windows": 239
+          }
+        },
+        "7": {
+          "right_front": {
+            "angle_rmse_deg": 2.0890247032176505,
+            "angle_abs_p95_deg": 4.419404007774894,
+            "windows": 119
+          },
+          "left_front": {
+            "angle_rmse_deg": 2.825148586950497,
+            "angle_abs_p95_deg": 5.726537756120836,
+            "windows": 119
+          },
+          "left_back": {
+            "angle_rmse_deg": 2.367463473314337,
+            "angle_abs_p95_deg": 5.003490123536916,
+            "windows": 119
+          },
+          "right_back": {
+            "angle_rmse_deg": 2.1523724227668213,
+            "angle_abs_p95_deg": 4.3627318168950415,
+            "windows": 119
+          }
+        },
+        "8": {
+          "right_front": {
+            "angle_rmse_deg": 3.4521808403063656,
+            "angle_abs_p95_deg": 8.254277951158079,
+            "windows": 19
+          },
+          "left_front": {
+            "angle_rmse_deg": 6.035736011618206,
+            "angle_abs_p95_deg": 13.107931672537243,
+            "windows": 19
+          },
+          "left_back": {
+            "angle_rmse_deg": 5.611047062293402,
+            "angle_abs_p95_deg": 11.579868110245252,
+            "windows": 19
+          },
+          "right_back": {
+            "angle_rmse_deg": 4.975725601614118,
+            "angle_abs_p95_deg": 11.648700695571222,
+            "windows": 19
+          }
+        },
+        "10": {
+          "right_front": {
+            "angle_rmse_deg": 4.581157652513644,
+            "angle_abs_p95_deg": 10.872924096544631,
+            "windows": 59
+          },
+          "left_front": {
+            "angle_rmse_deg": 3.70593302806686,
+            "angle_abs_p95_deg": 8.619565295638754,
+            "windows": 59
+          },
+          "left_back": {
+            "angle_rmse_deg": 2.278133867562485,
+            "angle_abs_p95_deg": 6.19630551746644,
+            "windows": 59
+          },
+          "right_back": {
+            "angle_rmse_deg": 2.5892359283651776,
+            "angle_abs_p95_deg": 7.364867835171565,
+            "windows": 59
+          }
+        }
+      },
+      "traces": "/home/noir/Documents/workspace/example/wheeled-legged_RL/outputs/deformable_real2sim_20261005/isaac_fitted_replay_v3_full.npz",
+      "root_orientation": "initial measured IMU per window, held fixed"
+    },
+    "fit_sha256": "d0da6ac0be12621a1302965d792dcff7bdb49aff99ca503fe3ef6ea7b1fee47c",
+    "replay_sha256": "f2ca82876a16effa272d169765bc56591f50430f4b27f0d20bfb0f7c97791702",
+    "limitations": [
+      "CAD mass fixes effective torque scale; no shaft torque sensor",
+      "1Hz/contact stress has larger error than slow/fast sweeps",
+      "grounded checks use common-motion virtual work, not measured wheel loads",
+      "wear and backlash are not separately identifiable",
+      "not a trained or vehicle-validated policy",
+      "upper-stop current relaxation remains mismatched, especially RF"
+    ],
+    "closed_loop": {
+      "input": "target physical angle and finite target velocity only",
+      "measured_state_feedback": false,
+      "initial_state": "measured joint q/qd once; ESO reset; first5s excluded",
+      "csv_sha256": "e3de4665e442f93dbd9c8424eab90dd66dd842ade70b0a943b87df330f897442",
+      "joint_order": [
+        "right_front",
+        "left_front",
+        "left_back",
+        "right_back"
+      ],
+      "model_sha256": "843bd70ea635dc0b16706bc324d931e69ebac3153a3a58f9ef3c4c9b82064d4b",
+      "command_period_steps": 2,
+      "feedback_period_steps": 2,
+      "feedback_delivery_phase_steps": 1,
+      "duration_s": 29.995,
+      "all_finite": true,
+      "metrics": [
+        {
+          "tau_s": 0.0,
+          "angle_rmse_deg": [
+            1.8756491685064445,
+            0.3472186856133784,
+            0.5142133156939243,
+            0.34926435553815594
+          ],
+          "angle_abs_p95_deg": [
+            4.459485573654499,
+            0.7098152034553838,
+            1.2525320066711196,
+            0.8267358158842875
+          ],
+          "current_rmse_counts": [
+            296.7922845797802,
+            110.381188507272,
+            94.53377699351137,
+            69.44245238097552
+          ]
+        },
+        {
+          "tau_s": 0.002,
+          "angle_rmse_deg": [
+            1.8706853295026116,
+            0.3441766839759294,
+            0.5086271692832182,
+            0.34922840024129814
+          ],
+          "angle_abs_p95_deg": [
+            4.46972448716927,
+            0.706715880499621,
+            1.2267142068553027,
+            0.8291807567273203
+          ],
+          "current_rmse_counts": [
+            297.4910179078022,
+            111.18498298415126,
+            94.45079190832426,
+            68.82738964523077
+          ]
+        },
+        {
+          "tau_s": 0.0046,
+          "angle_rmse_deg": [
+            1.8626854573090743,
+            0.3426746281071264,
+            0.5027933884600239,
+            0.34665220202722363
+          ],
+          "angle_abs_p95_deg": [
+            4.492653525935136,
+            0.7034056257228005,
+            1.222019842389406,
+            0.8219141184693437
+          ],
+          "current_rmse_counts": [
+            298.2564682986003,
+            112.33082900565333,
+            94.42160808572325,
+            70.17301109753697
+          ]
+        },
+        {
+          "tau_s": 0.008,
+          "angle_rmse_deg": [
+            1.8502279187176154,
+            0.3320597760749994,
+            0.4966555928107539,
+            0.34418293140485734
+          ],
+          "angle_abs_p95_deg": [
+            4.461006603549285,
+            0.6981616887930909,
+            1.2285190833308801,
+            0.8176985257136117
+          ],
+          "current_rmse_counts": [
+            298.71605553066064,
+            114.08249716844773,
+            94.71435849547119,
+            70.92030010244451
+          ]
+        }
+      ],
+      "traces": "/home/noir/Documents/workspace/example/wheeled-legged_RL/outputs/deformable_real2sim_20261005/fitted_closed_loop_phase1.npz"
+    }
+  },
+  "current_response_fit": {
+    "scope": "sampled_command_to_sampled_current_effective_response",
+    "command_reconstruction": "linear interpolation of observed 5ms CSV samples; unrecorded 2ms packets unavailable",
+    "delay_and_lag_independently_identified": false,
+    "noise_note": "response residual includes aliasing and reconstruction error; it is not white sensor noise",
+    "models": {
+      "left_front": {
+        "effective_delay_s": 2.3350571243415617e-15,
+        "effective_lag_tau_s": 0.004512716579356101,
+        "gain": 0.9970941216850702,
+        "bias_counts": 0.31308925655973385,
+        "checks": [
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.31885522478472,
+                "abs_p95_counts": 14.269786427693807
+              },
+              "7": {
+                "rmse_counts": 7.610550070372852,
+                "abs_p95_counts": 14.891031684966542
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.236926873572341,
+                "abs_p95_counts": 14.036861739429487
+              },
+              "7": {
+                "rmse_counts": 7.38822335038836,
+                "abs_p95_counts": 14.482125682433244
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.186873760416749,
+                "abs_p95_counts": 14.018369618812073
+              },
+              "7": {
+                "rmse_counts": 7.3522252932324,
+                "abs_p95_counts": 14.519918709242285
+              },
+              "8": {
+                "rmse_counts": 79.56341276222929,
+                "abs_p95_counts": 70.11725691375679
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.0894631699800055,
+                "abs_p95_counts": 13.88434203616773
+              },
+              "7": {
+                "rmse_counts": 7.3884125322725245,
+                "abs_p95_counts": 14.458923312633953
+              },
+              "8": {
+                "rmse_counts": 69.99350042641916,
+                "abs_p95_counts": 68.58693334759519
+              },
+              "10": {
+                "rmse_counts": 9.971088524233727,
+                "abs_p95_counts": 15.358106676961846
+              }
+            }
+          }
+        ]
+      },
+      "left_back": {
+        "effective_delay_s": 3.609302933201255e-15,
+        "effective_lag_tau_s": 0.004597732438141798,
+        "gain": 0.9963801736742455,
+        "bias_counts": 0.3033155105560567,
+        "checks": [
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.3762304612063865,
+                "abs_p95_counts": 14.289123040357357
+              },
+              "7": {
+                "rmse_counts": 7.690268903916066,
+                "abs_p95_counts": 15.08762397625844
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.257079003664712,
+                "abs_p95_counts": 14.05188462194993
+              },
+              "7": {
+                "rmse_counts": 7.47710521076836,
+                "abs_p95_counts": 14.738007313667138
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.154703497974101,
+                "abs_p95_counts": 13.861537195189287
+              },
+              "7": {
+                "rmse_counts": 7.399433082108175,
+                "abs_p95_counts": 14.538318935845872
+              },
+              "8": {
+                "rmse_counts": 72.33109726836145,
+                "abs_p95_counts": 70.9701570556058
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.153035759075401,
+                "abs_p95_counts": 13.895975330800116
+              },
+              "7": {
+                "rmse_counts": 7.409898923363494,
+                "abs_p95_counts": 14.513532114514714
+              },
+              "8": {
+                "rmse_counts": 70.39417303871139,
+                "abs_p95_counts": 69.9380066111343
+              },
+              "10": {
+                "rmse_counts": 9.775918120776332,
+                "abs_p95_counts": 15.400336390042895
+              }
+            }
+          }
+        ]
+      },
+      "right_back": {
+        "effective_delay_s": 8.057091557989963e-14,
+        "effective_lag_tau_s": 0.004864499163258361,
+        "gain": 0.9947228523879352,
+        "bias_counts": 0.4872388057808794,
+        "checks": [
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.456514868112387,
+                "abs_p95_counts": 14.500356627725026
+              },
+              "7": {
+                "rmse_counts": 7.814090198400382,
+                "abs_p95_counts": 15.20972820797117
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.290167908114642,
+                "abs_p95_counts": 14.31768045768743
+              },
+              "7": {
+                "rmse_counts": 7.294003737179365,
+                "abs_p95_counts": 14.297615907875292
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.280381697180321,
+                "abs_p95_counts": 14.266883812831136
+              },
+              "7": {
+                "rmse_counts": 7.2255813890496805,
+                "abs_p95_counts": 14.054927505195737
+              },
+              "8": {
+                "rmse_counts": 96.09839166962438,
+                "abs_p95_counts": 65.03549535317494
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.262465286890579,
+                "abs_p95_counts": 14.227501467662874
+              },
+              "7": {
+                "rmse_counts": 7.163238827228394,
+                "abs_p95_counts": 14.158872417969125
+              },
+              "8": {
+                "rmse_counts": 97.82469520610657,
+                "abs_p95_counts": 68.39620861129434
+              },
+              "10": {
+                "rmse_counts": 10.105030072518607,
+                "abs_p95_counts": 16.396963069760567
+              }
+            }
+          }
+        ]
+      },
+      "right_front": {
+        "effective_delay_s": 7.117103689605211e-14,
+        "effective_lag_tau_s": 0.004556507935428297,
+        "gain": 0.9971999216603493,
+        "bias_counts": 0.2024688587803613,
+        "checks": [
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.417925628681196,
+                "abs_p95_counts": 14.431530799651775
+              },
+              "7": {
+                "rmse_counts": 7.833617858808002,
+                "abs_p95_counts": 15.248826025257541
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.095780462703438,
+                "abs_p95_counts": 13.858751680408886
+              },
+              "7": {
+                "rmse_counts": 7.358220336249065,
+                "abs_p95_counts": 14.553279887284484
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+            "used_for_fit": true,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.354016692725999,
+                "abs_p95_counts": 14.64908734661066
+              },
+              "7": {
+                "rmse_counts": 7.245178459505068,
+                "abs_p95_counts": 14.184973313389987
+              },
+              "8": {
+                "rmse_counts": 63.637500945362696,
+                "abs_p95_counts": 61.63533776923903
+              }
+            }
+          },
+          {
+            "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+            "used_for_fit": false,
+            "stage_metrics": {
+              "3": {
+                "rmse_counts": 7.363169686022244,
+                "abs_p95_counts": 14.331837680758339
+              },
+              "7": {
+                "rmse_counts": 7.39072806109672,
+                "abs_p95_counts": 14.463876832432485
+              },
+              "8": {
+                "rmse_counts": 65.64944426228541,
+                "abs_p95_counts": 66.05585175248548
+              },
+              "10": {
+                "rmse_counts": 10.176307904179765,
+                "abs_p95_counts": 15.351239716896547
+              }
+            }
+          }
+        ]
+      }
+    },
+    "command_feedback_phase_diagnostics": {
+      "left_front": [
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6391168999803085,
+                -1.5914079999959085,
+                -1.5077039000061632
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.3637997999533127,
+                0.40707899998437824,
+                0.48932810001360855
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6373132999966344,
+                -1.5937450000080844,
+                -1.5133909000027757
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.36309589999063974,
+                0.40653500001042175,
+                0.4851710999979275
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6361453000001802,
+                -1.589429999995673,
+                -1.508462600000371
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 42.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.364829300011138,
+                0.40982449999660275,
+                0.4897926000211328
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6364312000064274,
+                -1.5917420000022275,
+                -1.5128025999956662
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 46.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.36370190000525326,
+                0.40718200000355864,
+                0.4862819999914337
+              ]
+            }
+          }
+        }
+      ],
+      "left_back": [
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6152719999922738,
+                -1.557142999985217,
+                -1.4694975999930193
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.3877762000115581,
+                0.4400065000140785,
+                0.5262049000066327
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6133242000023529,
+                -1.5610420000058411,
+                -1.4745203000032348
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.38700899999213334,
+                0.4378160000015896,
+                0.523526500020921
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6090943999785168,
+                -1.5582389999906354,
+                -1.4722147000000518
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 40.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.39168059999781235,
+                0.44084750000905615,
+                0.5272646000051396
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6126010999784057,
+                -1.5590785000014762,
+                -1.4749458000267168
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 46.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.38726229999213047,
+                0.44017900000881127,
+                0.5232541000097513
+              ]
+            }
+          }
+        }
+      ],
+      "right_back": [
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6061746000161747,
+                -1.5503294999916761,
+                -1.459284199955846
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.3966992000073333,
+                0.44751050003810633,
+                0.5342780999512798
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6048225999995225,
+                -1.555698000004213,
+                -1.465874200019357
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.39527440000171055,
+                0.4443850000015459,
+                0.5332422000023485
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.599926100010407,
+                -1.5500595000048634,
+                -1.4611254999834955
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 42.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.4009576999919773,
+                0.4492789999943625,
+                0.5370218000109617
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6036419999920781,
+                -1.5528130000248552,
+                -1.4658602000110932
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 48.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.3969598999901791,
+                0.4457200000018702,
+                0.5333316000076138
+              ]
+            }
+          }
+        }
+      ],
+      "right_front": [
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6064830999880542,
+                -1.567186000016818,
+                -1.4848948999656386
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 34.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.3963432000261946,
+                0.4305905000023813,
+                0.5123819000289132
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6047733000064568,
+                -1.571155999990026,
+                -1.4893377000007035
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 18000,
+              "servo_vs_prepared_abs_p95_counts": 33.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.39602929999489334,
+                0.4288734999917665,
+                0.5092266999966455
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6005728000067165,
+                -1.5660199999985025,
+                -1.482328800014443
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 19000,
+              "servo_vs_prepared_abs_p95_counts": 41.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.4004709000071216,
+                0.43259650000493366,
+                0.5172520999821018
+              ]
+            }
+          }
+        },
+        {
+          "file": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+          "phases": {
+            "fresh_command": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 0.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                -1.6043242999984386,
+                -1.5690469999896095,
+                -1.4864414000001602
+              ]
+            },
+            "alternate_control_tick": {
+              "rows": 22000,
+              "servo_vs_prepared_abs_p95_counts": 46.0,
+              "feedback_minus_prepare_ms_p10_p50_p90": [
+                0.3961768000010579,
+                0.4301359999772103,
+                0.5121674999799098
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "phase_model": "2ms command and 2ms feedback, feedback delivered on alternate 1ms controller tick",
+    "source_files": [
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+        "sha256": "b7ea640b7ab57c9736c863d4f332662520312f881b1ff2ac9459eb6288ae27f0"
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+        "sha256": "5f32c77f6981c20f57fe8dc7f2ca674d5cbde401e39a5b2c119cd34260034a4b"
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u626b\u9891\u6570\u636e\u6162\u901f\u52a0\u9ad8\u901f\u60ac\u7a7a/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+        "sha256": "a5bfe6c34d14121519de1c24d29e8a81a104b30d016d8888d62066a8cb061705"
+      },
+      {
+        "path": "/home/noir/Documents/workspace/deformable\u9636\u8d8a/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+        "sha256": "e3de4665e442f93dbd9c8424eab90dd66dd842ade70b0a943b87df330f897442"
+      }
+    ]
+  },
+  "can_timing": {
+    "controller_dt_s": 0.001,
+    "command_period_steps": 2,
+    "feedback_period_steps": 2,
+    "feedback_delivery_phase_steps": 1,
+    "phase_evidence": "fresh-command rows see feedback about1.6ms old; alternate tick sees new packet",
+    "pure_transport_delay_identified": false
+  }
+}

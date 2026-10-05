@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Repository-local diagnostics for the feed-forward rsl_rl 3.0.1 PPO update."""
 
+import copy
+import math
 import torch
 from rsl_rl.algorithms import PPO
 
@@ -15,17 +17,99 @@ class DiagnosticPPO(PPO):
     stored rollout values, not repeatedly sampled minibatch predictions.
     """
 
-    def __init__(self, policy, separate_grad_clip=False, **kwargs):
+    def __init__(self, policy, separate_grad_clip=False, steep_preservation_weight=0.0,
+                 steep_reference_start_deg=3.0, steep_reference_full_deg=8.0,
+                 steep_reference_action_scale=0.03, flat_posture_weight=0.0,
+                 flat_posture_target_deg=19.0, flat_posture_tilt_deg=3.0,
+                 flat_posture_anchor="mean", flat_posture_max_spread_deg=0.0,
+                 reference_all_postures=False, **kwargs):
         if policy.is_recurrent or kwargs.get("rnd_cfg") or kwargs.get("symmetry_cfg"):
             raise ValueError("DiagnosticPPO supports feed-forward PPO without RND or symmetry only")
         super().__init__(policy, **kwargs)
         self.separate_grad_clip = separate_grad_clip
+        if steep_preservation_weight < 0 or not 0 <= steep_reference_start_deg < steep_reference_full_deg:
+            raise ValueError("Invalid steep policy preservation weight or tilt interval")
+        if steep_reference_action_scale <= 0:
+            raise ValueError("Steep reference action scale must be positive")
+        self.steep_preservation_weight = steep_preservation_weight
+        self.steep_reference_start_deg = steep_reference_start_deg
+        self.steep_reference_full_deg = steep_reference_full_deg
+        self.steep_reference_action_scale = steep_reference_action_scale
+        self.reference_all_postures = reference_all_postures
+        self._steep_reference_actor = None
+        self._steep_grade_reference_actor = None
+        if flat_posture_weight < 0 or not 17.0 <= flat_posture_target_deg <= 75.0 or flat_posture_tilt_deg <= 0:
+            raise ValueError("Invalid native V3 flat posture preference")
+        self.flat_posture_weight = flat_posture_weight
+        self.flat_posture_target_deg = flat_posture_target_deg
+        self.flat_posture_tilt_deg = flat_posture_tilt_deg
+        if flat_posture_anchor not in ("mean", "lowest"):
+            raise ValueError("Flat posture anchor must be mean or lowest")
+        self.flat_posture_anchor = flat_posture_anchor
+        if not math.isfinite(flat_posture_max_spread_deg) or flat_posture_max_spread_deg < 0:
+            raise ValueError("Flat posture leg spread must be finite and nonnegative")
+        self.flat_posture_max_spread_deg = flat_posture_max_spread_deg
         self._critic_parameters = tuple(policy.critic.parameters())
         critic_ids = {id(parameter) for parameter in self._critic_parameters}
         # Includes std/log_std and any actor encoder, excluding critic parameters.
         self._actor_parameters = tuple(
             parameter for parameter in policy.parameters() if id(parameter) not in critic_ids
         )
+
+    def initialize_steep_reference(self):
+        """Freeze the loaded actor for training only; inference has no dependency."""
+        if self.policy.actor_obs_normalization or getattr(self.policy.actor, "frame_size", None) != 32:
+            raise ValueError("Steep preservation requires the unnormalized 32D deformable actor layout")
+        self._steep_reference_actor = copy.deepcopy(self.policy.actor).eval().requires_grad_(False)
+
+    def initialize_steep_grade_reference(self, actor_state):
+        """Freeze a compatible second actor; its selector is training privilege."""
+        if self._steep_reference_actor is None:
+            raise RuntimeError("Initialize the primary steep reference first")
+        actor = copy.deepcopy(self.policy.actor)
+        actor.load_state_dict(actor_state, strict=True)
+        self._steep_grade_reference_actor = actor.eval().requires_grad_(False)
+
+    def _steep_preservation_loss(self, obs, action_mean):
+        if self._steep_reference_actor is None:
+            raise RuntimeError("Initialize the steep reference after loading fine-tune weights")
+        actor_obs = self.policy.get_actor_obs(obs)
+        gravity = actor_obs.reshape(actor_obs.shape[0], -1, 32)[:, -1, 7:10]
+        tilt_deg = torch.atan2(gravity[:, :2].norm(dim=-1), -gravity[:, 2]) * (180.0 / math.pi)
+        gate = ((tilt_deg - self.steep_reference_start_deg)
+                / (self.steep_reference_full_deg - self.steep_reference_start_deg)).clamp(0., 1.)
+        if self.reference_all_postures:
+            gate = torch.ones_like(gate)
+        with torch.no_grad():
+            target = self._steep_reference_actor(actor_obs)
+            if self._steep_grade_reference_actor is not None:
+                if "training_steep_reference_mix" not in obs:
+                    raise ValueError("Steep grade reference requires the privileged training selector")
+                mix = obs["training_steep_reference_mix"].clamp(0., 1.)
+                target = target.lerp(self._steep_grade_reference_actor(actor_obs), mix)
+        cost = ((action_mean - target) / self.steep_reference_action_scale).square().mean(-1)
+        return (cost * gate).mean(), gate.mean()
+
+    def _flat_posture_loss(self, obs, action_mean):
+        """Soft common-height preference for the native 16/17/75 deg action map."""
+        actor_obs = self.policy.get_actor_obs(obs)
+        latest = actor_obs.reshape(actor_obs.shape[0], -1, 32)[:, -1]
+        gravity = latest[:, 7:10]
+        tilt_deg = torch.atan2(gravity[:, :2].norm(dim=-1), -gravity[:, 2]) * (180.0 / math.pi)
+        gate = (1.0 - tilt_deg / self.flat_posture_tilt_deg).clamp(0., 1.)
+        if self.flat_posture_max_spread_deg:
+            # Encoder angles are unscaled radians in current_fraction_v2.
+            # A level body can still need unequal legs on sloping terrain.
+            leg_angles = latest[:, 10:14]
+            spread_deg = (leg_angles.amax(-1) - leg_angles.amin(-1)) * (180.0 / math.pi)
+            gate = gate * (1.0 - spread_deg / self.flat_posture_max_spread_deg).clamp(0., 1.)
+        action = action_mean.clamp(-1., 1.)
+        # Positive actions cover one degree down; negative actions cover
+        # 58 degrees up. This must match minangle_physical_v3, not legacy V2.
+        physical_targets = 17.0 - action * torch.where(action < 0., 58.0, 1.0)
+        angle = physical_targets.amin(-1) if self.flat_posture_anchor == "lowest" else physical_targets.mean(-1)
+        excess = (angle - self.flat_posture_target_deg).clamp_min(0.)
+        return (gate * (excess / 10.0).square()).mean(), gate.mean()
 
     @staticmethod
     def _grad_norm(parameters):
@@ -58,6 +142,12 @@ class DiagnosticPPO(PPO):
             "critic_grad_norm_pre_clip": 0.0,
             "approx_kl": 0.0,
         }
+        if self.steep_preservation_weight:
+            metrics.update(steep_preservation=0.0, steep_reference_fraction=0.0)
+            if self._steep_grade_reference_actor is not None:
+                metrics["steep_grade_reference_fraction"] = 0.0
+        if self.flat_posture_weight:
+            metrics.update(flat_posture=0.0, flat_posture_fraction=0.0)
         mean_std = None
         num_updates = 0
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -120,6 +210,18 @@ class DiagnosticPPO(PPO):
                 value_loss = (returns_batch - values).square().mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy
+            if self.steep_preservation_weight:
+                preservation_loss, reference_fraction = self._steep_preservation_loss(obs_batch, mu)
+                loss = loss + self.steep_preservation_weight * preservation_loss
+                metrics["steep_preservation"] += preservation_loss.item()
+                metrics["steep_reference_fraction"] += reference_fraction.item()
+                if self._steep_grade_reference_actor is not None:
+                    metrics["steep_grade_reference_fraction"] += obs_batch["training_steep_reference_mix"].mean().item()
+            if self.flat_posture_weight:
+                flat_loss, flat_fraction = self._flat_posture_loss(obs_batch, mu)
+                loss = loss + self.flat_posture_weight * flat_loss
+                metrics["flat_posture"] += flat_loss.item()
+                metrics["flat_posture_fraction"] += flat_fraction.item()
             self.optimizer.zero_grad()
             loss.backward()
             if self.is_multi_gpu:

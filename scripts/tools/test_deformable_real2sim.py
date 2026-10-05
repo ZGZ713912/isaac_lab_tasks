@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 ENV = ROOT / 'source/agent_tasks/agent_tasks/direct/deformable_suspension'
@@ -106,6 +107,29 @@ def test_each_joint_randomizes_and_reset_preserves_other_env():
     assert not torch.equal(a._torque_scale[0], before[0])
 
 
+def test_feedback_packet_hold_is_distinct_from_transport_delay():
+    a,q=make_actuator(real2sim_feedback_period_steps_range=(2,2),real2sim_feedback_delay_steps_range=(1,1))
+    observed=[a.sensor_measurement(q+i,q)[0][0,0].item() for i in range(1,6)]
+    assert observed==[0.,1.,1.,3.,3.]
+    a.reset([0],q+9.,q)
+    assert a.sensor_measurement(q+10,q)[0][0,0].item()==9.
+
+
+def test_finite_reference_velocity_bypasses_td_per_joint_and_uses_cad_zero():
+    cfg=controller_cfg(leg_physical_angle_zero=math.radians(78.))
+    c=adrc.LegADRC((1,4),'cpu',cfg,dtype=torch.float64)
+    q=torch.ones(1,4,dtype=torch.float64)
+    c.reset([0],q,q)
+    speed=q.new_tensor([[.1,0.,float('nan'),-.2]])
+    output=c.update(q,q-.2,target_physical_velocity=speed)
+    torch.testing.assert_close(c.x1,math.radians(78.)-q)
+    torch.testing.assert_close(c.x2[0,[0,1,3]],q.new_zeros(3))
+    assert c.x2[0,2]>0.
+    supplied=speed[0,[0,1,3]]
+    expected=-(30.*.2**.75+17.*supplied.sign()*supplied.abs()**.7)*cfg.adrc_controller_output_to_current_raw
+    torch.testing.assert_close(output[0,[0,1,3]],expected)
+
+
 @pytest.mark.parametrize('field,value', [
     ('real2sim_command_delay_steps_range', (-1, 1)),
     ('real2sim_command_period_steps_range', (0, 2)),
@@ -198,3 +222,34 @@ def test_real2sim_model_snapshot_must_match_saved_hash(tmp_path):
     model_path.write_text('{"changed": true}')
     with pytest.raises(ValueError, match='matching'):
         checkpoint.validate_deformable_checkpoint(cfg, tmp_path / 'model_2.pt')
+
+
+def test_play_keeps_saved_geometry_architecture_and_algorithm(tmp_path):
+    params = tmp_path / 'params'
+    params.mkdir()
+    config = dict(class_name='OnPolicyRunner', device='cuda:1',
+                  policy=dict(class_name='ActorCriticTransformer', history_length=8,
+                              use_leg_geometry_features=True, d_model=64),
+                  algorithm=dict(class_name='DiagnosticPPO'), clip_actions=1.)
+    path = params / 'agent.yaml'
+    path.write_text(yaml.safe_dump(config))
+    before = path.read_bytes()
+    loaded = checkpoint.load_deformable_agent_config(tmp_path / 'model_799.pt', 'cpu')
+    assert loaded == config | {'device': 'cpu'}
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('history', [True, 1., 2, '8', None])
+def test_play_rejects_invalid_saved_history(tmp_path, history):
+    params = tmp_path / 'params'
+    params.mkdir()
+    (params / 'agent.yaml').write_text(yaml.safe_dump(dict(
+        policy=dict(class_name='ActorCriticTransformer', history_length=history),
+        algorithm=dict(class_name='DiagnosticPPO'))))
+    with pytest.raises(ValueError, match='history'):
+        checkpoint.load_deformable_agent_config(tmp_path / 'model_2.pt', 'cpu')
+
+
+def test_play_requires_saved_architecture_file(tmp_path):
+    with pytest.raises(ValueError, match='params/agent.yaml'):
+        checkpoint.load_deformable_agent_config(tmp_path / 'model_2.pt', 'cpu')

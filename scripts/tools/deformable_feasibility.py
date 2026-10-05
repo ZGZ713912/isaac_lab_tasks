@@ -34,7 +34,14 @@ def utilities():
     return module
 
 
-def scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006):
+def joint_range(du, q_range=None):
+    low, high = (0.0, du.Q_LOW) if q_range is None else q_range
+    if not all(math.isfinite(x) for x in (low, high)) or not 0 <= low < high <= math.pi:
+        raise ValueError("joint range must be finite and satisfy 0 <= low < high <= pi")
+    return float(low), float(high)
+
+
+def scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006, q_range=None):
     """Return an exact contact-height interval and, if safe, a numerical witness.
 
     bottom_bounds are base-frame (xmin, xmax, ymin, ymax, zbottom).
@@ -43,6 +50,7 @@ def scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006):
     """
     if not -90 < slope_deg < 90 or safety < 0:
         raise ValueError("Slope must be inside (-90, 90) and safety nonnegative")
+    q_low, q_high = joint_range(du, q_range)
     slope, yaw = math.radians(slope_deg), math.radians(yaw_deg)
     c, s = math.cos(slope), math.sin(slope)
     cy, sy = math.cos(yaw), math.sin(yaw)
@@ -61,9 +69,9 @@ def scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006):
     knots, ranges = [], []
     for i in range(4):
         stationary = math.atan2(b[i].item(), a[i].item())
-        points = sorted({0.0, du.Q_LOW} | {
+        points = sorted({q_low, q_high} | {
             stationary + k * math.pi for k in range(-2, 3)
-            if 0 < stationary + k * math.pi < du.Q_LOW})
+            if q_low < stationary + k * math.pi < q_high})
         values = [heights(torch.full((4,), q, dtype=torch.float64))[i].item() for q in points]
         knots.append((points, values))
         ranges.append((min(values), max(values)))
@@ -121,12 +129,13 @@ def height_comparison(du, samples=1001):
                 polynomial_endpoint_heights_m=[polynomial[0].item(), polynomial[-1].item()])
 
 
-def best_effort_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006):
+def best_effort_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006, q_range=None):
     """Find a feasible minimum-tilt witness; not a certified global/dynamic optimum."""
     import numpy as np
     from scipy.optimize import minimize
 
-    horizontal = scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety)
+    q_low, q_high = joint_range(du, q_range)
+    horizontal = scan_pose(du, slope_deg, yaw_deg, bottom_bounds, safety, q_range)
     if horizontal["feasible"]:
         return dict(slope_deg=slope_deg, yaw_deg=yaw_deg, best_feasible_tilt_deg=0.0,
                     roll_deg=0.0, pitch_deg=0.0, base_height_m=horizontal["base_height_m"],
@@ -161,17 +170,18 @@ def best_effort_pose(du, slope_deg, yaw_deg, bottom_bounds, safety=0.006):
     initial_pitch = math.atan2(local_normal[0], local_normal[2])
     witnesses = []
     for q0 in (.15, .5, .8, du.Q_MINANGLE):
+        q0 = max(q_low, min(q_high, q0))
         initial = np.array([initial_roll, initial_pitch, 0., q0, q0, q0, q0])
         initial[2] = -contacts(initial).mean() / normal[2]
         solved = minimize(objective, initial, method="SLSQP",
-                          bounds=[(-math.pi / 4, math.pi / 4)] * 2 + [(0., 1.)] + [(0., du.Q_LOW)] * 4,
+                          bounds=[(-math.pi / 4, math.pi / 4)] * 2 + [(0., 1.)] + [(q_low, q_high)] * 4,
                           constraints=[{"type": "eq", "fun": lambda v: 100. * contacts(v)},
                                        {"type": "ineq", "fun": lambda v: 100. * (clearance(v) - safety)}],
                           options={"ftol": 1.e-12, "maxiter": 300})
         v = solved.x
         if (np.isfinite(v).all() and np.abs(contacts(v)).max() < 2.e-5
                 and clearance(v).min() >= safety - 2.e-5
-                and v[3:].min() >= -1.e-6 and v[3:].max() <= du.Q_LOW + 1.e-6):
+                and v[3:].min() >= q_low - 1.e-6 and v[3:].max() <= q_high + 1.e-6):
             witnesses.append((objective(v), v, bool(solved.success)))
     if not witnesses:
         return dict(slope_deg=slope_deg, yaw_deg=yaw_deg, horizontal_feasible=False,
@@ -192,6 +202,8 @@ def main():
     parser.add_argument("--safety", type=float, default=0.006, help="Normal body clearance, metres")
     parser.add_argument("--slopes", nargs="+", type=float, default=list(SLOPES))
     parser.add_argument("--best-effort", action="store_true", help="Also compute feasible partial-leveling witnesses.")
+    parser.add_argument("--angle-convention", choices=("legacy", "fitted-v3"), default="legacy",
+                        help="Use the selected task's real joint stroke; fitted V3 uses CAD zero and 16..75 deg.")
     args = parser.parse_args()
     import trimesh
 
@@ -202,15 +214,20 @@ def main():
     lo, hi = vertices.amin(0), vertices.amax(0)
     bounds = [lo[0].item(), hi[0].item(), lo[1].item(), hi[1].item(), lo[2].item()]
     du = utilities()
-    cases = [scan_pose(du, slope, yaw, bounds, args.safety) for slope in args.slopes for yaw in YAWS]
-    report = dict(q_range_urdf=[0, du.Q_LOW], q_minangle_urdf=du.Q_MINANGLE,
+    q_range = ([du.URDF_ZERO_PHYSICAL_ANGLE - math.radians(75),
+                du.URDF_ZERO_PHYSICAL_ANGLE - math.radians(16)]
+               if args.angle_convention == "fitted-v3" else [0, du.Q_LOW])
+    baseline = (du.URDF_ZERO_PHYSICAL_ANGLE - math.radians(17)
+                if args.angle_convention == "fitted-v3" else du.Q_MINANGLE)
+    cases = [scan_pose(du, slope, yaw, bounds, args.safety, q_range) for slope in args.slopes for yaw in YAWS]
+    report = dict(angle_convention=args.angle_convention, q_range_urdf=q_range, q_minangle_urdf=baseline,
                           bottom_bounds_m=bounds, height_comparison=height_comparison(du),
                           summary=[dict(slope_deg=slope,
                                         feasible=sum(case["feasible"] for case in cases if case["slope_deg"] == slope),
                                         total=len(YAWS)) for slope in args.slopes], cases=cases)
     if args.best_effort:
         report["reference_limits"] = "Conservative geometry only; no torque, friction, speed or certified nonzero global optimum."
-        report["best_effort_cases"] = [best_effort_pose(du, slope, yaw, bounds, args.safety)
+        report["best_effort_cases"] = [best_effort_pose(du, slope, yaw, bounds, args.safety, q_range)
                                        for slope in args.slopes for yaw in YAWS]
     print(json.dumps(report, indent=2))
 

@@ -13,6 +13,7 @@ from .env import DeformableSuspensionEnv
 from .adrc import LegADRC
 from .real2sim import Real2SimActuator, load_real2sim_model
 from .wheel_drive import WheelVelocityPI
+from .traction_guidance import uphill_drive_margin
 
 
 class DeformableDynamicEnv(DeformableSuspensionEnv):
@@ -30,6 +31,12 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self._leg_actuator = Real2SimActuator(
                 (self.num_envs, 4), self.device, cfg, model=load_real2sim_model(cfg.real2sim_model_path)
             )
+            mechanism = self._leg_actuator.mechanism
+            if mechanism is not None:
+                if abs(mechanism.physical_angle_zero-cfg.leg_physical_angle_zero)>1.e-7:
+                    raise ValueError("fitted actuator and task physical-angle zeros differ")
+                self.robot.write_joint_armature_to_sim(mechanism.armature.expand(self.num_envs,-1),
+                                                      joint_ids=self._legs_idx)
         joints = {name: i for i, name in enumerate(self.robot.joint_names)}
         bodies = {name: i for i, name in enumerate(self.robot.body_names)}
         contacts = {name: i for i, name in enumerate(self.contact_sensor.body_names)}
@@ -55,7 +62,10 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._metric_names = ("all_contact", "tilt_square", "height_violation", "clearance_min",
                               "speed_error", "yaw_error", "slip", "torque_saturation",
                               "contact_and_horizontal", "min_wheel_force", "q_limit_fraction",
-                              "target_limit_fraction", "target_tracking_error", "residual_tilt_deg")
+                              "target_limit_fraction", "target_tracking_error", "residual_tilt_deg",
+                              "baseline_extension_rad", "ground_grade_deg", "steep_grade_fraction",
+                              "standing_command_fraction", "traction_deficit", "uphill_drive_capacity_n",
+                              "uphill_gravity_n")
         self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
         self._metric_steps = torch.zeros(self.num_envs, device=self.device)
 
@@ -183,7 +193,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.leg_target = (self.q_cmd[:, None] - du.Q_LOW * (-self.actions).clamp_min(0.0)).clamp(
                 du.LEG_LOWER_LIMIT, self.cfg.leg_target_upper_limit)
         else:
-            self.leg_target = du.suspension_target(self.actions, self.q_cmd[:, None], self.cfg.leg_target_upper_limit)
+            self.leg_target = du.suspension_target(self.actions, self.q_cmd[:, None], self.cfg.leg_target_upper_limit,
+                                                  getattr(self.cfg,"leg_target_lower_limit",du.LEG_LOWER_LIMIT))
             max_change = self.cfg.leg_target_rate_limit * self.step_dt
             self.leg_target = previous_target + (self.leg_target - previous_target).clamp(-max_change, max_change)
 
@@ -286,6 +297,13 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if not legacy:
             critic = torch.nan_to_num(critic, nan=0.0, posinf=0.0, neginf=0.0).clamp(-10.0, 10.0)
         self._obs_cache = {"policy": self._history.flatten(1).clone(), "critic": critic.clone()}
+        if getattr(self.cfg, "training_steep_reference_mix", False):
+            _, _, normals, _, _ = self._wheel_geometry_w()
+            mix = du.suspension_steep_reference_mix(
+                normals, self.cfg.steep_teacher_start_grade_deg, self.cfg.steep_teacher_full_grade_deg)
+            # Rollout storage retains this privileged training selector, but
+            # neither policy nor critic observation group includes it.
+            self._obs_cache["training_steep_reference_mix"] = torch.nan_to_num(mix)[:, None].detach()
         self._obs_tick = self.common_step_counter
         return self._obs_cache
 
@@ -303,36 +321,86 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         clearance = self.chassis_clearance
         # Anchor the lowest corner while allowing unequal leg angles to level
         # the body on a slope. Reward changes cannot change a frozen play policy.
-        extension = (self.q_cmd - q.amax(-1)).clamp_min(0.0)
+        extension = du.suspension_baseline_extension(q, self.q_cmd)
         height_excess = ((h - self.cfg.max_body_top_height).clamp_min(0.0) / 0.01).square().clamp(max=100.0)
         reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
-        if self.cfg.enforce_tunnel_height:
+        reward -= getattr(self.cfg, "baseline_extension_penalty_weight", 0.0) * extension
+        clearance_weight = getattr(self.cfg, "clearance_margin_weight", 0.0)
+        if clearance_weight:
+            reward -= clearance_weight * du.suspension_clearance_cost(
+                clearance, self.cfg.clearance_margin_m).clamp(max=25.0)
+        linear_weight = getattr(self.cfg, "drive_velocity_tracking_weight", 0.0)
+        yaw_weight = getattr(self.cfg, "drive_yaw_tracking_weight", 0.0)
+        if linear_weight or yaw_weight:
+            data = self.robot.data
+            velocity = data.root_link_lin_vel_w[:, :2] if self.cfg.commands_world_frame else data.root_link_lin_vel_b[:, :2]
+            linear_cost, yaw_cost = du.suspension_drive_tracking_cost(
+                velocity, data.root_ang_vel_b[:, 2], self._drive_command)
+            # The drive command already includes the configured acceleration
+            # limits; unavoidable command jumps must not dominate learning.
+            reward -= linear_weight * linear_cost.clamp(max=25.0)
+            reward -= yaw_weight * yaw_cost.clamp(max=25.0)
+        data = self.robot.data
+        ground_normal = self._normals_at(data.root_link_pos_w[:, None])[:, 0]
+        flat_extension_weight = getattr(self.cfg, "flat_baseline_extension_penalty_weight", 0.0)
+        if flat_extension_weight:
+            reward -= flat_extension_weight * extension * du.suspension_flat_grade_gate(
+                ground_normal, self.cfg.low_profile_fade_grade_deg)
+        traction_cost = drive_capacity = slope_gravity = self._friction[:, 0] * 0.0
+        traction_weight = getattr(self.cfg, "static_traction_margin_weight", 0.0)
+        if traction_weight:
+            _, _, _, _, roll = self._wheel_geometry_w()
+            traction_cost, drive_capacity, slope_gravity = uphill_drive_margin(
+                self.wheel_normal_forces, roll, ground_normal, self._friction,
+                mass_kg=self.cfg.traction_mass_kg,
+                wheel_torque_limit_nm=self.cfg.wheel_torque_limit,
+                wheel_radius_m=du.WHEEL_RADIUS,
+                reserve_fraction=self.cfg.traction_reserve_fraction,
+            )
+            reward -= traction_weight * traction_cost
+        if self.cfg.enforce_tunnel_height or getattr(self.cfg, "soft_body_height_penalty", False):
             reward -= self.cfg.height_penalty_weight * height_excess
         if getattr(self.cfg, "best_effort_leveling", False):
             contact_ratio = (self.wheel_normal_forces.amin(-1)
                              / self.cfg.wheel_contact_force_threshold).clamp(0.0, 1.0)
             reward -= self.cfg.best_effort_tilt_weight * du.suspension_tilt_cost(
-                self.robot.data.projected_gravity_b, contact_ratio)
+                self.robot.data.projected_gravity_b, contact_ratio,
+                gate_by_contact=getattr(self.cfg, "best_effort_contact_gating", True))
         cmd = self._drive_cmd_b()
+        if self._leg_actuator is not None:
+            saturated = (self._leg_actuator.command_current_raw.abs() >= .99*self._leg_actuator.current_limit)
+        else:
+            saturated = self.robot.data.applied_torque[:,self._legs_idx].abs() >= .99*self.cfg.max_leg_torque
+        lower_limit = getattr(self.cfg,"leg_target_lower_limit",du.LEG_LOWER_LIMIT)
+        data = self.robot.data
+        measured_velocity = data.root_link_lin_vel_w if self.cfg.commands_world_frame else data.root_link_lin_vel_b
+        ground_grade = torch.atan2(ground_normal[:, :2].norm(dim=-1), ground_normal[:, 2]) * (180.0 / torch.pi)
         metrics = torch.stack((
             (self.wheel_normal_forces > self.cfg.wheel_contact_force_threshold).all(-1).float(),
             self.robot.data.projected_gravity_b[:, :2].square().sum(-1),
             (h > self.cfg.max_body_top_height).float(), clearance,
-            (self.robot.data.root_lin_vel_b[:, :2] - cmd[:, :2]).norm(dim=-1),
+            (measured_velocity[:, :2] - self._drive_command[:, :2]).norm(dim=-1),
             (self.robot.data.root_ang_vel_b[:, 2] - cmd[:, 2]).abs(),
             self._last_wheel_slip.abs().mean(-1),
-            (self.robot.data.applied_torque[:, self._legs_idx].abs() >= 0.99 * self.cfg.max_leg_torque).float().mean(-1),
+            saturated.float().mean(-1),
             ((self.wheel_normal_forces > self.cfg.wheel_contact_force_threshold).all(-1)
              & (self.robot.data.projected_gravity_b[:, :2].norm(dim=-1)
                 < torch.sin(q.new_tensor(self.cfg.horizontal_tolerance_deg * torch.pi / 180.0)))).float(),
             self.wheel_normal_forces.amin(-1),
-            ((q < du.LEG_LOWER_LIMIT + 0.02)
+            ((q < lower_limit + 0.02)
              | (q > self.cfg.leg_target_upper_limit - 0.02)).float().mean(-1),
-            ((self.leg_target < du.LEG_LOWER_LIMIT + 0.02)
+            ((self.leg_target < lower_limit + 0.02)
              | (self.leg_target > self.cfg.leg_target_upper_limit - 0.02)).float().mean(-1),
             (q - self.leg_target).abs().mean(-1),
             torch.atan2(self.robot.data.projected_gravity_b[:, :2].norm(dim=-1),
                         -self.robot.data.projected_gravity_b[:, 2]) * (180.0 / torch.pi),
+            extension,
+            ground_grade,
+            (ground_grade >= 17.0).float(),
+            (self._drive_command.abs().amax(-1) < 1.e-6).float(),
+            traction_cost,
+            drive_capacity,
+            slope_gravity,
         ), dim=-1)
         settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
         self._metrics += metrics * settled[:, None]
@@ -370,7 +438,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                 pose[:, None, 0] + bottom[..., 0] + self._profile_x_offset,
                 self._period_seg, self._slope_angle_table)
             clearance_height = (bottom_ground - bottom[..., 2]).amax(-1) + self.cfg.chassis_ground_threshold + 1.e-6
-            samples = torch.linspace(0.0, self.cfg.leg_target_upper_limit, 65,
+            samples = torch.linspace(getattr(self.cfg,"leg_target_lower_limit",du.LEG_LOWER_LIMIT),
+                                     self.cfg.leg_target_upper_limit, 65,
                                      device=self.device, dtype=pose.dtype)
             sampled_q = samples[None, :, None].expand(len(env_ids), -1, 4)
             sampled_height, _ = contact_height(sampled_q)
@@ -432,7 +501,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.robot.write_joint_state_to_sim(joints, torch.zeros_like(joints), env_ids=env_ids)
             self.robot.write_root_pose_to_sim(pose, env_ids=env_ids)
             self.leg_target[env_ids] = q
-            initial_actions = du.suspension_action(q, self.q_cmd[env_ids, None], self.cfg.leg_target_upper_limit)
+            initial_actions = du.suspension_action(q, self.q_cmd[env_ids, None], self.cfg.leg_target_upper_limit,
+                                                   getattr(self.cfg,"leg_target_lower_limit",du.LEG_LOWER_LIMIT))
             self.actions[env_ids] = initial_actions
             self.last_actions[env_ids] = initial_actions
             self._prev2_actions[env_ids] = initial_actions

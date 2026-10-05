@@ -1,6 +1,7 @@
 """CPU contract tests, without launching Isaac Sim. Run with pytest."""
 
 import importlib.util
+import ast
 from pathlib import Path
 import sys
 import types
@@ -50,6 +51,18 @@ def test_suspension_action_full_stroke_and_roundtrip():
     assert targets[0, 3] == du.Q_LOW
 
 
+def test_calibrated_physical_baseline_and_target_limits_roundtrip():
+    du=utilities()
+    zero=math.atan2(.13694,.029108)
+    baseline=torch.tensor([[zero-math.radians(17.)]])
+    lower,upper=zero-math.radians(75.),zero-math.radians(16.)
+    actions=torch.tensor([[-1.,-.5,0.,1.]])
+    target=du.suspension_target(actions,baseline,upper,lower)
+    torch.testing.assert_close(du.suspension_action(target,baseline,upper,lower),actions)
+    torch.testing.assert_close(torch.rad2deg(zero-target)[0,[0,2,3]],torch.tensor([75.,17.,16.]))
+    assert du.q_to_base_height(upper)+du.BODY_BOTTOM_OFFSET>.006
+
+
 def test_best_effort_tilt_remains_active_above_ten_degrees():
     du = utilities()
     angles = torch.deg2rad(torch.tensor([0., 5., 10., 15., 30.]))
@@ -58,6 +71,162 @@ def test_best_effort_tilt_remains_active_above_ten_degrees():
     torch.testing.assert_close(costs, angles)
     assert (costs[1:] > costs[:-1]).all()
     assert du.suspension_tilt_cost(gravity, torch.zeros_like(angles)).count_nonzero() == 0
+
+
+def test_ungated_tilt_cost_cannot_be_reduced_by_unloading_a_wheel():
+    du = utilities()
+    angles = torch.tensor([math.radians(5), math.radians(20)])
+    gravity = torch.stack((angles.sin(), torch.zeros_like(angles), -angles.cos()), -1)
+    full_contact = du.suspension_tilt_cost(gravity, torch.ones_like(angles), gate_by_contact=False)
+    no_contact = du.suspension_tilt_cost(gravity, torch.zeros_like(angles), gate_by_contact=False)
+    partial_contact = du.suspension_tilt_cost(gravity, torch.full_like(angles, .4), gate_by_contact=False)
+    torch.testing.assert_close(full_contact, angles)
+    torch.testing.assert_close(no_contact, full_contact)
+    torch.testing.assert_close(partial_contact, full_contact)
+
+
+def test_drive_tracking_penalizes_actual_downhill_drift_and_signed_yaw_error():
+    du = utilities()
+    velocity = torch.tensor([[1., 0.], [-1., 0.], [1., 0.]])
+    yaw = torch.tensor([1.5, 1.5, -1.5])
+    command = torch.tensor([[1., 0., 1.5]]).expand(3, -1)
+    linear_cost, yaw_cost = du.suspension_drive_tracking_cost(velocity, yaw, command)
+    torch.testing.assert_close(linear_cost, torch.tensor([0., 4., 0.]))
+    torch.testing.assert_close(yaw_cost, torch.tensor([0., 0., 9.]))
+    # A filtered command inside the acceleration ramp is the attainable
+    # training target even when the user's requested command has jumped.
+    linear_cost, yaw_cost = du.suspension_drive_tracking_cost(
+        torch.tensor([[.2, 0.]]), torch.tensor([.4]), torch.tensor([[.2, 0., .4]]))
+    assert linear_cost.item() == yaw_cost.item() == 0
+
+
+def test_dense_baseline_still_guides_a_raised_body_without_equalizing_legs():
+    du = utilities()
+    baseline = torch.tensor([du.URDF_ZERO_PHYSICAL_ANGLE - math.radians(17)])
+    raised = (baseline[:, None] - torch.tensor([[.5, .1, .4, .3]])).requires_grad_()
+    cost = du.suspension_baseline_extension(raised, baseline)
+    cost.sum().backward()
+    assert cost.item() == pytest.approx(.1)
+    assert raised.grad[0, 1] < 0  # lower the lowest corner toward the baseline
+    assert raised.grad[0, [0, 2, 3]].count_nonzero() == 0
+    unequal = baseline[:, None] - torch.tensor([[.7, 0., .4, .2]])
+    assert du.suspension_baseline_extension(unequal, baseline).item() == 0
+    far = baseline[:, None] - .6
+    assert du.suspension_baseline_extension(far, baseline).item() == pytest.approx(.6)
+
+
+def test_extra_low_profile_cost_fades_out_on_steep_ground():
+    du = utilities()
+    grades = torch.deg2rad(torch.tensor([0., 2.5, 5., 17., 20.]))
+    normals = torch.stack((-grades.sin(), torch.zeros_like(grades), grades.cos()), -1)
+    torch.testing.assert_close(du.suspension_flat_grade_gate(normals), torch.tensor([1., .5, 0., 0., 0.]))
+    # Mirroring the uphill direction cannot change the low-body preference.
+    mirrored = normals.clone()
+    mirrored[:, 0] *= -1
+    torch.testing.assert_close(du.suspension_flat_grade_gate(mirrored), du.suspension_flat_grade_gate(normals))
+    with pytest.raises(ValueError, match="positive"):
+        du.suspension_flat_grade_gate(normals, 0.)
+
+
+def test_steep_teacher_selector_preserves_gentle_reference_and_uses_wheel_footprints():
+    du = utilities()
+    grades = torch.deg2rad(torch.tensor([0., 5., 10., 17., 18.5, 20.]))
+    normals = torch.stack((-grades.sin(), torch.zeros_like(grades), grades.cos()), -1)
+    footprint = normals[:,None].expand(-1,4,-1).clone()
+    torch.testing.assert_close(du.suspension_steep_reference_mix(footprint), torch.tensor([0.,0.,0.,0.,.5,1.]), atol=1.e-6, rtol=0)
+    footprint[0,0] = normals[-1]
+    assert du.suspension_steep_reference_mix(footprint)[0].item() == pytest.approx(1.)
+    footprint[:,:,0] *= -1
+    assert du.suspension_steep_reference_mix(footprint)[-1].item() == pytest.approx(1.)
+    with pytest.raises(ValueError, match="interval"):
+        du.suspension_steep_reference_mix(footprint,20.,17.)
+
+
+def test_clearance_margin_guides_posture_before_contact_and_does_not_reward_penetration():
+    du = utilities()
+    clearance = torch.tensor([.020, .012, .008, 0., -.002], requires_grad=True)
+    cost = du.suspension_clearance_cost(clearance, .012)
+    assert cost[0] == cost[1] == 0
+    assert 0 < cost[2] < cost[3] < cost[4]
+    cost.sum().backward()
+    assert clearance.grad[2] < 0  # encourage more margin before touching ground
+    assert clearance.grad[3] < 0 and clearance.grad[4] < 0
+    with pytest.raises(ValueError, match="positive"):
+        du.suspension_clearance_cost(clearance, 0.)
+
+
+def test_soft_height_reward_is_independent_of_height_termination():
+    """Execute the environment's real reward/done methods on fixed telemetry."""
+    from types import SimpleNamespace
+
+    tree = ast.parse((ROOT / "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_env.py").read_text())
+    env_class = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "DeformableDynamicEnv")
+    methods = [n for n in env_class.body if isinstance(n, ast.FunctionDef) and n.name in ("_get_rewards", "_get_dones")]
+
+    class Base:
+        def _get_rewards(self):
+            return torch.zeros(4)
+
+        def _get_dones(self):
+            return torch.zeros(4, dtype=torch.bool), torch.zeros(4, dtype=torch.bool)
+
+    wrapper = ast.ClassDef(name="TelemetryEnv", bases=[ast.Name(id="Base", ctx=ast.Load())],
+                           keywords=[], body=methods, decorator_list=[])
+    namespace = {"Base": Base, "torch": torch, "du": utilities()}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])), "telemetry_env", "exec"), namespace)
+    env = namespace["TelemetryEnv"]()
+    env.cfg = SimpleNamespace(
+        max_body_top_height=.255, height_termination_margin=.025,
+        height_settle_steps=50, enforce_tunnel_height=False, soft_body_height_penalty=False,
+        baseline_reward_weight=0., height_penalty_weight=2., max_leg_torque=44.,
+        wheel_contact_force_threshold=3., leg_target_upper_limit=1.08,
+        commands_world_frame=False, horizontal_tolerance_deg=3.,
+        reward_scale=1., reward_total_clip=100.)
+    env.body_top_height = torch.tensor([.245, .255, .265, .300])
+    env.q_cmd = torch.full((4,), 1.064)
+    env.leg_target = env.q_cmd[:, None].expand(-1, 4)
+    env._legs_idx = [0, 1, 2, 3]
+    env.chassis_clearance = torch.full((4,), .02)
+    env.wheel_normal_forces = torch.full((4, 4), 60.)
+    env._drive_command = torch.zeros(4, 3)
+    env._drive_cmd_b = lambda: env._drive_command
+    env._friction = torch.ones(4, 1)
+    env._leg_actuator = None
+    env._last_wheel_slip = torch.zeros(4, 4)
+    env.episode_length_buf = torch.full((4,), 100)
+    env._metrics = torch.zeros(4, 21)
+    env._metric_steps = torch.zeros(4)
+    env._normals_at = lambda positions: positions.new_tensor([0., 0., 1.]).expand_as(positions)
+    env.robot = SimpleNamespace(data=SimpleNamespace(
+        joint_pos=env.leg_target, applied_torque=torch.zeros(4, 4),
+        root_link_pos_w=torch.zeros(4, 3), root_link_lin_vel_b=torch.zeros(4, 3),
+        root_ang_vel_b=torch.zeros(4, 3),
+        projected_gravity_b=torch.tensor([0., 0., -1.]).expand(4, -1)))
+
+    torch.testing.assert_close(env._get_rewards(), torch.zeros(4))
+    env.cfg.soft_body_height_penalty = True
+    soft_reward = env._get_rewards()
+    torch.testing.assert_close(soft_reward, torch.tensor([0., 0., -2., -40.5]), atol=1.e-4, rtol=1.e-5)
+    terminated, timeout = env._get_dones()
+    assert not terminated.any() and not timeout.any()
+    # Legacy hard-height tasks retain the same penalty and termination threshold.
+    env.cfg.soft_body_height_penalty = False
+    env.cfg.enforce_tunnel_height = True
+    torch.testing.assert_close(env._get_rewards(), soft_reward)
+    terminated, _ = env._get_dones()
+    assert terminated.tolist() == [False, False, False, True]
+
+    # Extra flat preference leaves the prior steep baseline cost unchanged.
+    env.cfg.enforce_tunnel_height = False
+    env.cfg.baseline_extension_penalty_weight = 2.
+    env.cfg.flat_baseline_extension_penalty_weight = 14.
+    env.cfg.low_profile_fade_grade_deg = 5.
+    env.robot.data.joint_pos = env.leg_target - .1
+    flat_reward = env._get_rewards()
+    torch.testing.assert_close(flat_reward, torch.full((4,), -1.6), atol=1.e-6, rtol=1.e-5)
+    normal = torch.tensor([-math.sin(math.radians(20)), 0., math.cos(math.radians(20))])
+    env._normals_at = lambda positions: normal.expand_as(positions)
+    torch.testing.assert_close(env._get_rewards(), torch.full((4,), -.2), atol=1.e-6, rtol=1.e-5)
 
 
 def test_traction_airborne_friction_circle_and_slip_sign():
@@ -133,6 +302,80 @@ def test_temporal_transformer_uses_old_frames_and_exports():
         history_length=8, actor_layout=layout, critic_layout=critic_layout)
     assert policy.act_inference({"policy": obs.detach()}).shape == (2, 4)
     assert policy.evaluate({"critic": torch.randn(2, 40)}).shape == (2, 1)
+
+
+def test_geometry_cue_uses_corner_directions_and_preserves_warm_start():
+    transformer = load_file("geometry_transformer_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
+    layout = {"global": list(range(10)) + [30, 31],
+              "legs": [[10+i, 14+i, 18+i, 22+i, 26+i] for i in range(4)]}
+    original = transformer.LegTokenTransformer(256, 4, layout, history_length=8, head="per_leg")
+    enhanced = transformer.LegTokenTransformer(256, 4, layout, history_length=8, head="per_leg",
+                                              use_leg_geometry_features=True)
+    state = enhanced.state_dict()
+    for key, value in original.state_dict().items():
+        if key == "leg_embed.weight":
+            state[key][:, :5] = value
+        else:
+            state[key] = value
+    enhanced.load_state_dict(state)
+    obs = torch.randn(2, 256)
+    torch.testing.assert_close(enhanced(obs), original(obs), atol=1e-6, rtol=1e-5)
+    inputs = []
+    handle = enhanced.leg_embed.register_forward_pre_hook(lambda _, args: inputs.append(args[0].detach()))
+    obs = torch.zeros(2, 8, 32)
+    obs[:, :, 7] = .2  # positive projected gravity: front-low
+    result = enhanced(obs.flatten(1))
+    handle.remove()
+    cue = inputs[0][0, :, -1]
+    assert cue[0] > 0 and cue[1] > 0 and cue[2] < 0 and cue[3] < 0
+    result[:, 0].sum().backward()
+    assert enhanced.leg_embed.weight.grad[:, -1].abs().sum() > 0
+    traced = torch.jit.trace(enhanced.eval(), obs.flatten(1))
+    torch.testing.assert_close(traced(obs.flatten(1)), enhanced(obs.flatten(1)))
+
+
+def test_previous_action_pair_filter_preserves_steady_policy_and_export():
+    module = load_file("pair_filter_steady_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
+    layout = {"global": list(range(10)) + [30, 31],
+              "legs": [[10+i, 14+i, 18+i, 22+i, 26+i] for i in range(4)]}
+    original = module.LegTokenTransformer(256, 4, layout, history_length=8, head="per_leg")
+    filtered = module.LegTokenTransformer(256, 4, layout, history_length=8, head="per_leg",
+                                        previous_action_pair_filter=True)
+    filtered.load_state_dict(original.state_dict(), strict=True)
+    obs = torch.randn(4, 8, 32)
+    obs[:, :, 26:30] = obs[:, :1, 26:30]
+    before = obs.clone()
+    torch.testing.assert_close(filtered(obs.flatten(1)), original(obs.flatten(1)))
+    torch.testing.assert_close(obs, before)  # raw observation ABI is never mutated
+    traced = torch.jit.trace(filtered.eval(), obs.flatten(1))
+    torch.testing.assert_close(traced(obs.flatten(1)), filtered(obs.flatten(1)))
+
+
+def test_previous_action_pair_filter_reduces_two_step_modulation():
+    module = load_file("pair_filter_cycle_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
+    layout = {"global": list(range(10)) + [30, 31],
+              "legs": [[10+i, 14+i, 18+i, 22+i, 26+i] for i in range(4)]}
+    with torch.random.fork_rng():
+        torch.manual_seed(42)
+        original = module.LegTokenTransformer(256, 4, layout, history_length=8, head="per_leg")
+        filtered = module.LegTokenTransformer(256, 4, layout, history_length=8, head="per_leg",
+                                            previous_action_pair_filter=True)
+        filtered.load_state_dict(original.state_dict(), strict=True)
+        first = torch.randn(32, 8, 32)
+        first[:, :, 26:30] = torch.tensor([.3, -.3] * 4)[None, :, None]
+        second = first.clone()
+        second[:, :, 26:30] *= -1
+        original_change = (original(first.flatten(1)) - original(second.flatten(1))).abs().mean()
+        filtered_change = (filtered(first.flatten(1)) - filtered(second.flatten(1))).abs().mean()
+        assert filtered_change < original_change
+
+
+def test_previous_action_pair_filter_requires_an_actual_history():
+    module = load_file("pair_filter_invalid_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
+    layout = {"global": list(range(10)) + [30, 31],
+              "legs": [[10+i, 14+i, 18+i, 22+i, 26+i] for i in range(4)]}
+    with pytest.raises(ValueError, match="history >=2"):
+        module.LegTokenTransformer(32, 4, layout, previous_action_pair_filter=True)
 
 
 def test_adrc_matches_rmcs_scalar_updates_and_resets():
