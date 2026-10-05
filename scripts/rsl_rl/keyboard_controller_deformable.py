@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import weakref
+import math
 from dataclasses import dataclass, field
 
 import carb
@@ -44,7 +45,7 @@ class DeformableKeyboard:
         self._vx = 0.0
         self._vy = 0.0
         self._wz = 0.0
-        self._q_idx = 0  # 0=高车身(Q_HIGH)，1=低车身(Q_LOW)
+        self._q_idx = 0  # Index in cfg.q_choices; one choice means a fixed reference.
         self._pressed: set[str] = set()
 
     def __del__(self):
@@ -57,7 +58,7 @@ class DeformableKeyboard:
         return (
             "Deformable Keyboard Teleop\n"
             "\tW/S: 前进/后退 (vx)   A/D: 左移/右移 (vy)\n"
-            "\tX/Z: 自旋 +/-(ωz, 增量)   Q: 切换高/低车身基准角   L: 全部归零\n"
+            "\tX/Z: 自旋 +/-(ωz, 增量)   Q: 查询/切换基准角   L: 全部归零\n"
         )
 
     # ------------------------------------------------------------------
@@ -90,7 +91,7 @@ class DeformableKeyboard:
     def status(self) -> str:
         return (
             f"vx={self._vx:+.2f} vy={self._vy:+.2f} wz={self._wz:+.2f} "
-            f"q_cmd={self.q_cmd:.4f}({'高车身' if self._q_idx == 0 else '低车身'})"
+            f"q_cmd={self.q_cmd:.4f} (physical_angle={75.0 - math.degrees(self.q_cmd):.2f}°)"
         )
 
     # ------------------------------------------------------------------
@@ -120,9 +121,8 @@ class DeformableKeyboard:
                 self._pressed.add("Z")
             elif name == "Q":
                 if len(cfg.q_choices) > 1:
-                    self._q_idx = 1 - self._q_idx
-                    print(f"[键盘] 基准角切换 → q_cmd={self.q_cmd:.4f} "
-                          f"({'高车身' if self._q_idx == 0 else '低车身'})")
+                    self._q_idx = (self._q_idx + 1) % len(cfg.q_choices)
+                    print(f"[键盘] 基准角切换 → {self.status()}")
                 else:
                     print(f"[键盘] 当前固定低车身 q_cmd={self.q_cmd:.4f}")
             elif name == "L":
@@ -152,4 +152,4 @@ class DeformableKeyboardCfg:
     vy_max: float = 1.6  # 横移最大速度（m/s）
     wz_max: float = 4.5  # 自旋最大角速度（rad/s）
     wz_step: float = 0.6  # 每次 Z/X 的角速度增量（rad/s）
-    q_choices: tuple[float, float] = field(default_factory=lambda: (0.0, 1.0563))
+    q_choices: tuple[float, ...] = field(default_factory=lambda: (0.0, 1.0563))

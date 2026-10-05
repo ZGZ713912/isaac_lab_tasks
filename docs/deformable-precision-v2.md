@@ -63,6 +63,78 @@ LD_LIBRARY_PATH=/home/noir/.local/lib \
 联合达标率、倾角分布、物理终止、腿关节和目标接近限位的比例、腿目标跟踪
 误差、目标变化速率饱和、轮胎纵向滑移、实际速度及指令速度。
 
+## GUI play 固定坡度
+
+键盘 play 也支持同一个 `--grade-deg` 覆盖。它把车辆放到 20 m 长上坡段的内部，
+并在终端每 0.5 s 打印 `q`、`leg_target` 和 `q_cmd`，用来区分 reset 初值、策略动作
+和目标限速造成的高度变化：
+
+```bash
+./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python -B \
+  scripts/rsl_rl/play_deformable.py \
+  --task=Robotics-Deformable-Suspension-Rough-Keyboard-Play-History-Transformer-v2 \
+  --checkpoint=logs/rsl_rl/deformable_foundation_precision_v2/2026-10-04_01-16-08_deformable_precision_20261003_tight_tilt/model_999.pt \
+  --device=cuda:0 --num_envs=1 --grade-deg=20 \
+  --vx_max=0.8 --vy_max=0.5 --wz_max=1.5 \
+  --fixed_camera --debug_motion
+```
+
+该 play 入口的 20° 坡度是超出本次 Foundation 训练分布的压力测试；画面中的车身
+不应被当作已经通过 20° 主动调平验收。
+
+`run_gui.sh` 会使用邻近的 `IsaacLab-v2.3.2` 源码；其他安装位置可设
+`ISAACLAB_PATH=/absolute/path/to/IsaacLab`。`--max_steps=200` 可用于有界检查。
+省略 `--grade-deg` 时仍使用任务原来的周期坡面。
+
+当前 minangle 基准是腿相对水平 **17°**，对应 URDF `q_cmd=1.01229 rad`。
+`q` 越大车体越低；`Q_LOW=1.0563 rad` 是底盘净空限位，对应约 14.48°，
+不等于 minangle。零动作目标等于基准，但策略可以输出残差抬腿，目标还有速率限制。
+低车身软奖励约束 `max(q)` 向基准靠近，允许其余腿为调平而抬起，权重也不能保证
+每条腿始终处于基准。**修改奖励不会改变已经冻结的模型动作。**
+
+现在 play 的可见资产以基准腿角创建，并在加载策略前完成地形接触 reset；20°
+无法水平四轮接触时，改用贴合坡面的初始化。2026-10-05 实测初始四腿均为
+`1.01229 rad`，加载最新策略后静止命令下约为 `0.4–0.52 rad`：这部分抬高是
+模型主动输出的结果，需要重新训练或改进策略，不能用换初始姿态代替。
+
+Ctrl+C、SIGTERM、关闭终端产生的 SIGHUP 都会进入清理；窗口关闭也会触发清理。
+play 禁用本机 IsaacLab 的 STOP 后无限渲染回调，退出超过 8 秒会结束本次 play
+进程，再次发送终止信号可立即退出。兜底只作用于本次进程，不按进程名批量 kill。
+实际 GUI 测试中执行 Hyprland 的 `closewindow`（Super+Q 对应的关闭动作）后正常
+退出，exit code 为 0；Python 子进程测试还覆盖了持有 GIL 的原生死锁和清理卡住。
+真实 Real2Sim play 在 50 步后收到 SIGINT，0.82 s 内退出，exit code 为 0。
+此次没有遗留测试进程；SIGHUP 路径另有独立子进程测试覆盖。
+
+## 2026-10-05 核实的训练结果
+
+`logs/debug/deformable_precision_20261003/status.json` 为 `failed`。
+两组 1000 轮精修都正常完成并保存 `model_999.pt`；三组 Foundation 评估也已完成。
+流程选中 tight_tilt，但 `foundation_accepted=false`。下表取各组六个场景中的最差值，
+每个场景 16 个环境、600 步；三组 Foundation 物理终止均为 0。
+
+| 模型 | 最低四轮接触率 | 最低四轮接触且倾角 <3° 比例 | 最高倾角 P95 |
+| --- | ---: | ---: | ---: |
+| 原 model_9999 | 98.61% | 62.60% | 4.55° |
+| low_entropy model_999 | 99.00% | 62.50% | 4.59° |
+| tight_tilt model_999 | 98.64% | 62.61% | 4.67° |
+
+精修没有显示出明确的整体改善。10° 原模型评估完成，17° 原模型评估被 SIGKILL
+结束（exit -9，日志不能单独确定是谁发出的信号）；原流水线的 20° 评估未完成。
+不要把预扫描几何参考或初始化 smoke 当作最新策略的大坡验收。
+
+本轮另对最新 tight_tilt 模型补测固定 20° 坡面：4 环境、每场景 200 步（2 s），
+去除最初 0.5 s settling，固定种子与名义参数；两场景均无物理终止。
+
+| 场景 | 四轮接触率 | 倾角 P95 | 接触且 <3° 比例 | 世界坐标平均 vx |
+| --- | ---: | ---: | ---: | ---: |
+| 静止 | 100.00% | 21.47° | 0% | −0.028 m/s |
+| 前进，命令 1 m/s | 98.67% | 21.92° | 0% | 0.755 m/s |
+
+前进平均绝对滑移约 0.041 m/s、腿目标跟踪误差约 0.0118 rad、腿力矩饱和比例 0。
+这说明短程内能贴坡行驶，但车身仍随坡倾斜，没有通过主动调平验收。该短程检查也
+不能替代六场景、600 步的完整大坡评估。原始结果在
+`outputs/deformable_real2sim_20261005/latest_policy20.json`。
+
 ## 尽力范围的参考
 
 ```bash
@@ -82,3 +154,9 @@ LD_LIBRARY_PATH=/home/noir/.local/lib \
 
 本次已通过 58 项 CPU 回归测试、3 轮 GPU 精修启动验证和 20° 场景的
 100 步初始化验证。完整精修和大坡能力结论以批量流程生成的报告为准。
+
+## 基于扫频 CSV 的 Real2Sim
+
+数据审计、当前模型的适用边界、独立训练任务和播放命令见
+[deformable-real2sim.md](deformable-real2sim.md)。Real2Sim 当前是含未标定动力学先验的
+实验分支，不能把其集成测试当作实车迁移能力证明。

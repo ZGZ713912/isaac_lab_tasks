@@ -129,6 +129,46 @@ gym.register(
     },
 )
 
+# Real2Sim retains the V2 tensor shapes and action mapping, but leg effort
+# observations are current fractions and the actuator operates in current
+# counts. Separate task IDs and run directories preserve that distinction.
+for _task_id, _env_cfg, _runner_cfg in (
+    (
+        "Robotics-Deformable-Suspension-BestEffort-Precision-Real2Sim-v2",
+        "DeformableBestEffortPrecisionReal2SimEnvCfg",
+        "DeformableReal2SimPrecisionPPORunnerCfg",
+    ),
+    (
+        "Robotics-Deformable-Suspension-BestEffort-Real2Sim-v2",
+        "DeformableBestEffortReal2SimEnvCfg",
+        "DeformableReal2SimPPORunnerCfg",
+    ),
+    (
+        "Robotics-Deformable-Suspension-Rough-Real2Sim-v2",
+        "DeformableDynamicRoughReal2SimEnvCfg",
+        "DeformableReal2SimPPORunnerCfg",
+    ),
+    (
+        "Robotics-Deformable-Suspension-Flat-Real2Sim-v2",
+        "DeformableDynamicReal2SimEnvCfg",
+        "DeformableReal2SimPPORunnerCfg",
+    ),
+    (
+        "Robotics-Deformable-Suspension-Rough-Keyboard-Play-Real2Sim-v2",
+        "DeformableReal2SimKeyboardPlayEnvCfg",
+        "DeformableReal2SimPPORunnerCfg",
+    ),
+):
+    gym.register(
+        id=_task_id,
+        entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.dynamic_cfg:{_env_cfg}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:{_runner_cfg}",
+        },
+    )
+
 for _stage, _cfg in (
     ("Foundation", "DeformableBestEffortEnvCfg"),
     ("TenDegree", "DeformableBestEffortTenDegreeEnvCfg"),

@@ -126,3 +126,13 @@ class DeformableLegacyPPORunnerCfg(DeformableSuspensionTransformerPPORunnerCfg):
     experiment_name = "deformable_dynamic_low_slip_history_v1"
     clip_actions = 1.0
     policy = DeformableHistoryTransformerPolicyCfg(init_noise_std=0.4, min_noise_std=0.0)
+
+
+@configclass
+class DeformableReal2SimPPORunnerCfg(DeformableDynamicPPORunnerCfg):
+    experiment_name = "deformable_real2sim_current_v1"
+
+
+@configclass
+class DeformableReal2SimPrecisionPPORunnerCfg(DeformablePrecisionPPORunnerCfg):
+    experiment_name = "deformable_real2sim_precision_current_v1"

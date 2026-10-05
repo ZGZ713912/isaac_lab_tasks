@@ -94,6 +94,7 @@ def mock_env(x, yaw, threshold=0.005, periodic=True, buffer=0.0):
     env._wheel_body_ids = [0, 1, 2, 3]
     env._wheel_drive = SimpleNamespace(reset=lambda ids: None)
     env._leg_adrc = SimpleNamespace(reset=lambda ids, q, target: torch.testing.assert_close(q, target))
+    env._leg_actuator = None
     for name, width in (("_drive_command", 3), ("_last_wheel_slip", 4), ("_tire_deflection", 4),
                         ("_friction", 1), ("_encoder_bias", 4), ("_gyro_bias", 3)):
         setattr(env, name, torch.zeros(n, width))

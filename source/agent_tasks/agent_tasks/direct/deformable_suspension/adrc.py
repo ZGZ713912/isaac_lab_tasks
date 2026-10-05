@@ -4,6 +4,8 @@ URDF q is zero at the high posture: alpha = alpha_max - q (radians).
 Motor torque is positive along URDF q, hence negative physical-alpha acceleration.
 """
 
+import math
+
 import torch
 
 
@@ -12,6 +14,10 @@ class LegADRC:
         self.cfg = cfg
         if cfg.adrc_dt <= 0 or cfg.adrc_b0 == 0 or cfg.adrc_delta <= 0:
             raise ValueError("ADRC requires positive dt/delta and nonzero b0")
+        self.current_mode = getattr(cfg, "adrc_output_domain", "torque") == "current_raw"
+        self.current_scale = float(getattr(cfg, "adrc_controller_output_to_current_raw", 1.0))
+        if self.current_mode and (not math.isfinite(self.current_scale) or self.current_scale <= 0):
+            raise ValueError("ADRC controller-to-current scale must be finite and positive")
         self.x1 = torch.zeros(shape, device=device, dtype=dtype)
         self.x2 = torch.zeros_like(self.x1)
         self.z1 = torch.zeros_like(self.x1)
@@ -26,15 +32,21 @@ class LegADRC:
         for state in (self.x2, self.z2, self.z3, self.last_u, self.applied_u):
             state[env_ids] = 0.0
 
-    def update(self, q, q_target):
+    def update(self, q, q_target, *, applied_current_raw=None):
         c = self.cfg
         h = c.adrc_dt
         measurement = c.leg_max_physical_angle - q
         target = c.leg_max_physical_angle - q_target
-        # Raw RMCS mode uses published output; calibrated mode feeds back motor saturation.
         error = self.z1 - measurement
         self.z1 += h * (self.z2 - 3.0 * c.adrc_eso_w0 * error)
-        observer_u = self.applied_u if getattr(c, "adrc_feedback_applied_torque", False) else self.last_u
+        if self.current_mode:
+            # Hardware feeds back its most recently prepared, quantized CAN
+            # command, including saturation and the command hold.  It is not
+            # the new servo request, motor current feedback, or PhysX effort.
+            prepared_current = self.applied_u if applied_current_raw is None else applied_current_raw
+            observer_u = prepared_current / self.current_scale
+        else:
+            observer_u = self.applied_u if getattr(c, "adrc_feedback_applied_torque", False) else self.last_u
         self.z2 += h * (self.z3 + c.adrc_b0 * observer_u - 3.0 * c.adrc_eso_w0**2 * error)
         self.z3 += h * (-c.adrc_eso_w0**3 * error)
         self.z3.clamp_(-c.adrc_z3_limit, c.adrc_z3_limit)
@@ -56,8 +68,18 @@ class LegADRC:
                            e1.abs().pow(c.adrc_alpha1) * e1.sign())
         fal2 = torch.where(e2.abs() <= c.adrc_delta, e2 / c.adrc_delta**(1.0 - c.adrc_alpha2),
                            e2.abs().pow(c.adrc_alpha2) * e2.sign())
-        output = ((c.adrc_k1 * fal1 + c.adrc_k2 * fal2 - self.z3) / c.adrc_b0).clamp(
-            c.adrc_u_min, c.adrc_u_max)
-        self.last_u.copy_((c.adrc_kt * output).clamp(c.adrc_output_min, c.adrc_output_max))
-        self.applied_u.copy_(self.last_u.clamp(-c.max_leg_torque, c.max_leg_torque))
+        output = (c.adrc_k1 * fal1 + c.adrc_k2 * fal2 - self.z3) / c.adrc_b0
+        # RMCS current-domain ADRC observes and publishes protocol counts.  The
+        # conversion to Isaac's joint N*m is intentionally performed by
+        # Real2SimActuator after this method.  The historical torque-domain
+        # path keeps its existing final N*m limit for old checkpoints.
+        if self.current_mode:
+            current_limit = float(getattr(c, "real2sim_current_limit", 2048.0))
+            self.last_u.copy_(c.adrc_kt * output)
+            raw_output = self.last_u * self.current_scale
+            self.applied_u.copy_(raw_output.clamp(-current_limit, current_limit))
+        else:
+            output = output.clamp(c.adrc_u_min, c.adrc_u_max)
+            self.last_u.copy_((c.adrc_kt * output).clamp(c.adrc_output_min, c.adrc_output_max))
+            self.applied_u.copy_(self.last_u.clamp(-c.max_leg_torque, c.max_leg_torque))
         return self.applied_u

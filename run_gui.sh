@@ -26,7 +26,7 @@ set -e
 if [ ! -e "$HOME/.local/lib/libxml2.so.2" ]; then
     mkdir -p "$HOME/.local/lib"
     ln -s /usr/lib/libxml2.so.16 "$HOME/.local/lib/libxml2.so.2"
-    echo "[run_gui] 已创建 $HOME/.local/lib/libxml2.so.2 -> /usr/lib/libxml2.so.16"
+    echo "[run_gui] 已创建 $HOME/.local/lib/libxml2.so.2 -> /usr/lib/libxml2.so.16" >&2
 fi
 
 # 2. 清空被污染的 LD_LIBRARY_PATH，只保留 shim 目录（关键！）
@@ -34,9 +34,17 @@ unset LD_LIBRARY_PATH
 export LD_LIBRARY_PATH="$HOME/.local/lib"
 
 if [ -n "$WAYLAND_DISPLAY" ]; then
-    echo "[run_gui] 检测到 Wayland（WAYLAND_DISPLAY=$WAYLAND_DISPLAY），强制切换 X11/XWayland"
+    echo "[run_gui] 检测到 Wayland（WAYLAND_DISPLAY=$WAYLAND_DISPLAY），强制切换 X11/XWayland" >&2
 fi
 unset WAYLAND_DISPLAY
 
-echo "[run_gui] LD_LIBRARY_PATH=$LD_LIBRARY_PATH (已清空 isaacgym 残留)"
+# Prefer the local IsaacLab source tree; the pip bootstrap package alone does
+# not expose the environment/terrain modules needed by these tasks.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+isaaclab_root="${ISAACLAB_PATH:-$script_dir/../../IsaacLab-v2.3.2}"
+if [ -d "$isaaclab_root/source/isaaclab/isaaclab/app" ]; then
+    export PYTHONPATH="$isaaclab_root/source/isaaclab:$isaaclab_root/source/isaaclab_tasks:$isaaclab_root/source/isaaclab_rl${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
+echo "[run_gui] LD_LIBRARY_PATH=$LD_LIBRARY_PATH (已清空 isaacgym 残留)" >&2
 exec "$@"

@@ -90,8 +90,12 @@ if args_cli.video:
     args_cli.enable_cameras = True
 
 # launch omniverse app
+from play_lifecycle import PlayLifecycle
+
+shutdown = PlayLifecycle()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+shutdown.bind_app(simulation_app)
 
 """Rest everything follows."""
 
@@ -369,12 +373,15 @@ def main():
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
     resume_path = os.path.abspath(args_cli.checkpoint)
+    from scripts.utils.deformable_checkpoint import validate_deformable_checkpoint
+    validate_deformable_checkpoint(env_cfg, resume_path)
     log_dir = os.path.dirname(resume_path)
 
     # create isaac environment
     # 键盘模式需要渲染窗口（render_mode=None会显示窗口）
     render_mode = "rgb_array" if args_cli.video else None
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
+    shutdown.bind_env(env)
     
     # 键盘模式：在环境创建后初始化控制器
     if args_cli.keyboard and controller is not None:
@@ -438,6 +445,7 @@ def main():
     else:
         from agent_rl.rsl_rl.env import RslRlVecEnvWrapper
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    shutdown.bind_env(env)
 
     # create runner from rsl-rl
     runner = runner_class(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -598,7 +606,7 @@ def main():
     slip_count = 0
     slip_over_count = 0
     slip_max = 0.0
-    while simulation_app.is_running():
+    while simulation_app.is_running() and not shutdown.requested:
         start_time = time.time()
         # print(env.unwrapped.robot.data.applied_torque[0, env.unwrapped._spring_idx])
         # 键盘控制：ws加减速（非增量式），ad转向（非增量式），zx高度（增量式）
@@ -942,11 +950,12 @@ def main():
             print(f"[WARNING] Failed to save/close plotter: {e}")
     
     # close the simulator
-    env.close()
 
 
 if __name__ == "__main__":
-    # run the main function
-    main()
-    # close sim app
-    simulation_app.close()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(">>> interrupted by user, closing", flush=True)
+    finally:
+        shutdown.close()

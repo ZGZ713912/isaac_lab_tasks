@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "model_name": "deformable_real2sim_current_domain_v1",
+  "provenance": {
+    "source_schema_version": 2,
+    "source_command_domain": "angle_reference",
+    "source_torque_calibrated": false,
+    "source_condition_pairs": [
+      "grounded",
+      "suspended"
+    ],
+    "sources": [
+      {
+        "file": "/home/noir/Documents/workspace/deformable扫频数据慢速/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+        "csv_sha256": "b7ea640b7ab57c9736c863d4f332662520312f881b1ff2ac9459eb6288ae27f0",
+        "metadata_sha256": "ab427988802c56b21225c7c004d32366c63fef8b947693a34bb7c853756da735",
+        "rows": 39456,
+        "recorder_status": {
+          "completed": true,
+          "write_failed": false,
+          "dropped_samples": 0
+        }
+      },
+      {
+        "file": "/home/noir/Documents/workspace/deformable扫频数据慢速/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+        "csv_sha256": "5f32c77f6981c20f57fe8dc7f2ca674d5cbde401e39a5b2c119cd34260034a4b",
+        "metadata_sha256": "2186fc67e5317fb8c0a702f07d16bc328baf0bdfa459c9a569ad5d71ecc991ba",
+        "rows": 41678,
+        "recorder_status": {
+          "completed": true,
+          "write_failed": false,
+          "dropped_samples": 0
+        }
+      },
+      {
+        "file": "/home/noir/Documents/workspace/deformable扫频数据慢速加高速悬空/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+        "csv_sha256": "a5bfe6c34d14121519de1c24d29e8a81a104b30d016d8888d62066a8cb061705",
+        "metadata_sha256": "181b3de426e5f8a286ff32348530a19efc61d1c66c6ab17a92ad6723225ac841",
+        "rows": 43681,
+        "recorder_status": {
+          "completed": true,
+          "write_failed": false,
+          "dropped_samples": 0
+        }
+      },
+      {
+        "file": "/home/noir/Documents/workspace/deformable阶越/deformable_angle_sweep_suspended_2026-10-04_23-01-48_run1.csv",
+        "csv_sha256": "f5dcd7cb70272ec037c381c7f6ed8048a1e9640acac20183fc1c846f49c5df3c",
+        "metadata_sha256": "181b3de426e5f8a286ff32348530a19efc61d1c66c6ab17a92ad6723225ac841",
+        "rows": 923,
+        "recorder_status": {
+          "completed": false,
+          "write_failed": false,
+          "dropped_samples": 0
+        }
+      },
+      {
+        "file": "/home/noir/Documents/workspace/deformable阶越/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv",
+        "csv_sha256": "e3de4665e442f93dbd9c8424eab90dd66dd842ade70b0a943b87df330f897442",
+        "metadata_sha256": "1875d2fd6ec3dc9c4956f1ca1faf0c09dbcb6762a1463f79befd653d39506be2",
+        "rows": 49743,
+        "recorder_status": {
+          "completed": true,
+          "write_failed": false,
+          "dropped_samples": 0
+        }
+      }
+    ],
+    "note": "Closed-loop sweep identifies the equivalent current-domain servo. It does not independently identify motor inertia, friction, backlash, or calibrated shaft torque.",
+    "source_files": [
+      "/home/noir/Documents/workspace/deformable扫频数据慢速/deformable_angle_sweep_grounded_2026-10-04_21-28-44_run1.csv",
+      "/home/noir/Documents/workspace/deformable扫频数据慢速/deformable_angle_sweep_suspended_2026-10-04_21-23-46_run1.csv",
+      "/home/noir/Documents/workspace/deformable扫频数据慢速加高速悬空/deformable_angle_sweep_suspended_2026-10-04_22-29-29_run1.csv",
+      "/home/noir/Documents/workspace/deformable阶越/deformable_angle_sweep_suspended_2026-10-04_23-01-48_run1.csv",
+      "/home/noir/Documents/workspace/deformable阶越/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv"
+    ]
+  },
+  "angle": {
+    "convention": "physical_angle_relative_to_horizontal",
+    "min_deg": 17.0,
+    "max_deg": 75.0,
+    "urdf_q_rad": "q = max_physical_angle - physical_angle"
+  },
+  "motor_source_constants": {
+    "motor_type": "MG5010Ei36",
+    "protocol_current_max_a": 33.0,
+    "raw_current_max_count": 2048.0,
+    "torque_constant_nominal": 0.3,
+    "reduction_ratio": 36.0,
+    "reported_proxy_nm_per_raw_count": 0.17402343750000002,
+    "reported_proxy_is_shaft_torque": false
+  },
+  "simulation_effort_mapping": {
+    "effort_unit": "N*m at the URDF actuated leg joint",
+    "effort_limit_nm": 25.0,
+    "nominal_torque_per_current_raw_nm": 0.01220703125,
+    "mapping": "clamp(current_raw, +/-raw_current_max) / raw_current_max * effort_limit_nm",
+    "calibration_status": "uncalibrated_simulation_prior; 25 Nm limit does not determine Nm/count"
+  },
+  "controller_domain": {
+    "output_domain": "current_raw",
+    "controller_output_to_current_raw": 5.74635241301908,
+    "dt_s": 0.001,
+    "b0": -1.0,
+    "observed_feedback_age_s": {
+      "median": 0.0010166174999852728,
+      "recommended_delay_steps": 1
+    },
+    "observed_feedback_period_s": 0.0019989774583374733,
+    "observed_command_period_s": 0.0020000013333370723,
+    "period_method": "positive timestamp delta / positive sequence delta; interval averages, not per-packet jitter",
+    "sweep_reference": "finite target velocity bypasses TD; RL targets use rate limiter plus TD"
+  },
+  "identified_metrics": {
+    "median_abs_angle_tracking_error_rad": 0.009558665340373182,
+    "command_period_steps": 2,
+    "recommended_feedback_delay_steps": 1,
+    "note": "Closed-loop response only. Tracking error includes holds and stress tests; see per-stage audit before fitting."
+  },
+  "unidentified_priors": {
+    "command_transport_delay_steps_range": [
+      0,
+      1
+    ],
+    "motor_current_lag_tau_s": 0.003,
+    "backlash_range_rad": [
+      0.0,
+      0.01
+    ],
+    "coulomb_friction_range_nm": [
+      0.03,
+      0.2
+    ],
+    "viscous_friction_range_nm_s": [
+      0.005,
+      0.05
+    ],
+    "note": "Not measured fits; amplitude and wear parameters are not independently identifiable from these closed-loop logs."
+  },
+  "joint_noise_priors": {
+    "left_front": {
+      "angle_noise_std_rad_range": [
+        0.0004,
+        0.0025
+      ],
+      "velocity_noise_std_rad_s_range": [
+        0.002,
+        0.02
+      ],
+      "current_noise_std_raw_range": [
+        4.0,
+        80.0
+      ]
+    },
+    "left_back": {
+      "angle_noise_std_rad_range": [
+        0.0004,
+        0.0025
+      ],
+      "velocity_noise_std_rad_s_range": [
+        0.002,
+        0.02
+      ],
+      "current_noise_std_raw_range": [
+        4.0,
+        80.0
+      ]
+    },
+    "right_back": {
+      "angle_noise_std_rad_range": [
+        0.0004,
+        0.0025
+      ],
+      "velocity_noise_std_rad_s_range": [
+        0.002,
+        0.02
+      ],
+      "current_noise_std_raw_range": [
+        4.0,
+        80.0
+      ]
+    },
+    "right_front": {
+      "angle_noise_std_rad_range": [
+        0.0004,
+        0.0025
+      ],
+      "velocity_noise_std_rad_s_range": [
+        0.002,
+        0.02
+      ],
+      "current_noise_std_raw_range": [
+        4.0,
+        80.0
+      ]
+    }
+  },
+  "step_response": {
+    "left_front": {
+      "transition_count": 5,
+      "rise_10_90_s_median": 0.31000312799994845,
+      "overshoot_deg_median": 4.916806640625001,
+      "stable_angle_std_deg_median": 0.002210880063124453,
+      "stable_command_current_std_raw_median": 1.7831900253945643
+    },
+    "left_back": {
+      "transition_count": 5,
+      "rise_10_90_s_median": 0.3149990329999923,
+      "overshoot_deg_median": 4.795957031250007,
+      "stable_angle_std_deg_median": 0.004921791893393552,
+      "stable_command_current_std_raw_median": 2.5049528715903797
+    },
+    "right_back": {
+      "transition_count": 5,
+      "rise_10_90_s_median": 0.32000036599998793,
+      "overshoot_deg_median": 4.999204101562507,
+      "stable_angle_std_deg_median": 0.002746337879771565,
+      "stable_command_current_std_raw_median": 1.7228239092322297
+    },
+    "right_front": {
+      "transition_count": 5,
+      "rise_10_90_s_median": 0.3149990329999923,
+      "overshoot_deg_median": 4.883847656250003,
+      "stable_angle_std_deg_median": 0.0018062591149903546,
+      "stable_command_current_std_raw_median": 1.494356048604214
+    }
+  }
+}

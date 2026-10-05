@@ -11,6 +11,7 @@ from agent_world import AssetPath
 from . import cfg_utils as du
 from .env import DeformableSuspensionEnv
 from .adrc import LegADRC
+from .real2sim import Real2SimActuator, load_real2sim_model
 from .wheel_drive import WheelVelocityPI
 
 
@@ -24,6 +25,11 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if abs(self.physics_dt - cfg.adrc_dt) > 1.0e-9:
             raise ValueError("ADRC must run once per 1 ms physics step; do not subcycle stale measurements")
         self._leg_adrc = LegADRC((self.num_envs, 4), self.device, cfg)
+        self._leg_actuator = None
+        if getattr(cfg, "real2sim_enabled", False):
+            self._leg_actuator = Real2SimActuator(
+                (self.num_envs, 4), self.device, cfg, model=load_real2sim_model(cfg.real2sim_model_path)
+            )
         joints = {name: i for i, name in enumerate(self.robot.joint_names)}
         bodies = {name: i for i, name in enumerate(self.robot.body_names)}
         contacts = {name: i for i, name in enumerate(self.contact_sensor.body_names)}
@@ -183,7 +189,17 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
 
     def _apply_action(self):
         data = self.robot.data
-        leg_tau = self._leg_adrc.update(data.joint_pos[:, self._legs_idx], self.leg_target)
+        q = data.joint_pos[:, self._legs_idx]
+        qd = data.joint_vel[:, self._legs_idx]
+        if self._leg_actuator is not None:
+            measured_q, _, _ = self._leg_actuator.sensor_measurement(q, qd)
+            raw_current = self._leg_adrc.update(
+                measured_q, self.leg_target,
+                applied_current_raw=self._leg_actuator.command_current_raw,
+            )
+            leg_tau = self._leg_actuator.apply(raw_current, q, qd)
+        else:
+            leg_tau = self._leg_adrc.update(q, self.leg_target)
         self.robot.set_joint_effort_target(leg_tau, joint_ids=self._legs_idx)
         _, points, normals, _, roll = self._wheel_geometry_w()
         data = self.robot.data
@@ -233,15 +249,22 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             return self._obs_cache
         data = self.robot.data
         q = data.joint_pos[:, self._legs_idx]
+        if self._leg_actuator is not None:
+            q_obs, qd_obs, current_obs = self._leg_actuator.sensor_state()
+            effort_obs = current_obs / self._leg_actuator.current_limit
+        else:
+            q_obs = q
+            qd_obs = data.joint_vel[:, self._legs_idx]
+            effort_obs = data.applied_torque[:, self._legs_idx] * 0.05
         wheel_speed = data.joint_vel[:, self._wheels_idx] + self._encoder_bias
         wheel_speed = wheel_speed + torch.randn_like(wheel_speed) * self.cfg.encoder_noise_std
-        twist = du.estimate_twist(q, wheel_speed)
+        twist = du.estimate_twist(q_obs, wheel_speed)
         gyro = data.root_ang_vel_b + self._gyro_bias + torch.randn_like(data.root_ang_vel_b) * self.cfg.gyro_noise_std
         gravity = data.projected_gravity_b + torch.randn_like(data.projected_gravity_b) * self.cfg.gravity_noise_std
         # 32 = old 26 + wheel encoder4 + encoder-derived vx/vy2. No true velocity leaks.
         frame = torch.cat((self.q_cmd[:, None], self._drive_cmd_b() * q.new_tensor((1.0, 1.0, 0.25)),
-                           gyro * 0.5, gravity, q, data.joint_vel[:, self._legs_idx] * 0.1,
-                           data.applied_torque[:, self._legs_idx] * 0.05, self.actions,
+                           gyro * 0.5, gravity, q_obs, qd_obs * 0.1,
+                           effort_obs, self.actions,
                            wheel_speed * 0.05, twist[:, :2]), dim=-1)
         frame = torch.nan_to_num(frame, nan=0.0, posinf=0.0, neginf=0.0).clamp(-10.0, 10.0)
         fresh = ~self._history_valid
@@ -278,7 +301,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         h = self.body_top_height
         q = self.robot.data.joint_pos[:, self._legs_idx]
         clearance = self.chassis_clearance
-        # Favor one corner remaining at the lowest reference, not all legs being equal.
+        # Anchor the lowest corner while allowing unequal leg angles to level
+        # the body on a slope. Reward changes cannot change a frozen play policy.
         extension = (self.q_cmd - q.amax(-1)).clamp_min(0.0)
         height_excess = ((h - self.cfg.max_body_top_height).clamp_min(0.0) / 0.01).square().clamp(max=100.0)
         reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
@@ -417,8 +441,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self.extras["log"]["dynamic/reset_penetration_max"] = (-gap).clamp_min(0.0).amax().item()
             self.extras["log"]["dynamic/reset_infeasible_fraction"] = (~feasible).float().mean().item()
             self.extras["log"]["dynamic/reset_clearance_min"] = (pose[:, 2, None] + bottom[..., 2] - bottom_ground).amin().item()
-        self._leg_adrc.reset(env_ids, self.robot.data.joint_pos[env_ids][:, self._legs_idx],
-                             self.leg_target[env_ids])
+        leg_q = self.robot.data.joint_pos[:, self._legs_idx]
+        if self._leg_actuator is not None:
+            leg_qd = self.robot.data.joint_vel[:, self._legs_idx]
+            self._leg_actuator.reset(env_ids, leg_q, leg_qd)
+            measured_q, _, _ = self._leg_actuator.sensor_state()
+        else:
+            measured_q = leg_q
+        self._leg_adrc.reset(env_ids, measured_q[env_ids], self.leg_target[env_ids])
         self._wheel_drive.reset(env_ids)
         self._drive_command[env_ids] = 0.0
         self._last_wheel_slip[env_ids] = 0.0

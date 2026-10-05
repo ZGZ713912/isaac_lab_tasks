@@ -2,6 +2,7 @@
 
 import math
 from collections import OrderedDict
+from pathlib import Path
 
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
@@ -167,6 +168,102 @@ class DeformableDynamicKeyboardPlayEnvCfg(DeformableDynamicRoughEnvCfg):
     boundary_reset_enabled = False
     episode_length_s = 120.0
     scene = InteractiveSceneCfg(num_envs=1, env_spacing=6.0, replicate_physics=True)
+
+
+class _DeformableReal2SimFields:
+    """Current-domain actuator fields shared by train/evaluation variants.
+
+    The source CSVs contain LK protocol counts.  ``set_joint_effort_target``
+    still receives the explicit N*m result of the conversion in
+    ``real2sim.py``; the legacy 0.174 Nm/count proxy is never used as a PhysX
+    effort.
+    """
+
+    real2sim_enabled = True
+    real2sim_model_path = str(Path(__file__).with_name("configs") / "deformable_real2sim.json")
+    real2sim_current_limit = 2048.0
+    # None means use the checked-in identification model.  Keep this overridable
+    # for an explicit calibrated ablation without silently replacing the model.
+    real2sim_torque_per_current_raw = None
+    # Transport delay is an unmeasured prior, separate from the measured
+    # 2 ms CAN period (timestamp delta / sequence delta in 5 ms CSV samples).
+    real2sim_command_delay_steps_range = (0, 1)
+    real2sim_command_period_steps_range = (2, 2)
+    real2sim_feedback_delay_steps_range = (1, 2)
+    real2sim_torque_scale_range = (0.90, 1.10)
+    real2sim_torque_lag_tau_s = 0.003
+    real2sim_current_noise_std_range = (4.0, 80.0)
+    real2sim_angle_noise_std_range = (0.0004, 0.0025)
+    real2sim_velocity_noise_std_range = (0.002, 0.02)
+    real2sim_coulomb_friction_range = (0.03, 0.20)
+    real2sim_viscous_friction_range = (0.005, 0.05)
+    real2sim_backlash_range = (0.0, 0.01)
+    real2sim_current_deadzone_raw = 1.0
+    real2sim_backlash_engaged_scale = 0.25
+    real2sim_friction_velocity_eps = 0.02
+    real2sim_randomize = True
+    real2sim_observation_version = "current_fraction_v1"
+    # Match the RMCS current-domain controller and its observer input.
+    adrc_output_domain = "current_raw"
+    adrc_controller_output_to_current_raw = 5.74635241301908
+    adrc_b0 = -1.0
+    adrc_u_min = -2048.0
+    adrc_u_max = 2048.0
+    adrc_output_min = -2048.0
+    adrc_output_max = 2048.0
+    adrc_feedback_applied_torque = True
+    max_leg_torque = 25.0
+
+
+@configclass
+class DeformableDynamicReal2SimEnvCfg(_DeformableReal2SimFields, DeformableDynamicFlatEnvCfg):
+    """Flat current-domain real2sim training ablation."""
+
+
+@configclass
+class DeformableDynamicRoughReal2SimEnvCfg(_DeformableReal2SimFields, DeformableDynamicRoughEnvCfg):
+    """0--5 degree rough current-domain real2sim training."""
+
+
+@configclass
+class DeformableBestEffortReal2SimEnvCfg(_DeformableReal2SimFields, DeformableBestEffortEnvCfg):
+    """Best-effort leveling with measured current-domain timing/noise priors."""
+
+
+@configclass
+class DeformableBestEffortPrecisionReal2SimEnvCfg(
+    _DeformableReal2SimFields, DeformableBestEffortPrecisionEnvCfg
+):
+    """Precision foundation task with the real2sim actuator boundary."""
+
+
+@configclass
+class DeformableReal2SimKeyboardPlayEnvCfg(_DeformableReal2SimFields, DeformableDynamicKeyboardPlayEnvCfg):
+    """Fixed-parameter noisy GUI play; use ``--grade-deg=20`` for validation."""
+
+    # A 20 degree validation ramp is intentionally outside the nominal 0--5
+    # degree terrain range.  Start tangent to the local plane when four-wheel
+    # horizontal contact is geometrically impossible, then let the policy act.
+    best_effort_leveling = True
+    baseline_reward_weight = 0.02
+    best_effort_tilt_weight = 6.0
+    termination_roll_deg = 45.0
+    termination_pitch_deg = 45.0
+    rewards = OrderedDict(DeformableDynamicKeyboardPlayEnvCfg().rewards)
+    rewards["all_wheel_contact"] = 8.0
+    rewards["wheel_load_balance"] = 0.0
+
+    real2sim_randomize = False
+    real2sim_command_delay_steps_range = (1, 1)
+    real2sim_command_period_steps_range = (2, 2)
+    real2sim_feedback_delay_steps_range = (1, 1)
+    real2sim_torque_scale_range = (1.0, 1.0)
+    real2sim_current_noise_std_range = (8.0, 8.0)
+    real2sim_angle_noise_std_range = (0.0010, 0.0010)
+    real2sim_velocity_noise_std_range = (0.008, 0.008)
+    real2sim_coulomb_friction_range = (0.08, 0.08)
+    real2sim_viscous_friction_range = (0.02, 0.02)
+    real2sim_backlash_range = (0.004, 0.004)
 
 
 def _legacy_config(cfg):

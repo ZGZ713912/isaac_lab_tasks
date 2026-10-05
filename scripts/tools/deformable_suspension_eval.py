@@ -170,6 +170,9 @@ def evaluate(args, agent_cfg, history, app):
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True)
     cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
+    from scripts.utils.deformable_checkpoint import validate_deformable_checkpoint
+    if args.checkpoint:
+        validate_deformable_checkpoint(cfg, args.checkpoint)
     if cfg.action_contract_version != "minangle_residual_v2" or cfg.enable_chassis_servo:
         raise ValueError("Requires minangle_residual_v2 with chassis servo disabled")
     cfg.seed = args.seed
@@ -184,6 +187,13 @@ def evaluate(args, agent_cfg, history, app):
     for field in ("encoder_noise_std", "encoder_bias_std", "gyro_noise_std", "gyro_bias_std", "gravity_noise_std"):
         setattr(cfg, field, 0.0)
     cfg.max_sensor_delay_steps = 0
+    if getattr(cfg, "real2sim_enabled", False):
+        # Pair POLICY/ZERO under fixed parameters and zero temporal noise.
+        # This is a nominal probe, not randomized Real2Sim robustness acceptance.
+        cfg.real2sim_randomize = False
+        for field in ("real2sim_current_noise_std_range", "real2sim_angle_noise_std_range",
+                      "real2sim_velocity_noise_std_range"):
+            setattr(cfg, field, (0., 0.))
     friction = sum(cfg.tire_friction_range) / 2
     cfg.tire_friction_range = (friction, friction)
     env = gym.make(args.task, cfg=cfg)
@@ -211,6 +221,11 @@ def evaluate(args, agent_cfg, history, app):
                   "friction": friction, "command_frame": "world", "results": {}}
         output["terrain"] = {"kind": "constant_ramp" if grade is not None else "registered_task",
                              "grade_deg": grade, "boundary_resets": cfg.boundary_reset_enabled}
+        if getattr(cfg, "real2sim_enabled", False):
+            output["real2sim"] = {"mode": "fixed_parameters_zero_temporal_noise",
+                                  "observation_version": cfg.real2sim_observation_version,
+                                  "model_sha256": hashlib.sha256(Path(cfg.real2sim_model_path).read_bytes()).hexdigest(),
+                                  "shaft_torque_calibrated": False}
         modes = ("POLICY",) if policy and getattr(args, "policy_only", False) else (
             ("POLICY", "ZERO") if policy else ("ZERO",))
         for mode in modes:
@@ -347,6 +362,7 @@ def evaluate(args, agent_cfg, history, app):
 
 def main():
     root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root))
     for package in ("agent_world", "agent_tasks", "agent_rl"):
         sys.path.insert(0, str(root / "source" / package))
     # Imports and simulator startup also print diagnostics; keep stdout machine-readable.
