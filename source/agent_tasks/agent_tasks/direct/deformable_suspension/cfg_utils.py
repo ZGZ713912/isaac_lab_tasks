@@ -120,6 +120,14 @@ def suspension_flat_grade_gate(ground_normal, fade_grade_deg=5.0):
     return (1.0 - grade / math.radians(fade_grade_deg)).clamp(0.0, 1.0)
 
 
+def suspension_body_height_cost(height, max_height, ground_normal, flat_fade_grade_deg=None):
+    """Preserve flat clearance preferences without penalizing slope leveling."""
+    cost = ((height - max_height).clamp_min(0.0) / 0.01).square().clamp(max=100.0)
+    if flat_fade_grade_deg is not None:
+        cost = cost * suspension_flat_grade_gate(ground_normal, flat_fade_grade_deg)
+    return cost
+
+
 def suspension_steep_reference_mix(wheel_ground_normals, start_grade_deg=17.0, full_grade_deg=20.0):
     """Training-only expert weight from the steepest wheel footprint grade."""
     if not 0 <= start_grade_deg < full_grade_deg < 90:

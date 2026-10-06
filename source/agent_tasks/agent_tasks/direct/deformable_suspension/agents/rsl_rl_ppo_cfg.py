@@ -277,3 +277,23 @@ class DeformableFittedMixedCornerPPORunnerCfg(DeformableFittedNativeLowProfilePP
         self.algorithm.flat_posture_anchor = "lowest"
         self.algorithm.steep_reference_start_deg = 8.0
         self.algorithm.steep_reference_full_deg = 12.0
+
+
+@configclass
+class DeformableFittedLevelingPPORunnerCfg(DeformableFittedMixedCornerPPORunnerCfg):
+    experiment_name = "deformable_real2sim_leveling_v3"
+    max_iterations = 101
+    num_steps_per_env = 24
+    save_interval = 50
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.08, min_noise_std=0.03, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Fresh PPO exploration; no frozen old-policy targets constrain leveling.
+        self.algorithm.steep_preservation_weight = 0.0
+        self.algorithm.reference_all_postures = False
+        self.algorithm.flat_posture_weight = 0.0
+        self.algorithm.entropy_coef = 0.001

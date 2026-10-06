@@ -85,6 +85,7 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     max_body_top_height = 0.255
     enforce_tunnel_height = False
     soft_body_height_penalty = False
+    height_penalty_flat_only = False
     height_termination_margin = 0.025  # warmup training permits transient overshoot, logs enforce 255 mm
     height_settle_steps = 50
     reset_height_buffer = 0.01
@@ -437,6 +438,38 @@ class DeformableFittedMixedCornerEnvCfg(DeformableFittedTerrainLowProfileEnvCfg)
     terrain = _make_periodic_slope_terrain(angle_range=(5.0, 20.0), seed=13)
     terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
     terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0, 10.0, 17.0, 20.0, 20.0)
+
+
+@configclass
+class DeformableFittedLevelingEnvCfg(DeformableFittedMixedCornerEnvCfg):
+    """Prioritize attitude correction while retaining physical contact limits.
+
+    Flat terrain retains its low-body preference. On grades, common extension
+    and the 255 mm preference must not compete with the required leg difference.
+    This first short run emphasizes parking before testing the full play commands.
+    """
+
+    best_effort_contact_gating = False
+    best_effort_tilt_weight = 60.0
+    orientation_x_exp_sigma = 0.04
+    orientation_y_exp_sigma = 0.04
+    baseline_reward_weight = 0.0
+    baseline_extension_penalty_weight = 0.0
+    height_penalty_flat_only = True
+    # Match the conservative geometric witness's contact/clearance envelope.
+    # Chassis-ground termination itself is unchanged.
+    clearance_margin_m = 0.006
+    clearance_margin_weight = 40.0
+    training_steep_reference_mix = False
+    cmd_rel_standing_envs = 0.75
+    cmd_lin_vel_x_range = (-0.3, 0.3)
+    cmd_lin_vel_y_range = (-0.2, 0.2)
+    cmd_ang_vel_z_range = (-0.5, 0.5)
+    rewards = OrderedDict(DeformableFittedMixedCornerEnvCfg().rewards)
+    rewards["tilt_quadratic"] = -40.0
+    rewards["flat_orientation_x_exp"] = 2.0
+    rewards["flat_orientation_y_exp"] = 2.0
+    rewards["action_rate"] = -0.5
 
 
 @configclass

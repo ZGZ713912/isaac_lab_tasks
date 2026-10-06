@@ -322,7 +322,6 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         # Anchor the lowest corner while allowing unequal leg angles to level
         # the body on a slope. Reward changes cannot change a frozen play policy.
         extension = du.suspension_baseline_extension(q, self.q_cmd)
-        height_excess = ((h - self.cfg.max_body_top_height).clamp_min(0.0) / 0.01).square().clamp(max=100.0)
         reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
         reward -= getattr(self.cfg, "baseline_extension_penalty_weight", 0.0) * extension
         clearance_weight = getattr(self.cfg, "clearance_margin_weight", 0.0)
@@ -359,6 +358,11 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             )
             reward -= traction_weight * traction_cost
         if self.cfg.enforce_tunnel_height or getattr(self.cfg, "soft_body_height_penalty", False):
+            height_excess = du.suspension_body_height_cost(
+                h, self.cfg.max_body_top_height, ground_normal,
+                flat_fade_grade_deg=(self.cfg.low_profile_fade_grade_deg
+                                    if getattr(self.cfg, "height_penalty_flat_only", False) else None),
+            )
             reward -= self.cfg.height_penalty_weight * height_excess
         if getattr(self.cfg, "best_effort_leveling", False):
             contact_ratio = (self.wheel_normal_forces.amin(-1)
