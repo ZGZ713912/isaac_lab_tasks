@@ -102,6 +102,22 @@ def suspension_tilt_cost(gravity, contact_ratio, gate_by_contact=True):
     return tilt * contact_ratio.clamp(0.0, 1.0) if gate_by_contact else tilt
 
 
+def suspension_support_costs(wheel_gap_m, normal_force_n, *, gap_tolerance_m=0.001,
+                             gap_scale_m=0.01, min_load_n=8.0):
+    """Dense costs for lifting/unloading corners, without equal-load targets.
+
+    Gap is the wheel contact point's vertical clearance above the terrain,
+    matching the tire separation test. Beyond one scale use a linear cost to
+    keep airborne transients bounded; each wheel contributes independently.
+    """
+    if gap_tolerance_m < 0 or gap_scale_m <= 0 or min_load_n <= 0:
+        raise ValueError("Nonnegative gap tolerance and positive gap/load scales required")
+    excess = (wheel_gap_m - gap_tolerance_m).clamp_min(0.0) / gap_scale_m
+    gap_cost = torch.where(excess <= 1.0, 0.5 * excess.square(), excess - 0.5)
+    load_cost = ((min_load_n - normal_force_n).clamp(0.0, min_load_n) / min_load_n).square()
+    return gap_cost.clamp(max=5.0).mean(-1), load_cost.mean(-1)
+
+
 def suspension_baseline_extension(q, baseline):
     """Raise penalty anchored to the lowest chassis corner, allowing leveling.
 

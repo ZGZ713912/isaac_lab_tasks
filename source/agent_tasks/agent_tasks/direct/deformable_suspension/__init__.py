@@ -186,6 +186,9 @@ for _suffix, _cfg, _runner in (
     ("BestEffort-NativeLowProfile", "DeformableFittedTerrainLowProfileEnvCfg", "DeformableFittedNativeLowProfilePPORunnerCfg"),
     ("BestEffort-MixedCorner", "DeformableFittedMixedCornerEnvCfg", "DeformableFittedMixedCornerPPORunnerCfg"),
     ("Leveling", "DeformableFittedLevelingEnvCfg", "DeformableFittedLevelingPPORunnerCfg"),
+    ("Support-Leveling-Five", "DeformableFittedSupportLevelingFiveEnvCfg", "DeformableFittedSupportLevelingPPORunnerCfg"),
+    ("Support-Leveling-Ten", "DeformableFittedSupportLevelingTenEnvCfg", "DeformableFittedSupportLevelingTenPPORunnerCfg"),
+    ("Support-Leveling-Mixed", "DeformableFittedSupportLevelingMixedEnvCfg", "DeformableFittedSupportLevelingMixedPPORunnerCfg"),
     ("Rough-Keyboard-Play", "DeformableFittedKeyboardPlayEnvCfg", "DeformableFittedPPORunnerCfg"),
 ):
     gym.register(

@@ -73,13 +73,9 @@ def smooth(values, window=15):
                        np.ones(window) / window, mode="valid")
 
 
-def plot_training(runs, output):
-    fig, axes = plt.subplots(4, 3, figsize=(14, 13), layout="constrained")
+def export_training_metrics(runs, output):
     records = {}
-    palette = plt.get_cmap("tab20").colors
-    colors = list(palette[::2]) + list(palette[1::2])
-    for run_index, (label, path) in enumerate(runs):
-        color = colors[run_index % len(colors)]
+    for label, path in runs:
         scalars = read_scalars(path)
         snapshots = {}
         for name in ("agent.yaml", "env.yaml", "real2sim_model.json"):
@@ -87,6 +83,18 @@ def plot_training(runs, output):
             if file.is_file():
                 snapshots[name] = hashlib.sha256(file.read_bytes()).hexdigest()
         records[label] = dict(run=str(path.resolve()), snapshots_sha256=snapshots, scalars=scalars)
+    (output / "training_metrics.json").write_text(json.dumps(records, indent=2, allow_nan=False) + "\n")
+    return records
+
+
+def plot_training(runs, output):
+    records = export_training_metrics(runs, output)
+    fig, axes = plt.subplots(4, 3, figsize=(14, 13), layout="constrained")
+    palette = plt.get_cmap("tab20").colors
+    colors = list(palette[::2]) + list(palette[1::2])
+    for run_index, (label, path) in enumerate(runs):
+        color = colors[run_index % len(colors)]
+        scalars = records[label]["scalars"]
         for ax, (tag, title, scale) in zip(axes.flat, TRAIN_PANELS):
             rows = [r for r in scalars.get(tag, []) if r["value"] is not None]
             if not rows:
@@ -107,7 +115,6 @@ def plot_training(runs, output):
                  "Stages change reward and terrain; reward curves are not acceptance comparisons",
                  fontsize=13)
     save_figure(fig, output / "training_curves.png")
-    (output / "training_metrics.json").write_text(json.dumps(records, indent=2, allow_nan=False) + "\n")
     return records
 
 
@@ -277,12 +284,15 @@ def main():
     parser.add_argument("--run", action="append", type=labelled_path, default=[])
     parser.add_argument("--evaluation", action="append", type=labelled_path, default=[])
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--metrics-only", action="store_true", help="Export training scalars without creating figures")
     args = parser.parse_args()
     if not args.run and not args.evaluation:
         parser.error("Provide at least one --run or --evaluation")
+    if args.metrics_only and args.evaluation:
+        parser.error("--metrics-only currently supports training runs only")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.run:
-        plot_training(args.run, args.output_dir)
+        (export_training_metrics if args.metrics_only else plot_training)(args.run, args.output_dir)
     if args.evaluation:
         plot_evaluations(args.evaluation, args.output_dir)
     print(str(args.output_dir.resolve()))

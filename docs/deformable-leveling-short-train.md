@@ -1,31 +1,59 @@
 # V3 车身调平短训
 
-这次准备的是新的 `Robotics-Deformable-Suspension-Leveling-Real2Sim-v3` 任务。
-配置和 CPU 检查已完成，训练由用户启动；目前没有新策略效果或水平达标结论。
+当前入口默认使用 `Robotics-Deformable-Suspension-Support-Leveling-Five-Real2Sim-v3`。
+2026-10-06 的首轮 `Leveling-Real2Sim-v3`、101 轮短训已完成，
+新 `model_100.pt` 的五坡度名义评估**不通过调平验收**，暂不替换旧选定模型。
+平地六种命令通过；5°侧移通过，但驻车接地、坡地转向和大坡驻坡仍需优化。
+实测报告位于
+`outputs/deformable_leveling_short_20261006_071618_604869/assessment/report.md`。
 
 ## 启动
 
 ```bash
-python /home/noir/Documents/workspace/example/wheeled-legged_RL/scripts/tools/deformable_leveling_short_train.py --run
+python /home/noir/Documents/workspace/example/wheeled-legged_RL/scripts/tools/deformable_leveling_short_train.py --stage five --run
 ```
 
 入口脚本使用本机 IsaacLab Python 和 `run_gui.sh`，无需先切换 conda 环境。
-默认从上轮全姿态双参考 `model_100.pt` 加载权重，重新初始化优化器与探索噪声，
+默认从上轮接地稳定的全姿态双参考 `model_100.pt` 加载权重，
+不从本次接地退化的短训模型继续。重新初始化优化器与探索噪声，
 不会初始化冻结参考策略，也不恢复旧优化器或迭代号。
-默认为 **256 环境、每轮 24 步、101 次 PPO 更新**，共 620544 个 transition，
-保存第 0/50/100 轮；最后模型位于新的
-`logs/rsl_rl/deformable_real2sim_leveling_v3/<本次运行>/model_100.pt`。
-启动参数可改，例如 `--num-envs 128 --iterations 201`；末尾去掉 `--run` 只打印命令，
+第一阶段默认为 **256 环境、每轮 24 步、201 次 PPO 更新**，共 1234944 个 transition，
+每 50 轮保存；最后模型位于新的
+`logs/rsl_rl/deformable_real2sim_support_leveling_five_v3/<本次运行>/model_200.pt`。
+启动参数可改，例如 `--num-envs 128 --iterations 101`；末尾去掉 `--run` 只打印命令，
 不会创建目录或启动仿真。
 
-训练完成后自动导出 TensorBoard 的 PNG/PDF 曲线和原始标量 JSON。
+训练完成后默认只导出 TensorBoard 原始标量 JSON，不生成图表。
 终端会打印本轮独有的输出目录：
-`outputs/deformable_leveling_short_<上海时间戳>/`。其中包含源码快照、`status.json`、
-`charts/training_curves.png/pdf`、`charts/training_metrics.json` 和 `next_commands.txt`。
+`outputs/deformable_support_leveling_five_short_<上海时间戳>/`。
+其中包含源码快照、`status.json`、`metrics/training_metrics.json` 和 `next_commands.txt`。
 后者保存这个新 checkpoint 的 **20° play、五坡度评估、调平验收** 三条完整命令。
 不会替换上轮选定模型或自动接受短训结果；状态是“训练完成，等待调平评估”。
 
-## 训练目标的修改
+## 支持调平的修改与阶段
+
+新任务继承首轮的水平奖励，不再增大倾角权重。新增逐轮离地间隙连续代价
+（1 mm 容差、10 mm 尺度，近距离二次/远距离线性并限幅，权重 40）和
+低于 8 N 的轮载缺口代价（权重 12）。四轮载荷超过最低余量后没有等载要求。
+软离地余量由首轮的 6 mm 恢复至 12 mm，原碰撞终止仍保持。
+动作探索标准差为 0.05、下限 0.02，学习率为 5e-5；冻结参考和强制低位辅助仍关闭。
+执行器、16–75°动作范围、8×32 观测历史和 40 维 critic 接口保持不变。
+
+| 阶段参数 | 坡度（另有平地段） | 驻车比例配置 | vx / vy / wz 上限 | 默认更新次数 |
+| --- | --- | --- | --- | --- |
+| `five` | 5° | 85% | 0.15 / 0.10 m/s / 0.25 rad/s | 201 |
+| `ten` | 5°、10° | 75% | 0.30 / 0.20 m/s / 0.50 rad/s | 401 |
+| `mixed` | 5°、10°、17°、20° | 50% | 0.80 / 0.50 m/s / 1.50 rad/s | 601 |
+
+各阶段仍按策略步数逐步解锁平移、旋转、同时运动；默认时长覆盖对应命令课程。
+阶段切换由用户启动，不会仅按训练 reward 自动升级。
+先检查当前坡度所有朝向的驻车接地、倾角和滑移，再检查慢速及转向的支撑。
+切换时使用 `--stage ten --checkpoint <已验证的五度阶段模型路径>`，
+之后使用 `--stage mixed --checkpoint <已验证的十度阶段模型路径>`。
+入口打印的全坡度 play 范围验收仍保留原来门槛，早期阶段不通过整体目标时，
+不能称为已完成车身水平任务。
+
+## 首轮调平修改（已实测拒绝）
 
 | 项目 | 上轮最终配置 | 调平短训配置 |
 | --- | --- | --- |
@@ -69,4 +97,35 @@ python /home/noir/Documents/workspace/example/wheeled-legged_RL/scripts/tools/de
 旧模型作为候选已被新验收工具拒绝，接地/驻坡合格不能绕过水平目标。
 
 本次离线检查记录在 `outputs/deformable_leveling_preflight_20261006/`。
-它只验证源码、启动流程和 checkpoint 兼容性，不代表已经完成短训或实车验证。
+它只验证首轮源码、启动流程和 checkpoint 兼容性；训练效果见下节实测。
+新增支持调平的预检位于 `outputs/deformable_support_leveling_preflight_20261006/`，
+包含不更新策略的 60 步 Isaac Sim 奖励/接口检查，不代表新策略已经训练成功。
+
+## 2026-10-06 短训实测
+
+运行：`2026-10-06_07-16-29_leveling_short_20261006_071618_604869`，
+训练退出码 0；最终 checkpoint SHA256 为
+`e2b99b4ceeaa03ddb14ebf971acb663f4cb448cdf6b73763b96bbe551602f4e2`。
+以下比较使用相同 seed 1234、名义模型、初始状态和六类车体系 play 命令，
+每类 16 环境、6 s。候选只执行 POLICY rollout，未重新执行 ZERO。
+
+| 坡度 | 驻车倾角 P95 旧→新 | 新模型最低四轮接地率（六种命令） | 新模型物理终止 / 越界次数 |
+| --- | --- | --- | --- |
+| 0° | 0.76° → 0.05° | 100% | 0 / 0 |
+| 5° | 4.03° → 1.47° | 86.31% | 30 / 1 |
+| 10° | 7.44° → 7.45° | 94.03% | 11 / 1 |
+| 17° | 12.68° → 12.71° | 78.75% | 36 / 3 |
+| 20° | 15.71° → 15.29° | 78.84% | 53 / 13 |
+
+5°驻车虽更水平，速度误差 RMS 从 0.0060 增至 0.7908 m/s；
+20°驻车从 0.0482 增至 1.7369 m/s。少数朝向对角轮严重卸载，
+因此不能仅凭倾角改善或训练 reward 上升接受策略。
+20°末段跟踪误差 P95 约 0.96°、电流峰值约限值的 29%，
+扩展侧在一个未终止的配对环境中仍只有约 56°，离 75°还有余量。
+
+下一轮应优先改善四腿接地协调、离地余量和驻坡的连续约束，
+先完成全朝向 5°/10°驻车及慢速，再扩大转向、大坡和训练量；
+不宜继续单独增大倾角惩罚。`leveling_stage_accepted` 和
+`strict_horizontal_goal_achieved` 均为 false。
+首轮效果评估后已按上述方式修改训练代码；没有自动启动新训练或替换旧模型。
+这些数值来自修改前已完成的固定策略评估，不代表实车结果。

@@ -297,3 +297,29 @@ class DeformableFittedLevelingPPORunnerCfg(DeformableFittedMixedCornerPPORunnerC
         self.algorithm.reference_all_postures = False
         self.algorithm.flat_posture_weight = 0.0
         self.algorithm.entropy_coef = 0.001
+
+
+@configclass
+class DeformableFittedSupportLevelingPPORunnerCfg(DeformableFittedLevelingPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_five_v3"
+    max_iterations = 201
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.05, min_noise_std=0.02, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.learning_rate = 5.e-5
+
+
+@configclass
+class DeformableFittedSupportLevelingTenPPORunnerCfg(DeformableFittedSupportLevelingPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_ten_v3"
+    max_iterations = 401
+
+
+@configclass
+class DeformableFittedSupportLevelingMixedPPORunnerCfg(DeformableFittedSupportLevelingPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_mixed_v3"
+    max_iterations = 601

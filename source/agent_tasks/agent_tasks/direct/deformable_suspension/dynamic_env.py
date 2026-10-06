@@ -66,6 +66,10 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                               "baseline_extension_rad", "ground_grade_deg", "steep_grade_fraction",
                               "standing_command_fraction", "traction_deficit", "uphill_drive_capacity_n",
                               "uphill_gravity_n")
+        self._support_metrics_enabled = (getattr(cfg, "support_gap_weight", 0.0) > 0
+                                         or getattr(cfg, "support_load_weight", 0.0) > 0)
+        if self._support_metrics_enabled:
+            self._metric_names += ("wheel_gap_max_m", "support_gap_cost", "support_load_cost")
         self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
         self._metric_steps = torch.zeros(self.num_envs, device=self.device)
 
@@ -370,6 +374,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             reward -= self.cfg.best_effort_tilt_weight * du.suspension_tilt_cost(
                 self.robot.data.projected_gravity_b, contact_ratio,
                 gate_by_contact=getattr(self.cfg, "best_effort_contact_gating", True))
+        if getattr(self, "_support_metrics_enabled", False):
+            _, wheel_points, _, _, _ = self._wheel_geometry_w()
+            wheel_gap = wheel_points[..., 2] - self._ground_height(wheel_points)
+            gap_cost, load_cost = du.suspension_support_costs(
+                wheel_gap, self.wheel_normal_forces,
+                gap_tolerance_m=self.cfg.support_gap_tolerance_m,
+                gap_scale_m=self.cfg.support_gap_scale_m, min_load_n=self.cfg.support_min_load_n)
+            reward -= self.cfg.support_gap_weight * gap_cost + self.cfg.support_load_weight * load_cost
         cmd = self._drive_cmd_b()
         if self._leg_actuator is not None:
             saturated = (self._leg_actuator.command_current_raw.abs() >= .99*self._leg_actuator.current_limit)
@@ -406,6 +418,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             drive_capacity,
             slope_gravity,
         ), dim=-1)
+        if getattr(self, "_support_metrics_enabled", False):
+            metrics = torch.cat((metrics, torch.stack(
+                (wheel_gap.clamp_min(0.0).amax(-1), gap_cost, load_cost), dim=-1)), dim=-1)
         settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
         self._metrics += metrics * settled[:, None]
         self._metric_steps += settled

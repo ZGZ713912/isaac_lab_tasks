@@ -45,6 +45,64 @@ def test_slope_height_preference_does_not_block_available_leg_extension():
     assert tilt[3].item() == pytest.approx(math.radians(20))
 
 
+def test_dense_support_cost_distinguishes_lifted_corners_without_equalizing_load():
+    du = utilities()
+    gaps = torch.tensor([[0., -.001, 0., .001], [.004, 0., .004, 0.],
+                         [.010, 0., .010, 0.]], requires_grad=True)
+    loads = torch.tensor([[8., 20., 100., 200.], [0., 125., 0., 125.], [0., 125., 0., 125.]])
+    gap_cost, load_cost = du.suspension_support_costs(gaps, loads)
+    assert gap_cost[0] == load_cost[0] == 0  # unequal but supported is free
+    assert 0 < gap_cost[1] < gap_cost[2]
+    assert load_cost[1] == load_cost[2] == .5
+    gap_cost.sum().backward()
+    assert (gaps.grad[1:, [0, 2]] > 0).all()  # nearer terrain always costs less
+    assert torch.isfinite(gaps.grad).all()
+    # A small tilt improvement cannot repay the added weak-support cost alone.
+    tilt_gain = 60 * math.radians(3)
+    assert 40 * gap_cost[1] + 12 * load_cost[1] > tilt_gain
+
+
+def test_dense_support_cost_handles_touching_unloaded_wheels_and_large_gaps():
+    du = utilities()
+    gap, load = du.suspension_support_costs(torch.tensor([[0., 0., 0., 0.], [100., 100., 100., 100.]]),
+                                          torch.tensor([[0., 8., 80., 100.], [0., 0., 0., 0.]]))
+    assert gap[0] == 0 and load[0] == .25
+    assert gap[1] == 5 and load[1] == 1
+    for kwargs in (dict(gap_scale_m=0), dict(min_load_n=0), dict(gap_tolerance_m=-1)):
+        with pytest.raises(ValueError):
+            du.suspension_support_costs(torch.zeros(1, 4), torch.ones(1, 4), **kwargs)
+
+
+def test_support_stages_start_gently_and_preserve_the_original_leveling_recipe():
+    path = ROOT / "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_cfg.py"
+    nodes = [n for n in ast.parse(path.read_text()).body
+             if isinstance(n, ast.ClassDef) and n.name.startswith("DeformableFittedSupportLeveling")]
+    for node in nodes:
+        node.decorator_list = []
+    def terrain(**kwargs):
+        return SimpleNamespace(terrain_generator=SimpleNamespace(
+            sub_terrains={"periodic_slope": SimpleNamespace(segment_length=3., angle_choices=None)}))
+    class Parent:
+        best_effort_tilt_weight = 60.
+        support_min_load_n = 8.
+        rewards = dict(all_wheel_contact=40., tilt_quadratic=-40., termination=-200.)
+        leg_max_physical_angle = math.radians(75.)
+        max_leg_torque = 44.37
+    scope = dict(DeformableFittedLevelingEnvCfg=Parent, _make_periodic_slope_terrain=terrain)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), scope)
+    five, ten, mixed = (scope[f"DeformableFittedSupportLeveling{name}EnvCfg"]() for name in ("Five", "Ten", "Mixed"))
+    assert five.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5.,)
+    assert ten.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5., 10.)
+    assert mixed.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5., 10., 17., 20.)
+    assert five.cmd_rel_standing_envs > mixed.cmd_rel_standing_envs
+    assert five.clearance_margin_m >= .012
+    for cfg in (five, ten, mixed):
+        assert cfg.support_gap_weight > 0 and cfg.support_load_weight > 0
+        assert cfg.support_min_load_n > 3.
+        assert cfg.best_effort_tilt_weight == Parent.best_effort_tilt_weight
+        assert cfg.rewards == Parent.rewards and cfg.leg_max_physical_angle == Parent.leg_max_physical_angle
+
+
 def test_leveling_runner_drops_inherited_reference_and_retains_actor_contract():
     # Execute the actual new class with its parent hook. This isolates config
     # mutation from Isaac imports while testing inherited nonzero constraints.
@@ -109,8 +167,14 @@ def test_leveling_task_registration_selects_the_new_environment_and_runner():
                  agents=SimpleNamespace(__name__='agent_tasks.direct.deformable_suspension.agents'))
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), scope)
     entry = registrations[launcher.TASK]['kwargs']
-    assert entry['env_cfg_entry_point'].endswith(':DeformableFittedLevelingEnvCfg')
-    assert entry['rsl_rl_cfg_entry_point'].endswith(':DeformableFittedLevelingPPORunnerCfg')
+    assert entry['env_cfg_entry_point'].endswith(':DeformableFittedSupportLevelingFiveEnvCfg')
+    assert entry['rsl_rl_cfg_entry_point'].endswith(':DeformableFittedSupportLevelingPPORunnerCfg')
+    for stage, task in launcher.TASKS.items():
+        assert registrations[task]['kwargs']['env_cfg_entry_point'].endswith(
+            f':DeformableFittedSupportLeveling{stage.title()}EnvCfg')
+        runner_suffix = '' if stage == 'five' else stage.title()
+        assert registrations[task]['kwargs']['rsl_rl_cfg_entry_point'].endswith(
+            f':DeformableFittedSupportLeveling{runner_suffix}PPORunnerCfg')
 
 
 def report(grade, p95=15.):
@@ -173,10 +237,20 @@ def test_short_training_dry_run_never_launches_or_creates_artifacts(tmp_path, ca
         assert launcher.main(['--output-dir', str(output)]) == 0
         run.assert_not_called()
     text = capsys.readouterr().out
-    assert launcher.TASK in text and '--max_iterations 101' in text
-    assert '--finetune_noise_std 0.08' in text
+    assert launcher.TASK in text and '--max_iterations 201' in text
+    assert '--finetune_noise_std 0.05' in text
     assert '--resume_training' not in text and '--steep_teacher_checkpoint' not in text
     assert not output.exists()
+
+
+@pytest.mark.parametrize('stage,iterations', [('five', 201), ('ten', 401), ('mixed', 601)])
+def test_stage_budgets_reach_the_configured_motion_curriculum(stage, iterations, tmp_path, capsys):
+    with patch.object(launcher.subprocess, 'run') as run:
+        assert launcher.main(['--stage', stage, '--output-dir', str(tmp_path / 'dry')]) == 0
+        run.assert_not_called()
+    text = capsys.readouterr().out
+    assert launcher.TASKS[stage] in text and f'--max_iterations {iterations}' in text
+    assert launcher.EXPERIMENTS[stage] in text
 
 
 def test_training_completion_exports_only_this_run_and_still_requires_leveling(tmp_path):
@@ -203,13 +277,25 @@ def test_training_completion_exports_only_this_run_and_still_requires_leveling(t
         if '--run_name' in command:
             suffix = command[command.index('--run_name') + 1]
             folder = tmp_path / 'logs/rsl_rl' / launcher.EXPERIMENT / ('exact_' + suffix)
-            folder.mkdir(parents=True);(folder / 'model_100.pt').write_bytes(b'trained fixture')
+            iteration = int(command[command.index('--max_iterations') + 1]) - 1
+            folder.mkdir(parents=True);(folder / f'model_{iteration}.pt').write_bytes(b'trained fixture')
         return SimpleNamespace(returncode=0)
     with patch.object(launcher, 'ROOT', tmp_path), patch.object(launcher.subprocess, 'run', side_effect=run):
         assert launcher.main(['--run', '--checkpoint', str(checkpoint), '--python', str(runtime),
                               '--output-dir', str(output)]) == 0
     state = json.loads((output / 'status.json').read_text())
     assert state['status'] == 'training_completed_pending_leveling_evaluation'
-    assert not state['achieved_leveling'] and len(commands) == 2  # train + CPU plots; no auto GPU evaluation
+    assert not state['achieved_leveling'] and len(commands) == 2  # train + CPU scalars; no auto GPU evaluation
+    assert not state['plots_enabled'] and '--metrics-only' in commands[1]
+    assert not (output / 'charts').exists()
     assert all(Path(state['followup_commands'][name][2]).is_absolute() for name in ('benchmark', 'leveling_check'))
-    assert 'model_100.pt' in (output / 'next_commands.txt').read_text()
+    assert 'model_200.pt' in (output / 'next_commands.txt').read_text()
+
+
+def test_numeric_training_export_creates_no_figures(tmp_path):
+    exporter = load('deformable_training_report')
+    with patch.object(exporter, 'read_scalars', return_value={'Train/mean_reward': [dict(step=1, value=2.)]}), \
+         patch.object(exporter.plt, 'subplots', side_effect=AssertionError('No charts requested')):
+        records = exporter.export_training_metrics([('fixture', tmp_path / 'run')], tmp_path)
+    assert records['fixture']['scalars']['Train/mean_reward'][0]['value'] == 2.
+    assert {p.name for p in tmp_path.iterdir()} == {'training_metrics.json'}

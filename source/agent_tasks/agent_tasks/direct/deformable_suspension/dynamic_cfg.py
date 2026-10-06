@@ -100,6 +100,11 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     drive_velocity_tracking_weight = 0.0
     drive_yaw_tracking_weight = 0.0
     static_traction_margin_weight = 0.0
+    support_gap_weight = 0.0
+    support_load_weight = 0.0
+    support_gap_tolerance_m = 0.001
+    support_gap_scale_m = 0.01
+    support_min_load_n = 8.0
     traction_reserve_fraction = 0.1
     traction_mass_kg = 26.3365312  # sum of the checked-in V2 URDF link masses
     clearance_margin_m = 0.0
@@ -470,6 +475,51 @@ class DeformableFittedLevelingEnvCfg(DeformableFittedMixedCornerEnvCfg):
     rewards["flat_orientation_x_exp"] = 2.0
     rewards["flat_orientation_y_exp"] = 2.0
     rewards["action_rate"] = -0.5
+
+
+@configclass
+class DeformableFittedSupportLevelingFiveEnvCfg(DeformableFittedLevelingEnvCfg):
+    """Learn supported leveling on gentle grades before steep/fast motion."""
+
+    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 5.0), seed=13)
+    terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
+    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0,)
+    support_gap_weight = 40.0
+    support_load_weight = 12.0
+    clearance_margin_m = 0.012
+    cmd_rel_standing_envs = 0.85
+    cmd_lin_vel_x_range = (-0.15, 0.15)
+    cmd_lin_vel_y_range = (-0.10, 0.10)
+    cmd_ang_vel_z_range = (-0.25, 0.25)
+    motion_curriculum_iterations = 200
+
+
+@configclass
+class DeformableFittedSupportLevelingTenEnvCfg(DeformableFittedSupportLevelingFiveEnvCfg):
+    """Retain gentle-grade practice while introducing 10-degree leveling."""
+
+    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 10.0), seed=13)
+    terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
+    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0, 10.0)
+    cmd_rel_standing_envs = 0.75
+    cmd_lin_vel_x_range = (-0.3, 0.3)
+    cmd_lin_vel_y_range = (-0.2, 0.2)
+    cmd_ang_vel_z_range = (-0.5, 0.5)
+    motion_curriculum_iterations = 400
+
+
+@configclass
+class DeformableFittedSupportLevelingMixedEnvCfg(DeformableFittedSupportLevelingTenEnvCfg):
+    """Introduce steep grades and gradually approach the full play commands."""
+
+    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 20.0), seed=13)
+    terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
+    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0, 10.0, 17.0, 20.0)
+    cmd_rel_standing_envs = 0.5
+    cmd_lin_vel_x_range = (-0.8, 0.8)
+    cmd_lin_vel_y_range = (-0.5, 0.5)
+    cmd_ang_vel_z_range = (-1.5, 1.5)
+    motion_curriculum_iterations = 600
 
 
 @configclass
