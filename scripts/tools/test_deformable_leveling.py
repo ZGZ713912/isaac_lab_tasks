@@ -73,6 +73,123 @@ def test_dense_support_cost_handles_touching_unloaded_wheels_and_large_gaps():
             du.suspension_support_costs(torch.zeros(1, 4), torch.ones(1, 4), **kwargs)
 
 
+def test_motion_sampling_covers_pure_play_commands_and_both_spin_signs():
+    du = utilities()
+    draws = torch.full((6, 7), .9)
+    draws[:, 0] = torch.tensor([.1, .3, .5, .7, .7, .9])
+    draws[4, 3] = .1
+    commands = du.suspension_motion_commands(draws, (.8, .5, 1.5), 1., 1., .2)
+    torch.testing.assert_close(commands, torch.tensor([
+        [0., 0., 0.], [.8, 0., 0.], [0., .5, 0.],
+        [0., 0., 1.5], [0., 0., -1.5], [.8, .5, 1.5]]))
+    # Early curriculum genuinely parks; translation can start before spinning.
+    assert du.suspension_motion_commands(draws, (.8, .5, 1.5), 0., 0., .2).count_nonzero() == 0
+    scaled = du.suspension_motion_commands(draws, (.8, .5, 1.5), .5, 0., .2)
+    assert scaled[:, 2].count_nonzero() == 0 and scaled[:, 0].max() == .4
+
+
+def test_motion_sampling_has_bounded_magnitudes_and_explicit_standing_coverage():
+    du = utilities()
+    generator = torch.Generator().manual_seed(2027)
+    commands = du.suspension_motion_commands(torch.rand(20000, 7, generator=generator), (.8, .5, 1.5), 1., 1., .2)
+    assert (commands.abs() <= torch.tensor([.8, .5, 1.5])).all()
+    assert .18 < (commands == 0).all(-1).float().mean() < .22
+    for axis in range(3):
+        pure = (commands[:, axis] != 0) & (commands[:, [i for i in range(3) if i != axis]] == 0).all(-1)
+        assert .18 < pure.float().mean() < .22
+        assert (commands[pure, axis] > 0).any() and (commands[pure, axis] < 0).any()
+    with pytest.raises(ValueError):
+        du.suspension_motion_commands(torch.rand(2, 6), (.8, .5, 1.5), 1., 1., .2)
+
+
+def test_shared_terrain_covers_larger_training_grids_and_keeps_benchmarks_unchanged():
+    du=utilities()
+    assert du.suspension_training_terrain_size(96,8.,(150.,150.)) == (150.,150.)
+    assert du.suspension_training_terrain_size(256,8.,(150.,150.)) == (150.,150.)
+    assert du.suspension_training_terrain_size(512,8.,(150.,150.)) == (194.,194.)
+    assert du.suspension_training_terrain_size(1024,8.,(150.,300.)) == (258.,300.)
+    with pytest.raises(ValueError):
+        du.suspension_training_terrain_size(0,8.,(150.,150.))
+
+
+def test_clearance_reserve_does_not_consume_the_steep_leveling_stroke():
+    du=utilities()
+    grades=torch.deg2rad(torch.tensor([0.,5.,7.5,10.,20.]))
+    normal=torch.stack((-grades.sin(),torch.zeros_like(grades),grades.cos()),-1)
+    clearance=torch.full((5,),.006,requires_grad=True)
+    cost=du.suspension_grade_clearance_cost(clearance,normal,.018,.006)
+    torch.testing.assert_close(cost,torch.tensor([4/9,4/9,.25,0.,0.]),atol=1.e-6,rtol=1.e-6)
+    cost.sum().backward()
+    assert (clearance.grad[:3]<0).all() and torch.isfinite(clearance.grad).all()
+    assert du.suspension_grade_clearance_cost(torch.full((5,),.018),normal,.018,.006).count_nonzero()==0
+    with pytest.raises(ValueError):
+        du.suspension_grade_clearance_cost(clearance,normal,.018,0.)
+
+
+def test_gentle_precision_uses_ground_grade_and_preserves_steep_support_priority():
+    du = utilities()
+    grades = torch.deg2rad(torch.tensor([0., 5., 10., 13.5, 17., 20., -20.]))
+    normal = torch.stack((-grades.sin(), torch.zeros_like(grades), grades.cos()), -1)
+    weight = du.suspension_grade_precision_multiplier(normal, 2.)
+    torch.testing.assert_close(weight, torch.tensor([2., 2., 2., 1.5, 1., 1., 1.]), atol=1.e-6, rtol=1.e-6)
+    torch.testing.assert_close(du.suspension_grade_precision_multiplier(normal), torch.ones(7))
+    # Equal body tilt receives greater precision pressure only on gentle ground.
+    tilt = torch.full((7,), math.radians(4), requires_grad=True)
+    gravity = torch.stack((tilt.sin(), torch.zeros_like(tilt), -tilt.cos()), -1)
+    cost = 120 * weight * du.suspension_tilt_cost(gravity, torch.ones(7), gate_by_contact=False)
+    cost.sum().backward()
+    torch.testing.assert_close(tilt.grad[2], 2 * tilt.grad[5])
+    torch.testing.assert_close(tilt.grad[5], tilt.grad[6])
+    assert torch.isfinite(tilt.grad).all()
+    for multiplier in (0., -1., float('nan'), float('inf')):
+        with pytest.raises(ValueError):
+            du.suspension_grade_precision_multiplier(normal, multiplier)
+
+
+@pytest.mark.parametrize('command', [(0.,0.,0.),(.4,0.,0.),(0.,0.,-1.5)])
+def test_steep_motion_reserve_preserves_parking_and_gentle_grade_stroke(command):
+    du = utilities()
+    grades = torch.deg2rad(torch.tensor([5.,10.,17.,20.]))
+    normal = torch.stack((-grades.sin(),torch.zeros_like(grades),grades.cos()),-1)
+    clearance = torch.full((4,),.006,requires_grad=True)
+    body_command = torch.tensor(command).expand(4,3)
+    cost = du.suspension_grade_clearance_cost(clearance,normal,.018,.006,
+                                            motion_command=body_command,steep_motion_margin_m=.012)
+    moving = any(command)
+    torch.testing.assert_close(cost,torch.tensor([4/9,0.,.25 if moving else 0.,.25 if moving else 0.]),atol=1.e-6,rtol=1.e-6)
+    cost.sum().backward()
+    assert torch.isfinite(clearance.grad).all()
+    if moving:
+        assert (clearance.grad[2:] < 0).all()
+
+
+def test_steep_parking_attitude_transient_gets_reserve_without_changing_10deg():
+    du = utilities()
+    grades = torch.deg2rad(torch.tensor([10.,20.]))
+    normal = torch.stack((-grades.sin(),torch.zeros_like(grades),grades.cos()),-1)
+    clearance = torch.full((2,),.006)
+    command = torch.zeros(2,3)
+    quiet = du.suspension_grade_clearance_cost(clearance,normal,.018,.006,
+        motion_command=command,steep_motion_margin_m=.012,attitude_rate=torch.zeros(2,2))
+    transient = du.suspension_grade_clearance_cost(clearance,normal,.018,.006,
+        motion_command=command,steep_motion_margin_m=.012,attitude_rate=torch.tensor([[.25,0.],[.25,0.]]))
+    torch.testing.assert_close(quiet,torch.zeros(2),atol=1.e-6,rtol=1.e-6)
+    torch.testing.assert_close(transient,torch.tensor([0.,.25]),atol=1.e-6,rtol=1.e-6)
+
+
+def test_flat_leg_alignment_releases_on_a_grade_or_a_single_sloping_footprint():
+    du=utilities()
+    q=torch.tensor([[.8,.8,.8,.8],[.8,.9,.8,.9],[.8,.9,.8,.9]],requires_grad=True)
+    normals=torch.zeros(3,4,3);normals[...,2]=1.
+    theta=math.radians(5.)
+    normals[2,0]=torch.tensor([-math.sin(theta),0.,math.cos(theta)])
+    cost=du.suspension_flat_leg_spread_cost(q,normals)
+    assert cost[0]==cost[2]==0 and cost[1]>0
+    cost.sum().backward()
+    assert q.grad[1,0]<0 and q.grad[1,1]>0
+    assert q.grad[2].count_nonzero()==0  # needed slope leg difference stays free
+
+
 def test_support_stages_start_gently_and_preserve_the_original_leveling_recipe():
     path = ROOT / "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_cfg.py"
     nodes = [n for n in ast.parse(path.read_text()).body
@@ -92,14 +209,30 @@ def test_support_stages_start_gently_and_preserve_the_original_leveling_recipe()
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), scope)
     five, ten, mixed = (scope[f"DeformableFittedSupportLeveling{name}EnvCfg"]() for name in ("Five", "Ten", "Mixed"))
     assert five.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5.,)
-    assert ten.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5., 10.)
-    assert mixed.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5., 10., 17., 20.)
+    assert ten.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (0., 5., 10.)
+    assert mixed.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (0., 5., 10., 17., 20.)
     assert five.cmd_rel_standing_envs > mixed.cmd_rel_standing_envs
+    motion = scope['DeformableFittedSupportLevelingMotionEnvCfg']()
+    assert motion.terrain.terrain_generator.sub_terrains['periodic_slope'].angle_choices == (0.,5.)
+    assert motion.support_motion_commands and ten.support_motion_commands and mixed.support_motion_commands
+    assert motion.cmd_lin_vel_x_range == ten.cmd_lin_vel_x_range == mixed.cmd_lin_vel_x_range == (-.8, .8)
+    assert motion.cmd_ang_vel_z_range == ten.cmd_ang_vel_z_range == mixed.cmd_ang_vel_z_range == (-1.5, 1.5)
+    assert motion.support_min_load_n == 15.
+    assert ten.support_min_load_n == mixed.support_min_load_n > motion.support_min_load_n
+    assert ten.support_load_weight == mixed.support_load_weight > motion.support_load_weight
+    assert five.best_effort_tilt_weight == motion.best_effort_tilt_weight == Parent.best_effort_tilt_weight
+    assert ten.best_effort_tilt_weight == mixed.best_effort_tilt_weight > motion.best_effort_tilt_weight
+    assert ten.gentle_precision_multiplier == mixed.gentle_precision_multiplier == 2.
+    assert ten.baseline_extension_penalty_weight == mixed.baseline_extension_penalty_weight == 0.
+    assert mixed.clearance_steep_motion_margin_m >= .018
+    assert mixed.motion_curriculum_iterations <= 200  # full commands before short-run end
+    assert motion.clearance_margin_m >= .018
+    assert motion.clearance_grade_margin_m == ten.clearance_grade_margin_m == mixed.clearance_grade_margin_m == .006
     assert five.clearance_margin_m >= .012
     for cfg in (five, ten, mixed):
         assert cfg.support_gap_weight > 0 and cfg.support_load_weight > 0
         assert cfg.support_min_load_n > 3.
-        assert cfg.best_effort_tilt_weight == Parent.best_effort_tilt_weight
+        assert cfg.best_effort_tilt_weight >= Parent.best_effort_tilt_weight
         assert cfg.rewards == Parent.rewards and cfg.leg_max_physical_angle == Parent.leg_max_physical_angle
 
 
@@ -125,6 +258,33 @@ def test_leveling_runner_drops_inherited_reference_and_retains_actor_contract():
     assert cfg.policy.init_noise_std >= .05 and cfg.policy.min_noise_std >= .02
     assert cfg.policy.use_leg_geometry_features
     assert not cfg.policy.actor_obs_normalization and not cfg.policy.critic_obs_normalization
+
+
+def test_precision_stages_match_launcher_noise_and_keep_actor_contract():
+    path = ROOT / "source/agent_tasks/agent_tasks/direct/deformable_suspension/agents/rsl_rl_ppo_cfg.py"
+    names = {"DeformableFittedLevelingPPORunnerCfg", "DeformableFittedSupportLevelingPPORunnerCfg",
+             "DeformableFittedSupportLevelingTenPPORunnerCfg", "DeformableFittedSupportLevelingMixedPPORunnerCfg"}
+    nodes = [n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef) and n.name in names]
+    for node in nodes:
+        node.decorator_list = []
+
+    class Parent:
+        def __post_init__(self):
+            self.algorithm = SimpleNamespace(steep_preservation_weight=2., reference_all_postures=True,
+                                            flat_posture_weight=1., entropy_coef=.001)
+
+    scope = {"DeformableFittedMixedCornerPPORunnerCfg": Parent,
+             "DeformableHistoryTransformerPolicyCfg": lambda **kw: SimpleNamespace(**kw)}
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), scope)
+    for stage in ('ten', 'mixed'):
+        cfg = scope[f'DeformableFittedSupportLeveling{stage.title()}PPORunnerCfg']()
+        cfg.__post_init__()
+        assert cfg.policy.init_noise_std == launcher.NOISE_STD[stage]
+        assert 0 < cfg.policy.min_noise_std < cfg.policy.init_noise_std < launcher.NOISE_STD['five']
+        assert cfg.policy.use_leg_geometry_features
+        assert not cfg.policy.actor_obs_normalization and not cfg.policy.critic_obs_normalization
+        assert cfg.algorithm.steep_preservation_weight == cfg.algorithm.flat_posture_weight == 0
+        assert not cfg.algorithm.reference_all_postures
 
 
 def test_leveling_reward_distinguishes_large_tilt_and_retains_contact_constraints():
@@ -243,7 +403,7 @@ def test_short_training_dry_run_never_launches_or_creates_artifacts(tmp_path, ca
     assert not output.exists()
 
 
-@pytest.mark.parametrize('stage,iterations', [('five', 201), ('ten', 401), ('mixed', 601)])
+@pytest.mark.parametrize('stage,iterations', [('five', 201), ('motion', 401), ('ten', 401), ('mixed', 601)])
 def test_stage_budgets_reach_the_configured_motion_curriculum(stage, iterations, tmp_path, capsys):
     with patch.object(launcher.subprocess, 'run') as run:
         assert launcher.main(['--stage', stage, '--output-dir', str(tmp_path / 'dry')]) == 0
@@ -251,6 +411,24 @@ def test_stage_budgets_reach_the_configured_motion_curriculum(stage, iterations,
     text = capsys.readouterr().out
     assert launcher.TASKS[stage] in text and f'--max_iterations {iterations}' in text
     assert launcher.EXPERIMENTS[stage] in text
+
+
+def test_precision_noise_override_reaches_training_without_launching(tmp_path, capsys):
+    with patch.object(launcher.subprocess, 'run') as run:
+        assert launcher.main(['--stage', 'ten', '--noise-std', '.01',
+                              '--output-dir', str(tmp_path / 'dry')]) == 0
+        run.assert_not_called()
+    assert '--finetune_noise_std 0.01' in capsys.readouterr().out
+    assert not (tmp_path / 'dry').exists()
+
+
+@pytest.mark.parametrize('value', ['0', '-0.01', 'nan', 'inf'])
+def test_precision_noise_rejects_invalid_values_before_launch(value, tmp_path):
+    with patch.object(launcher.subprocess, 'run') as run, pytest.raises(SystemExit):
+        launcher.main(['--stage', 'ten', '--noise-std', value,
+                       '--output-dir', str(tmp_path / 'dry')])
+    run.assert_not_called()
+    assert not (tmp_path / 'dry').exists()
 
 
 def test_training_completion_exports_only_this_run_and_still_requires_leveling(tmp_path):

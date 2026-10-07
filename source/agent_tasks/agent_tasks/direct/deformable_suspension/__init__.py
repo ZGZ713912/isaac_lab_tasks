@@ -187,6 +187,7 @@ for _suffix, _cfg, _runner in (
     ("BestEffort-MixedCorner", "DeformableFittedMixedCornerEnvCfg", "DeformableFittedMixedCornerPPORunnerCfg"),
     ("Leveling", "DeformableFittedLevelingEnvCfg", "DeformableFittedLevelingPPORunnerCfg"),
     ("Support-Leveling-Five", "DeformableFittedSupportLevelingFiveEnvCfg", "DeformableFittedSupportLevelingPPORunnerCfg"),
+    ("Support-Leveling-Motion", "DeformableFittedSupportLevelingMotionEnvCfg", "DeformableFittedSupportLevelingMotionPPORunnerCfg"),
     ("Support-Leveling-Ten", "DeformableFittedSupportLevelingTenEnvCfg", "DeformableFittedSupportLevelingTenPPORunnerCfg"),
     ("Support-Leveling-Mixed", "DeformableFittedSupportLevelingMixedEnvCfg", "DeformableFittedSupportLevelingMixedPPORunnerCfg"),
     ("Rough-Keyboard-Play", "DeformableFittedKeyboardPlayEnvCfg", "DeformableFittedPPORunnerCfg"),

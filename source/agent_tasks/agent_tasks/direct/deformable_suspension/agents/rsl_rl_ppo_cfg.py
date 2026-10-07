@@ -314,12 +314,30 @@ class DeformableFittedSupportLevelingPPORunnerCfg(DeformableFittedLevelingPPORun
 
 
 @configclass
-class DeformableFittedSupportLevelingTenPPORunnerCfg(DeformableFittedSupportLevelingPPORunnerCfg):
-    experiment_name = "deformable_real2sim_support_leveling_ten_v3"
+class DeformableFittedSupportLevelingMotionPPORunnerCfg(DeformableFittedSupportLevelingPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_motion_v3"
     max_iterations = 401
 
 
 @configclass
-class DeformableFittedSupportLevelingMixedPPORunnerCfg(DeformableFittedSupportLevelingPPORunnerCfg):
+class DeformableFittedSupportLevelingTenPPORunnerCfg(DeformableFittedSupportLevelingPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_ten_v3"
+    max_iterations = 401
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.015, min_noise_std=0.005, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.entropy_coef = 0.0003
+
+
+@configclass
+class DeformableFittedSupportLevelingMixedPPORunnerCfg(DeformableFittedSupportLevelingTenPPORunnerCfg):
     experiment_name = "deformable_real2sim_support_leveling_mixed_v3"
     max_iterations = 601
+    policy = DeformableHistoryTransformerPolicyCfg(
+        init_noise_std=0.015, min_noise_std=0.005, noise_std_type="log",
+        use_leg_geometry_features=True,
+        actor_obs_normalization=False, critic_obs_normalization=False)

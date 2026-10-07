@@ -118,6 +118,58 @@ def suspension_support_costs(wheel_gap_m, normal_force_n, *, gap_tolerance_m=0.0
     return gap_cost.clamp(max=5.0).mean(-1), load_cost.mean(-1)
 
 
+def suspension_motion_commands(draws, limits, linear_scale, yaw_scale, standing_fraction):
+    """Sample parking, pure translation, both spins and combined body commands.
+
+    Seven uniform draws select a mode, three signs and three magnitudes.
+    A quarter of magnitudes reach the play limit, so normal-speed pure spins
+    cannot disappear behind the standing mask or simultaneous translation.
+    This changes training exposure only; external/play commands bypass it.
+    """
+    if draws.shape[-1] != 7 or len(limits) != 3 or any(v <= 0 for v in limits):
+        raise ValueError("Seven draws and three positive command limits required")
+    if not 0 <= standing_fraction < 1 or not 0 <= linear_scale <= 1 or not 0 <= yaw_scale <= 1:
+        raise ValueError("Invalid standing fraction or curriculum scale")
+    selector = draws[..., 0]
+    modes = (1 + ((selector - standing_fraction) / (1 - standing_fraction) * 4).long()).clamp(1, 4)
+    modes = torch.where(selector < standing_fraction, 0, modes)
+    mask = draws.new_tensor(((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)))[modes]
+    signs = torch.where(draws[..., 1:4] < .5, -1., 1.)
+    magnitude = torch.where(draws[..., 4:7] >= .75, 1., .25 + .75 * draws[..., 4:7])
+    scale = draws.new_tensor((linear_scale, linear_scale, yaw_scale))
+    return mask * signs * magnitude * draws.new_tensor(limits) * scale
+
+
+def suspension_training_terrain_size(num_envs, env_spacing, size, footprint_margin_m=1.):
+    """Cover the centered square spawn grid, cell travel and robot footprint.
+
+    A shared terrain does not grow when num_envs grows. Leave adequate existing
+    meshes unchanged so default training and fixed benchmark states stay paired.
+    """
+    if num_envs < 1 or env_spacing <= 0 or footprint_margin_m < 0 or len(size) != 2:
+        raise ValueError("Positive environment count/spacing and two terrain dimensions required")
+    # TerrainImporter's grid can have one more row than ceil(sqrt(N)).
+    rows = math.ceil(num_envs / max(1, math.isqrt(num_envs)))
+    cols = math.ceil(num_envs / rows)
+    required = max(rows, cols) * env_spacing + 2 * footprint_margin_m
+    return tuple(max(float(side), required) for side in size)
+
+
+def suspension_flat_leg_spread_cost(q, wheel_ground_normals, sigma_rad=.05, fade_grade_deg=2.):
+    """Prefer equal wheel heights only when every wheel sees flat terrain.
+
+    Body tilt alone cannot select flat ground: a successfully leveled chassis
+    on a grade needs unequal legs. Checking every footprint also releases this
+    preference while crossing a slope break.
+    """
+    if sigma_rad <= 0 or fade_grade_deg <= 0 or wheel_ground_normals.shape[:-1] != q.shape:
+        raise ValueError("Positive spread/grade scales and one terrain normal per leg required")
+    grade = torch.atan2(wheel_ground_normals[..., :2].norm(dim=-1),
+                        wheel_ground_normals[..., 2]).amax(-1)
+    gate = (1. - grade / math.radians(fade_grade_deg)).clamp(0., 1.)
+    return gate * (q - q.mean(-1, keepdim=True)).square().mean(-1) / sigma_rad**2
+
+
 def suspension_baseline_extension(q, baseline):
     """Raise penalty anchored to the lowest chassis corner, allowing leveling.
 
@@ -165,6 +217,52 @@ def suspension_clearance_cost(clearance, margin_m):
     if margin_m <= 0:
         raise ValueError("Clearance margin must be positive")
     return ((margin_m - clearance).clamp_min(0.0) / margin_m).square()
+
+
+def suspension_grade_precision_multiplier(ground_normal, multiplier=1.,
+                                          gentle_grade_deg=10., steep_grade_deg=17.):
+    """Strengthen reachable gentle-grade precision without forcing steep tilt.
+
+    Terrain is privileged reward information only. A level body on a slope
+    still receives the slope's weight; body attitude must not select the gate.
+    """
+    if not math.isfinite(multiplier) or multiplier < 1. or not 0 <= gentle_grade_deg < steep_grade_deg < 90.:
+        raise ValueError("A finite multiplier >= 1 and increasing ground grades are required")
+    grade = torch.atan2(ground_normal[..., :2].norm(dim=-1), ground_normal[..., 2]) * (180. / math.pi)
+    steep = ((grade - gentle_grade_deg) / (steep_grade_deg - gentle_grade_deg)).clamp(0., 1.)
+    return multiplier + steep * (1. - multiplier)
+
+
+def suspension_grade_clearance_cost(clearance, ground_normal, margin_m, grade_margin_m,
+                                    start_grade_deg=5., full_grade_deg=10., *,
+                                    motion_command=None, steep_motion_margin_m=0., attitude_rate=None):
+    """Keep motion reserve on gentle ground without consuming steep leg stroke.
+
+    Both margins are soft reward targets. The physical chassis termination is
+    unchanged; the smaller steep target retains the geometric leveling space.
+    """
+    if min(margin_m, grade_margin_m) <= 0 or not 0 <= start_grade_deg < full_grade_deg:
+        raise ValueError("Positive margins and an increasing grade interval required")
+    grade = torch.atan2(ground_normal[..., :2].norm(dim=-1), ground_normal[..., 2]) * (180. / math.pi)
+    mix = ((grade - start_grade_deg) / (full_grade_deg - start_grade_deg)).clamp(0., 1.)
+    margin = margin_m + mix * (grade_margin_m - margin_m)
+    if steep_motion_margin_m < 0:
+        raise ValueError("Steep motion margin must be nonnegative")
+    if steep_motion_margin_m > 0:
+        if motion_command is None or motion_command.shape != clearance.shape + (3,) or full_grade_deg >= 17.:
+            raise ValueError("A body motion command and grade interval below 17deg are required")
+        moving = torch.maximum(motion_command[..., :2].norm(dim=-1) / .4,
+                               motion_command[..., 2].abs() / .5).clamp(0., 1.)
+        if attitude_rate is not None:
+            if attitude_rate.shape != clearance.shape + (2,):
+                raise ValueError("One roll/pitch rate pair per clearance sample is required")
+            # A parking command can still have a fast suspension transient.
+            moving = torch.maximum(moving, (attitude_rate.norm(dim=-1) / .25).clamp(0., 1.))
+        steep = ((grade - full_grade_deg) / (17. - full_grade_deg)).clamp(0., 1.)
+        # Settled parking keeps its small geometric reserve. Steep motion and
+        # attitude transients get clearance before delayed legs scrape a corner.
+        margin = margin + (steep_motion_margin_m - margin).clamp_min(0.) * moving * steep
+    return ((margin - clearance).clamp_min(0.) / margin).square()
 
 
 H_HIGH = 0.13189

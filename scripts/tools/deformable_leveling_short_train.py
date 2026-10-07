@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
+import math
 from pathlib import Path
 import shlex
 import subprocess
@@ -13,9 +14,10 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 TASKS = {stage: f"Robotics-Deformable-Suspension-Support-Leveling-{stage.title()}-Real2Sim-v3"
-         for stage in ("five", "ten", "mixed")}
+         for stage in ("five", "motion", "ten", "mixed")}
 EXPERIMENTS = {stage: f"deformable_real2sim_support_leveling_{stage}_v3" for stage in TASKS}
-ITERATIONS = dict(five=201, ten=401, mixed=601)
+ITERATIONS = dict(five=201, motion=401, ten=401, mixed=601)
+NOISE_STD = dict(five=0.05, motion=0.05, ten=0.015, mixed=0.015)
 TASK = TASKS["five"]
 EXPERIMENT = EXPERIMENTS["five"]
 PYTHON = Path("/home/noir/miniconda3/envs/isaaclab/bin/python")
@@ -28,7 +30,7 @@ WARM_START = ROOT / (
 def training_command(args, suffix):
     return [str(ROOT / "run_gui.sh"), str(args.python), "-B", "-u",
             str(ROOT / "scripts/rsl_rl/train.py"), "--task", TASKS[args.stage],
-            "--checkpoint", str(args.checkpoint), "--finetune_noise_std", "0.05",
+            "--checkpoint", str(args.checkpoint), "--finetune_noise_std", str(args.noise_std),
             "--experiment_name", EXPERIMENTS[args.stage], "--run_name", suffix,
             "--num_envs", str(args.num_envs), "--max_iterations", str(args.iterations),
             "--seed", str(args.seed), "--device", args.device, "--headless"]
@@ -45,11 +47,13 @@ def main(argv=None):
     parser.add_argument("--checkpoint", type=Path, default=WARM_START)
     parser.add_argument("--python", type=Path, default=PYTHON)
     parser.add_argument("--stage", choices=tuple(TASKS), default="five",
-                        help="Advance five -> ten -> mixed after matched support/leveling validation")
+                        help="Advance five -> motion -> ten -> mixed after matched support/leveling validation")
     parser.add_argument("--iterations", type=int,
-                        help="Override the stage budget: five=201, ten=401, mixed=601")
+                        help="Override the stage budget: five=201, motion=401, ten=401, mixed=601")
     parser.add_argument("--num-envs", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--noise-std", type=float,
+                        help="Fresh action noise: five/motion=.05, ten=.015, mixed=.02")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--run", action="store_true")
@@ -57,8 +61,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.iterations is None:
         args.iterations = ITERATIONS[args.stage]
+    if args.noise_std is None:
+        args.noise_std = NOISE_STD[args.stage]
     if args.iterations < 1 or args.num_envs < 1 or args.seed < 0:
         parser.error("Iterations/environments must be positive and seed nonnegative")
+    if not math.isfinite(args.noise_std) or args.noise_std <= 0:
+        parser.error("Action noise must be finite and positive")
     args.checkpoint = args.checkpoint.resolve()
     args.python = args.python.resolve()
     stamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S_%f")
@@ -89,6 +97,7 @@ def main(argv=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / relative).read_bytes())
     state = dict(status="training", task=TASKS[args.stage], stage=args.stage,
+                 action_noise_std=args.noise_std,
                  command=command, run_suffix=suffix, plots_enabled=args.plots,
                  warm_start=str(args.checkpoint),
                  warm_start_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),

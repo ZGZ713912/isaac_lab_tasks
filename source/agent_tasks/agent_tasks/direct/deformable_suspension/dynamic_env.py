@@ -22,6 +22,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             raise ValueError("V1 tire dynamics cannot be combined with base servo or wheel material events")
         if cfg.observation_space != 32 * cfg.policy_history_length or cfg.state_space != 40:
             raise ValueError("V1 contract requires policy=32*history_length and critic=40")
+        if getattr(cfg, "auto_expand_periodic_terrain", False):
+            gen = getattr(cfg.terrain, "terrain_generator", None)
+            if gen is not None and "periodic_slope" in gen.sub_terrains:
+                old_size = gen.size
+                gen.size = du.suspension_training_terrain_size(cfg.scene.num_envs, cfg.scene.env_spacing, old_size)
+                if gen.size != old_size:
+                    print(f"[INFO]: Expanded shared periodic terrain {old_size} -> {gen.size} "
+                          f"for {cfg.scene.num_envs} environments")
         super().__init__(cfg, render_mode, **kwargs)
         if abs(self.physics_dt - cfg.adrc_dt) > 1.0e-9:
             raise ValueError("ADRC must run once per 1 ms physics step; do not subcycle stale measurements")
@@ -181,6 +189,13 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         # Standing -> translation -> spin -> simultaneous motion; both spin signs are sampled.
         linear_scale = min(1.0, max(0.0, (progress - 0.05) / 0.35))
         yaw_scale = min(1.0, max(0.0, (progress - 0.25) / 0.65))
+        if getattr(self.cfg, "support_motion_commands", False):
+            self.cmd_buf[env_ids] = du.suspension_motion_commands(
+                torch.rand(len(env_ids), 7, device=self.device),
+                (self.cfg.cmd_lin_vel_x_range[1], self.cfg.cmd_lin_vel_y_range[1],
+                 self.cfg.cmd_ang_vel_z_range[1]),
+                linear_scale, yaw_scale, self.cfg.cmd_rel_standing_envs)
+            return
         self.cmd_buf[env_ids, :2] *= linear_scale
         self.cmd_buf[env_ids, 2] *= yaw_scale
         mode = torch.randint(0, 5, (len(env_ids),), device=self.device)
@@ -330,8 +345,17 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         reward -= getattr(self.cfg, "baseline_extension_penalty_weight", 0.0) * extension
         clearance_weight = getattr(self.cfg, "clearance_margin_weight", 0.0)
         if clearance_weight:
-            reward -= clearance_weight * du.suspension_clearance_cost(
-                clearance, self.cfg.clearance_margin_m).clamp(max=25.0)
+            grade_margin = getattr(self.cfg, "clearance_grade_margin_m", 0.0)
+            if grade_margin > 0:
+                normal = self._normals_at(self.robot.data.root_link_pos_w[:, None])[:, 0]
+                clearance_cost = du.suspension_grade_clearance_cost(
+                    clearance, normal, self.cfg.clearance_margin_m, grade_margin,
+                    motion_command=self._drive_command,
+                    steep_motion_margin_m=getattr(self.cfg, "clearance_steep_motion_margin_m", 0.),
+                    attitude_rate=self.robot.data.root_ang_vel_b[:, :2])
+            else:
+                clearance_cost = du.suspension_clearance_cost(clearance, self.cfg.clearance_margin_m)
+            reward -= clearance_weight * clearance_cost.clamp(max=25.0)
         linear_weight = getattr(self.cfg, "drive_velocity_tracking_weight", 0.0)
         yaw_weight = getattr(self.cfg, "drive_yaw_tracking_weight", 0.0)
         if linear_weight or yaw_weight:
@@ -349,6 +373,10 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if flat_extension_weight:
             reward -= flat_extension_weight * extension * du.suspension_flat_grade_gate(
                 ground_normal, self.cfg.low_profile_fade_grade_deg)
+        spread_weight = getattr(self.cfg, "flat_leg_spread_weight", 0.0)
+        if spread_weight:
+            _, _, wheel_normals, _, _ = self._wheel_geometry_w()
+            reward -= spread_weight * du.suspension_flat_leg_spread_cost(q, wheel_normals).clamp(max=25.)
         traction_cost = drive_capacity = slope_gravity = self._friction[:, 0] * 0.0
         traction_weight = getattr(self.cfg, "static_traction_margin_weight", 0.0)
         if traction_weight:
@@ -371,7 +399,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if getattr(self.cfg, "best_effort_leveling", False):
             contact_ratio = (self.wheel_normal_forces.amin(-1)
                              / self.cfg.wheel_contact_force_threshold).clamp(0.0, 1.0)
-            reward -= self.cfg.best_effort_tilt_weight * du.suspension_tilt_cost(
+            precision_multiplier = du.suspension_grade_precision_multiplier(
+                ground_normal, getattr(self.cfg, "gentle_precision_multiplier", 1.))
+            reward -= self.cfg.best_effort_tilt_weight * precision_multiplier * du.suspension_tilt_cost(
                 self.robot.data.projected_gravity_b, contact_ratio,
                 gate_by_contact=getattr(self.cfg, "best_effort_contact_gating", True))
         if getattr(self, "_support_metrics_enabled", False):
@@ -422,6 +452,20 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             metrics = torch.cat((metrics, torch.stack(
                 (wheel_gap.clamp_min(0.0).amax(-1), gap_cost, load_cost), dim=-1)), dim=-1)
         settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
+        if getattr(self.cfg, "auto_expand_periodic_terrain", False):
+            # Episode metrics above exclude short failed episodes. Show their
+            # population explicitly so surviving fragments cannot look healthy.
+            # The runner retains log dictionaries across the rollout. Give it
+            # a fresh snapshot rather than overwriting earlier step samples.
+            log = dict(self.extras["log"])
+            log["health/settled_env_fraction"] = settled.mean().item()
+            log["health/terminated_env_fraction"] = self.reset_terminated.float().mean().item()
+            log["health/timeout_env_fraction"] = self.reset_time_outs.float().mean().item()
+            if self._periodic:
+                half = q.new_tensor(self.cfg.terrain.terrain_generator.size) / 2
+                outside = (data.root_link_pos_w[:, :2].abs() > half - 0.8).any(-1)
+                log["health/terrain_outside_fraction"] = outside.float().mean().item()
+            self.extras["log"] = log
         self._metrics += metrics * settled[:, None]
         self._metric_steps += settled
         return self.cfg.reward_scale * reward.clamp(-self.cfg.reward_total_clip, self.cfg.reward_total_clip)

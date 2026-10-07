@@ -93,6 +93,7 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     baseline_reward_weight = 0.3
     baseline_extension_penalty_weight = 0.0
     flat_baseline_extension_penalty_weight = 0.0
+    flat_leg_spread_weight = 0.0
     low_profile_fade_grade_deg = 5.0
     training_steep_reference_mix = False
     steep_teacher_start_grade_deg = 17.0
@@ -105,9 +106,13 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     support_gap_tolerance_m = 0.001
     support_gap_scale_m = 0.01
     support_min_load_n = 8.0
+    support_motion_commands = False
+    auto_expand_periodic_terrain = False
     traction_reserve_fraction = 0.1
     traction_mass_kg = 26.3365312  # sum of the checked-in V2 URDF link masses
     clearance_margin_m = 0.0
+    clearance_grade_margin_m = 0.0
+    clearance_steep_motion_margin_m = 0.0
     clearance_margin_weight = 0.0
     reward_scale = 0.1
     horizontal_tolerance_deg = 3.0
@@ -485,6 +490,7 @@ class DeformableFittedSupportLevelingFiveEnvCfg(DeformableFittedLevelingEnvCfg):
     terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
     terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0,)
     support_gap_weight = 40.0
+    auto_expand_periodic_terrain = True
     support_load_weight = 12.0
     clearance_margin_m = 0.012
     cmd_rel_standing_envs = 0.85
@@ -495,31 +501,62 @@ class DeformableFittedSupportLevelingFiveEnvCfg(DeformableFittedLevelingEnvCfg):
 
 
 @configclass
-class DeformableFittedSupportLevelingTenEnvCfg(DeformableFittedSupportLevelingFiveEnvCfg):
+class DeformableFittedSupportLevelingMotionEnvCfg(DeformableFittedSupportLevelingFiveEnvCfg):
+    """Bridge parking to play speeds, retaining sustained flat-ground practice."""
+
+    terrain = _make_periodic_slope_terrain(angle_range=(0.0, 5.0), seed=13)
+    terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
+    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (0.0, 5.0)
+    support_motion_commands = True
+    flat_leg_spread_weight = 4.0
+    cmd_rel_standing_envs = 0.2
+    cmd_lin_vel_x_range = (-0.8, 0.8)
+    cmd_lin_vel_y_range = (-0.5, 0.5)
+    cmd_ang_vel_z_range = (-1.5, 1.5)
+    motion_curriculum_iterations = 100
+    # Reserve load and clearance before a spinning corner unloads or scrapes.
+    support_min_load_n = 15.0
+    support_load_weight = 24.0
+    clearance_margin_m = 0.018
+    # An 18 mm target leaves a 3.70-degree witness at some 10-degree headings.
+    # Fade the soft target to the 6 mm geometry envelope before that grade.
+    clearance_grade_margin_m = 0.006
+
+
+@configclass
+class DeformableFittedSupportLevelingTenEnvCfg(DeformableFittedSupportLevelingMotionEnvCfg):
     """Retain gentle-grade practice while introducing 10-degree leveling."""
 
-    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 10.0), seed=13)
+    best_effort_tilt_weight = 120.0
+    # Preserve steep support while improving the reachable gentle-grade goal.
+    gentle_precision_multiplier = 2.0
+    # The flat-ground anchor remains active. On slopes, clearance and tilt
+    # select common height instead of pulling a loaded corner toward minangle.
+    baseline_extension_penalty_weight = 0.0
+    support_min_load_n = 20.0
+    support_load_weight = 36.0
+    terrain = _make_periodic_slope_terrain(angle_range=(0.0, 10.0), seed=13)
     terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
-    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0, 10.0)
-    cmd_rel_standing_envs = 0.75
-    cmd_lin_vel_x_range = (-0.3, 0.3)
-    cmd_lin_vel_y_range = (-0.2, 0.2)
-    cmd_ang_vel_z_range = (-0.5, 0.5)
-    motion_curriculum_iterations = 400
+    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (0.0, 5.0, 10.0)
+    cmd_rel_standing_envs = 0.25
+    motion_curriculum_iterations = 200
 
 
 @configclass
 class DeformableFittedSupportLevelingMixedEnvCfg(DeformableFittedSupportLevelingTenEnvCfg):
     """Introduce steep grades and gradually approach the full play commands."""
 
-    terrain = _make_periodic_slope_terrain(angle_range=(5.0, 20.0), seed=13)
+    clearance_steep_motion_margin_m = 0.018
+    terrain = _make_periodic_slope_terrain(angle_range=(0.0, 20.0), seed=13)
     terrain.terrain_generator.sub_terrains["periodic_slope"].segment_length = 6.0
-    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (5.0, 10.0, 17.0, 20.0)
+    terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (0.0, 5.0, 10.0, 17.0, 20.0)
     cmd_rel_standing_envs = 0.5
     cmd_lin_vel_x_range = (-0.8, 0.8)
     cmd_lin_vel_y_range = (-0.5, 0.5)
     cmd_ang_vel_z_range = (-1.5, 1.5)
-    motion_curriculum_iterations = 600
+    # Warm starts already handle motion. Leave sustained full-speed practice
+    # in the short run, including sampled reversals, before independent play.
+    motion_curriculum_iterations = 200
 
 
 @configclass

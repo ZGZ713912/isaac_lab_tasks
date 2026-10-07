@@ -228,6 +228,31 @@ def test_soft_height_reward_is_independent_of_height_termination():
     env._normals_at = lambda positions: normal.expand_as(positions)
     torch.testing.assert_close(env._get_rewards(), torch.full((4,), -.2), atol=1.e-6, rtol=1.e-5)
 
+    # Population health includes short failures that settled-only episode
+    # metrics omit. Retained rollout logs must not change on the next step.
+    env.cfg.auto_expand_periodic_terrain = True
+    env.cfg.terrain = SimpleNamespace(terrain_generator=SimpleNamespace(size=(150.,150.)))
+    env._periodic = True
+    env.extras = {'log': {'existing_metric': 2.}}
+    env.episode_length_buf = torch.tensor([100,0,100,0])
+    env.reset_terminated = torch.tensor([False,True,False,True])
+    env.reset_time_outs = torch.tensor([False,False,True,False])
+    env.robot.data.root_link_pos_w[1,0] = 1000.
+    env._get_rewards()
+    retained = env.extras['log']
+    assert retained['health/settled_env_fraction'] == .5
+    assert retained['health/terminated_env_fraction'] == .5
+    assert retained['health/timeout_env_fraction'] == .25
+    assert retained['health/terrain_outside_fraction'] == .25
+    env.reset_terminated.zero_();env.reset_time_outs.zero_()
+    env.episode_length_buf.fill_(100);env.robot.data.root_link_pos_w.zero_()
+    env._get_rewards()
+    assert env.extras['log'] is not retained
+    assert retained['health/terminated_env_fraction'] == .5
+    assert env.extras['log']['health/terminated_env_fraction'] == 0
+    assert env.extras['log']['health/settled_env_fraction'] == 1
+    assert env.extras['log']['existing_metric'] == 2.
+
 
 def test_traction_airborne_friction_circle_and_slip_sign():
     du = utilities()
