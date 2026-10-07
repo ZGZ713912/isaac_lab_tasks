@@ -117,6 +117,8 @@ def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn
         head_hidden=int(pcfg.get("head_hidden", 64)),
         head=str(pcfg.get("actor_head", "per_leg")),
         history_length=history_length,
+        use_leg_geometry_features=bool(pcfg.get("use_leg_geometry_features", False)),
+        previous_action_pair_filter=bool(pcfg.get("previous_action_pair_filter", False)),
     )
     actor.load_state_dict({k[len("actor."):]: v for k, v in state_dict.items() if k.startswith("actor.")})
     actor.eval()
