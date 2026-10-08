@@ -14,10 +14,10 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 TASKS = {stage: f"Robotics-Deformable-Suspension-Support-Leveling-{stage.title()}-Real2Sim-v3"
-         for stage in ("five", "motion", "ten", "mixed")}
+         for stage in ("five", "motion", "ten", "mixed", "joint")}
 EXPERIMENTS = {stage: f"deformable_real2sim_support_leveling_{stage}_v3" for stage in TASKS}
-ITERATIONS = dict(five=201, motion=401, ten=401, mixed=601)
-NOISE_STD = dict(five=0.05, motion=0.05, ten=0.015, mixed=0.015)
+ITERATIONS = dict(five=201, motion=401, ten=401, mixed=601, joint=601)
+NOISE_STD = dict(five=0.05, motion=0.05, ten=0.015, mixed=0.015, joint=0.015)
 TASK = TASKS["five"]
 EXPERIMENT = EXPERIMENTS["five"]
 PYTHON = Path("/home/noir/miniconda3/envs/isaaclab/bin/python")
@@ -47,13 +47,13 @@ def main(argv=None):
     parser.add_argument("--checkpoint", type=Path, default=WARM_START)
     parser.add_argument("--python", type=Path, default=PYTHON)
     parser.add_argument("--stage", choices=tuple(TASKS), default="five",
-                        help="Advance five -> motion -> ten -> mixed after matched support/leveling validation")
+                        help="Advance five -> motion -> ten -> mixed after validation; joint tests the unified reward")
     parser.add_argument("--iterations", type=int,
-                        help="Override the stage budget: five=201, motion=401, ten=401, mixed=601")
+                        help="Override the stage budget: five=201, motion=401, ten=401, mixed/joint=601")
     parser.add_argument("--num-envs", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--noise-std", type=float,
-                        help="Fresh action noise: five/motion=.05, ten=.015, mixed=.02")
+                        help="Fresh action noise: five/motion=.05, ten/mixed/joint=.015")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--run", action="store_true")
@@ -87,6 +87,7 @@ def main(argv=None):
         parser.error("Keep the checkpoint together with its params directory")
     output.mkdir(parents=True)
     sources = ["scripts/rsl_rl/train.py", "scripts/tools/deformable_leveling_short_train.py",
+               "source/agent_tasks/agent_tasks/direct/deformable_suspension/__init__.py",
                "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_cfg.py",
                "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_env.py",
                "source/agent_tasks/agent_tasks/direct/deformable_suspension/cfg_utils.py",

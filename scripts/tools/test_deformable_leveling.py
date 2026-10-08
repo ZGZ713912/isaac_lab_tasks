@@ -205,7 +205,8 @@ def test_support_stages_start_gently_and_preserve_the_original_leveling_recipe()
         rewards = dict(all_wheel_contact=40., tilt_quadratic=-40., termination=-200.)
         leg_max_physical_angle = math.radians(75.)
         max_leg_torque = 44.37
-    scope = dict(DeformableFittedLevelingEnvCfg=Parent, _make_periodic_slope_terrain=terrain)
+    scope = dict(DeformableFittedLevelingEnvCfg=Parent, _make_periodic_slope_terrain=terrain,
+                 OrderedDict=OrderedDict)
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), scope)
     five, ten, mixed = (scope[f"DeformableFittedSupportLeveling{name}EnvCfg"]() for name in ("Five", "Ten", "Mixed"))
     assert five.terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices == (5.,)
@@ -441,6 +442,7 @@ def test_training_completion_exports_only_this_run_and_still_requires_leveling(t
     output = tmp_path / 'result'
     source_files = [
         'scripts/rsl_rl/train.py', 'scripts/tools/deformable_leveling_short_train.py',
+        'source/agent_tasks/agent_tasks/direct/deformable_suspension/__init__.py',
         'source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_cfg.py',
         'source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_env.py',
         'source/agent_tasks/agent_tasks/direct/deformable_suspension/cfg_utils.py',
@@ -465,6 +467,7 @@ def test_training_completion_exports_only_this_run_and_still_requires_leveling(t
     assert state['status'] == 'training_completed_pending_leveling_evaluation'
     assert not state['achieved_leveling'] and len(commands) == 2  # train + CPU scalars; no auto GPU evaluation
     assert not state['plots_enabled'] and '--metrics-only' in commands[1]
+    assert (output / 'source/source/agent_tasks/agent_tasks/direct/deformable_suspension/__init__.py').is_file()
     assert not (output / 'charts').exists()
     assert all(Path(state['followup_commands'][name][2]).is_absolute() for name in ('benchmark', 'leveling_check'))
     assert 'model_200.pt' in (output / 'next_commands.txt').read_text()

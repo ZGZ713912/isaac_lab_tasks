@@ -190,6 +190,7 @@ for _suffix, _cfg, _runner in (
     ("Support-Leveling-Motion", "DeformableFittedSupportLevelingMotionEnvCfg", "DeformableFittedSupportLevelingMotionPPORunnerCfg"),
     ("Support-Leveling-Ten", "DeformableFittedSupportLevelingTenEnvCfg", "DeformableFittedSupportLevelingTenPPORunnerCfg"),
     ("Support-Leveling-Mixed", "DeformableFittedSupportLevelingMixedEnvCfg", "DeformableFittedSupportLevelingMixedPPORunnerCfg"),
+    ("Support-Leveling-Joint", "DeformableFittedSupportLevelingJointEnvCfg", "DeformableFittedSupportLevelingJointPPORunnerCfg"),
     ("Rough-Keyboard-Play", "DeformableFittedKeyboardPlayEnvCfg", "DeformableFittedPPORunnerCfg"),
 ):
     gym.register(

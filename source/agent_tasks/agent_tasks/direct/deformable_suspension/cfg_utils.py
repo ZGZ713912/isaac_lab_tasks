@@ -118,6 +118,46 @@ def suspension_support_costs(wheel_gap_m, normal_force_n, *, gap_tolerance_m=0.0
     return gap_cost.clamp(max=5.0).mean(-1), load_cost.mean(-1)
 
 
+def suspension_supported_leveling_score(gravity, wheel_gap_m, normal_force_n, *,
+                                        tilt_scale_deg=10., gap_tolerance_m=.001,
+                                        gap_scale_m=.003, min_load_n=20., contact_force_threshold_n=3.,
+                                        clearance_cost=None):
+    """One supported-leveling objective, with dense airborne recovery.
+
+    S = 1 / (1 + worst_load_deficit + worst_gap_excess).
+    Q = 1 / (1 + (tilt / scale)^2), reduced by the soft clearance deficit.
+    The score S * (1 + Q) - 1 is bounded in [-1, 1]. Unequal loads above
+    min_load_n are free. A corner at/below the contact threshold gives
+    S <= .5 and score <= 0,
+    even at zero tilt; fully supported finite-tilt states score > 0. Gap
+    recovery remains informative even when a wheel has no contact force.
+
+    This ordering is for this term, not a guarantee about the total return,
+    dynamic feasibility or PPO convergence. No attitude/contact thresholds
+    are relaxed, and the privileged quantities are never policy inputs.
+    """
+    scales = (tilt_scale_deg, gap_scale_m, min_load_n)
+    if (any(not math.isfinite(v) or v <= 0 for v in scales)
+            or not math.isfinite(gap_tolerance_m) or gap_tolerance_m < 0):
+        raise ValueError("Finite positive tilt/gap/load scales and nonnegative gap tolerance required")
+    if not math.isfinite(contact_force_threshold_n) or not 0 <= contact_force_threshold_n < min_load_n:
+        raise ValueError("Contact threshold must be finite, nonnegative and below the load reserve")
+    if (gravity.shape[-1] != 3 or wheel_gap_m.shape != normal_force_n.shape
+            or normal_force_n.shape != gravity.shape[:-1] + (4,)
+            or (clearance_cost is not None and clearance_cost.shape != gravity.shape[:-1])):
+        raise ValueError("One gravity vector, four gaps/loads and optional clearance cost per chassis required")
+    tilt = torch.atan2(gravity[..., :2].norm(dim=-1), -gravity[..., 2])
+    gap = ((wheel_gap_m - gap_tolerance_m).clamp_min(0.) / gap_scale_m).amax(-1)
+    load = ((min_load_n - normal_force_n.clamp_min(0.)).clamp_min(0.)
+            / (min_load_n - contact_force_threshold_n)).amax(-1)
+    support_quality = 1. / (1. + gap + load)
+    level_quality = 1. / (1. + (tilt / math.radians(tilt_scale_deg)).square())
+    if clearance_cost is not None:
+        level_quality = level_quality / (1. + clearance_cost.clamp_min(0.))
+    score = support_quality * (1. + level_quality) - 1.
+    return score, support_quality, level_quality
+
+
 def suspension_motion_commands(draws, limits, linear_scale, yaw_scale, standing_fraction):
     """Sample parking, pure translation, both spins and combined body commands.
 

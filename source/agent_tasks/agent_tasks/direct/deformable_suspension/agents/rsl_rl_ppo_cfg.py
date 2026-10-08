@@ -341,3 +341,8 @@ class DeformableFittedSupportLevelingMixedPPORunnerCfg(DeformableFittedSupportLe
         init_noise_std=0.015, min_noise_std=0.005, noise_std_type="log",
         use_leg_geometry_features=True,
         actor_obs_normalization=False, critic_obs_normalization=False)
+
+
+@configclass
+class DeformableFittedSupportLevelingJointPPORunnerCfg(DeformableFittedSupportLevelingMixedPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_joint_v3"

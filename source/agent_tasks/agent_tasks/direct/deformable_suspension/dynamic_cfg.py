@@ -106,6 +106,9 @@ class DeformableDynamicFlatEnvCfg(DeformableSuspensionFlatEnvCfg):
     support_gap_tolerance_m = 0.001
     support_gap_scale_m = 0.01
     support_min_load_n = 8.0
+    joint_supported_leveling_weight = 0.0
+    joint_leveling_tilt_scale_deg = 10.0
+    joint_support_gap_scale_m = 0.003
     support_motion_commands = False
     auto_expand_periodic_terrain = False
     traction_reserve_fraction = 0.1
@@ -557,6 +560,27 @@ class DeformableFittedSupportLevelingMixedEnvCfg(DeformableFittedSupportLeveling
     # Warm starts already handle motion. Leave sustained full-speed practice
     # in the short run, including sampled reversals, before independent play.
     motion_curriculum_iterations = 200
+
+
+@configclass
+class DeformableFittedSupportLevelingJointEnvCfg(DeformableFittedSupportLevelingMixedEnvCfg):
+    """Learn one supported-leveling score instead of exchanging separate bonuses.
+
+    Keep Mixed's commands, terrain, actuator, reset and policy ABI for a matched
+    ablation. Clearance reduces the joint leveling bonus; collisions still use
+    the original hard termination. The tangent reset fallback remains enabled.
+    """
+
+    joint_supported_leveling_weight = 80.0
+    best_effort_tilt_weight = 0.0
+    support_gap_weight = 0.0
+    support_load_weight = 0.0
+    clearance_margin_weight = 0.0
+    rewards = OrderedDict(DeformableFittedSupportLevelingMixedEnvCfg().rewards)
+    for _term in ("all_wheel_contact", "wheel_load_balance", "tilt_quadratic",
+                  "flat_orientation_x_exp", "flat_orientation_y_exp"):
+        rewards[_term] = 0.0
+    del _term
 
 
 @configclass

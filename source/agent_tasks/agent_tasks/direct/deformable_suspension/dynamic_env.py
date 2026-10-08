@@ -75,9 +75,12 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                               "standing_command_fraction", "traction_deficit", "uphill_drive_capacity_n",
                               "uphill_gravity_n")
         self._support_metrics_enabled = (getattr(cfg, "support_gap_weight", 0.0) > 0
-                                         or getattr(cfg, "support_load_weight", 0.0) > 0)
+                                         or getattr(cfg, "support_load_weight", 0.0) > 0
+                                         or getattr(cfg, "joint_supported_leveling_weight", 0.0) > 0)
         if self._support_metrics_enabled:
             self._metric_names += ("wheel_gap_max_m", "support_gap_cost", "support_load_cost")
+        if getattr(cfg, "joint_supported_leveling_weight", 0.0) > 0:
+            self._metric_names += ("joint_leveling_score", "joint_support_quality", "joint_level_quality")
         self._metrics = torch.zeros(self.num_envs, len(self._metric_names), device=self.device)
         self._metric_steps = torch.zeros(self.num_envs, device=self.device)
 
@@ -335,6 +338,7 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
 
     def _get_rewards(self):
         reward = super()._get_rewards()
+        joint_weight = getattr(self.cfg, "joint_supported_leveling_weight", 0.0)
         h = self.body_top_height
         q = self.robot.data.joint_pos[:, self._legs_idx]
         clearance = self.chassis_clearance
@@ -344,7 +348,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         reward += self.cfg.baseline_reward_weight * torch.exp(-extension.square() / 0.0025)
         reward -= getattr(self.cfg, "baseline_extension_penalty_weight", 0.0) * extension
         clearance_weight = getattr(self.cfg, "clearance_margin_weight", 0.0)
-        if clearance_weight:
+        clearance_cost = torch.zeros_like(clearance)
+        if clearance_weight or joint_weight:
             grade_margin = getattr(self.cfg, "clearance_grade_margin_m", 0.0)
             if grade_margin > 0:
                 normal = self._normals_at(self.robot.data.root_link_pos_w[:, None])[:, 0]
@@ -355,7 +360,8 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                     attitude_rate=self.robot.data.root_ang_vel_b[:, :2])
             else:
                 clearance_cost = du.suspension_clearance_cost(clearance, self.cfg.clearance_margin_m)
-            reward -= clearance_weight * clearance_cost.clamp(max=25.0)
+            if not joint_weight:
+                reward -= clearance_weight * clearance_cost.clamp(max=25.0)
         linear_weight = getattr(self.cfg, "drive_velocity_tracking_weight", 0.0)
         yaw_weight = getattr(self.cfg, "drive_yaw_tracking_weight", 0.0)
         if linear_weight or yaw_weight:
@@ -396,7 +402,7 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                                     if getattr(self.cfg, "height_penalty_flat_only", False) else None),
             )
             reward -= self.cfg.height_penalty_weight * height_excess
-        if getattr(self.cfg, "best_effort_leveling", False):
+        if getattr(self.cfg, "best_effort_leveling", False) and not joint_weight:
             contact_ratio = (self.wheel_normal_forces.amin(-1)
                              / self.cfg.wheel_contact_force_threshold).clamp(0.0, 1.0)
             precision_multiplier = du.suspension_grade_precision_multiplier(
@@ -412,6 +418,16 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                 gap_tolerance_m=self.cfg.support_gap_tolerance_m,
                 gap_scale_m=self.cfg.support_gap_scale_m, min_load_n=self.cfg.support_min_load_n)
             reward -= self.cfg.support_gap_weight * gap_cost + self.cfg.support_load_weight * load_cost
+        if joint_weight:
+            joint_score, support_quality, level_quality = du.suspension_supported_leveling_score(
+                self.robot.data.projected_gravity_b, wheel_gap, self.wheel_normal_forces,
+                tilt_scale_deg=self.cfg.joint_leveling_tilt_scale_deg,
+                gap_tolerance_m=self.cfg.support_gap_tolerance_m,
+                gap_scale_m=self.cfg.joint_support_gap_scale_m,
+                min_load_n=self.cfg.support_min_load_n,
+                contact_force_threshold_n=self.cfg.wheel_contact_force_threshold,
+                clearance_cost=clearance_cost)
+            reward += joint_weight * joint_score
         cmd = self._drive_cmd_b()
         if self._leg_actuator is not None:
             saturated = (self._leg_actuator.command_current_raw.abs() >= .99*self._leg_actuator.current_limit)
@@ -451,6 +467,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if getattr(self, "_support_metrics_enabled", False):
             metrics = torch.cat((metrics, torch.stack(
                 (wheel_gap.clamp_min(0.0).amax(-1), gap_cost, load_cost), dim=-1)), dim=-1)
+        if joint_weight:
+            metrics = torch.cat((metrics, torch.stack(
+                (joint_score, support_quality, level_quality), dim=-1)), dim=-1)
         settled = (self.episode_length_buf > self.cfg.height_settle_steps).float()
         if getattr(self.cfg, "auto_expand_periodic_terrain", False):
             # Episode metrics above exclude short failed episodes. Show their
