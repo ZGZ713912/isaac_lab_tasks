@@ -52,8 +52,27 @@ def _load_state_dict(checkpoint_path: str) -> dict:
     raise ValueError(f"Unsupported checkpoint format: {type(obj)}")
 
 
-def _build_actor(state_dict: dict) -> tuple[nn.Sequential, int, int]:
+def _build_actor(state_dict: dict) -> tuple[nn.Module, int, int]:
     """从 ``actor.*`` 权重重建 rsl_rl ActorCritic 的 actor MLP（Linear+ELU）。"""
+    if "actor.router.0.weight" in state_dict:
+        import importlib.util
+        path = os.path.join(_REPO_ROOT, "source/agent_rl/agent_rl/rsl_rl/modules/sensor_routed_mlp.py")
+        spec = importlib.util.spec_from_file_location("sensor_routed_export", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        def hidden(prefix):
+            keys = sorted((key for key in state_dict if key.startswith(prefix) and key.endswith(".weight")),
+                          key=lambda key: int(key[len(prefix):].split(".")[0]))
+            if not keys or state_dict[keys[0]].shape[1] != 160:
+                raise ValueError("Routed MLP requires 160 sensor inputs")
+            return [int(state_dict[key].shape[0]) for key in keys[:-1]]
+        count = len({key.split(".")[2] for key in state_dict if key.startswith("actor.experts.")})
+        actor = module.SensorRoutedMLP(
+            [hidden(f"actor.experts.{index}.") for index in range(count)], hidden("actor.router."),
+            float(state_dict["actor.routing_confidence"]), float(state_dict["actor.routing_load_threshold"]))
+        actor.load_state_dict({key[len("actor."):]: value for key, value in state_dict.items()
+                               if key.startswith("actor.")}, strict=True)
+        return actor.eval(), 160, 4
     lin_keys = sorted(
         (k for k in state_dict if k.startswith("actor.") and k.endswith(".weight")),
         key=lambda k: int(k.split(".")[1]),
@@ -206,7 +225,8 @@ def main() -> None:
         desc = f"LegTokenTransformer(history_length={history_length})"
     else:
         actor, obs_dim, act_dim = _build_actor(state_dict)
-        desc = str([m for m in actor])
+        desc = (f"SensorRoutedMLP(experts={len(actor.experts)}, history_length=5)"
+                if hasattr(actor, "experts") else str([m for m in actor]))
     # RMCS 部署约定：历史 transformer 导出 rank-3 [1, history, frame]（auto 推断成 transformer）；
     # 单帧模型仍为 rank-2 [1, obs]。--flat 可强制历史模型也走 rank-2 作为兜底。
     if transformer and history_length > 1 and not args.flat:

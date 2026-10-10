@@ -584,6 +584,35 @@ class DeformableFittedSupportLevelingJointEnvCfg(DeformableFittedSupportLeveling
 
 
 @configclass
+class DeformableFittedSupportLevelingMLPEnvCfg(DeformableFittedSupportLevelingJointEnvCfg):
+    """Keep the supported-leveling environment and flatten five sensor frames."""
+
+    policy_history_length = 5
+    observation_space = 32 * policy_history_length
+
+
+@configclass
+class DeformableFittedRecoveredMLPEnvCfg(DeformableFittedSupportLevelingMixedEnvCfg):
+    """Fine-tune demonstrated supported leveling with a non-saturating tilt cost.
+
+    The old joint score gave a cold-start policy little incentive to leave the
+    tangent reset posture. Recovery starts from independent sensor-only
+    distillation, keeps physical contact/clearance constraints, and removes the
+    equal-load preference that competes with slope load transfer.
+    """
+
+    policy_history_length = 5
+    observation_space = 32 * policy_history_length
+    joint_supported_leveling_weight = 0.0
+    best_effort_contact_gating = False
+    best_effort_tilt_weight = 160.0
+    motion_curriculum_iterations = 1
+    rewards = OrderedDict(DeformableFittedSupportLevelingMixedEnvCfg().rewards)
+    rewards["wheel_load_balance"] = 0.0
+    rewards["all_wheel_contact"] = 20.0
+
+
+@configclass
 class DeformableFittedKeyboardPlayEnvCfg(_DeformableFittedReal2SimFields, DeformableDynamicKeyboardPlayEnvCfg):
     best_effort_leveling = True
     best_effort_tilt_weight = 6.0
@@ -593,6 +622,12 @@ class DeformableFittedKeyboardPlayEnvCfg(_DeformableFittedReal2SimFields, Deform
     real2sim_torque_scale_range = (1., 1.)
     real2sim_command_delay_steps_range = (0, 0)
     real2sim_feedback_delay_steps_range = (1, 1)
+
+
+@configclass
+class DeformableFittedMLPKeyboardPlayEnvCfg(DeformableFittedKeyboardPlayEnvCfg):
+    policy_history_length = 5
+    observation_space = 32 * policy_history_length
 
 
 def _legacy_config(cfg):

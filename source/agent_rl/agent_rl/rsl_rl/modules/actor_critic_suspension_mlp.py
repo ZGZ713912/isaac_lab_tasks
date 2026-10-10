@@ -2,6 +2,7 @@
 
 import math
 
+import torch.nn as nn
 from torch.distributions import Normal
 from rsl_rl.modules import ActorCritic
 
@@ -12,7 +13,7 @@ class ActorCriticSuspensionMLP(ActorCritic):
         actor_obs_normalization=False, critic_obs_normalization=False,
         actor_hidden_dims=(256, 256, 256), critic_hidden_dims=(256, 256, 256),
         activation="elu", init_noise_std=1.0, noise_std_type="scalar",
-        history_length=1, min_noise_std=0.0, **kwargs,
+        history_length=1, min_noise_std=0.0, actor_out_gain=0.01, **kwargs,
     ):
         # These fields remain in the shared Transformer Hydra configuration.
         for key in ("d_model", "nhead", "num_layers", "dim_ff", "head_hidden",
@@ -24,9 +25,11 @@ class ActorCriticSuspensionMLP(ActorCritic):
             raise ValueError("init_noise_std must be positive and finite")
         if not math.isfinite(min_noise_std) or min_noise_std < 0:
             raise ValueError("min_noise_std must be nonnegative and finite")
+        if not math.isfinite(actor_out_gain) or actor_out_gain <= 0:
+            raise ValueError("actor_out_gain must be positive and finite")
         width = sum(obs[group].shape[-1] for group in obs_groups["policy"])
-        if history_length not in (1, 4, 8) or width % history_length:
-            raise ValueError("Policy observations must contain complete H=1, 4 or 8 frames")
+        if type(history_length) is not int or history_length not in (1, 4, 5, 8) or width != 32 * history_length:
+            raise ValueError("Suspension policy observations require 32D frames with H=1, 4, 5 or 8")
         self.history_length = history_length
         self.min_noise_std = min_noise_std
         super().__init__(
@@ -34,6 +37,13 @@ class ActorCriticSuspensionMLP(ActorCritic):
             actor_hidden_dims, critic_hidden_dims, activation, init_noise_std, noise_std_type,
             **kwargs,
         )
+        # Match the suspension Transformer's initial head scale. A full-scale
+        # random target immediately hits the 2 rad/s rate bound and masks the
+        # effect of small directional corrections during cold-start PPO.
+        nn.init.orthogonal_(self.actor[-1].weight, gain=actor_out_gain)
+        nn.init.zeros_(self.actor[-1].bias)
+        self.actor.frame_size = 32
+        self.actor.history_length = history_length
 
     def update_distribution(self, obs):
         mean = self.actor(obs)

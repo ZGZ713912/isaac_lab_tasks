@@ -346,3 +346,90 @@ class DeformableFittedSupportLevelingMixedPPORunnerCfg(DeformableFittedSupportLe
 @configclass
 class DeformableFittedSupportLevelingJointPPORunnerCfg(DeformableFittedSupportLevelingMixedPPORunnerCfg):
     experiment_name = "deformable_real2sim_support_leveling_joint_v3"
+
+
+@configclass
+class DeformableHistoryMLPPolicyCfg(RslRlPpoActorCriticCfg):
+    """Five total policy frames, oldest first; privileged critic stays current."""
+
+    class_name: str = "ActorCriticSuspensionMLP"
+    history_length: int = 5
+    min_noise_std: float = 0.03
+    init_noise_std: float = 0.3
+    noise_std_type: str = "log"
+    actor_hidden_dims: list = [256, 128, 64]
+    critic_hidden_dims: list = [256, 128, 64]
+    activation: str = "elu"
+    actor_obs_normalization: bool = False
+    critic_obs_normalization: bool = False
+
+
+@configclass
+class DeformableFittedSupportLevelingMLPPPORunnerCfg(DeformableFittedSupportLevelingJointPPORunnerCfg):
+    experiment_name = "deformable_real2sim_support_leveling_mlp5_v3"
+    max_iterations = 10000
+    save_interval = 500
+    policy = DeformableHistoryMLPPolicyCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Fresh weights need exploration rather than fine-tune noise settings.
+        self.algorithm.learning_rate = 1.e-4
+        self.algorithm.entropy_coef = 0.001
+
+
+@configclass
+class DeformableFittedRecoveredMLPPPORunnerCfg(DeformableFittedSupportLevelingMLPPPORunnerCfg):
+    experiment_name = "deformable_real2sim_recovered_mlp5_v3"
+    max_iterations = 500
+    save_interval = 50
+    policy = DeformableHistoryMLPPolicyCfg(init_noise_std=0.015, min_noise_std=0.005)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.learning_rate = 5.e-6
+        # Adaptive PPO can raise this by orders of magnitude when the loaded
+        # actor initially changes little. Keep the recovery update genuinely
+        # small; checkpoint promotion comes from independent physics tests.
+        self.algorithm.schedule = "fixed"
+        self.algorithm.entropy_coef = 0.0001
+        # Freeze the recovered student during training; it is never used at
+        # inference. Allow useful corrections while discouraging destructive
+        # departures from the already demonstrated closed-loop behavior.
+        self.algorithm.steep_preservation_weight = 2.0
+        self.algorithm.steep_reference_action_scale = 0.015
+        self.algorithm.reference_all_postures = True
+        self.algorithm.reference_neighborhood_jitter = 0.5
+
+
+@configclass
+class DeformableRoutedMLPPolicyCfg(DeformableHistoryMLPPolicyCfg):
+    class_name: str = "ActorCriticSuspensionRoutedMLP"
+    expert_hidden_dims: list = [[576, 288, 144], [512, 256, 128], [704, 352, 176]]
+    router_hidden_dims: list = [128, 64]
+    routing_confidence: float = .995
+    routing_load_threshold: float = .02
+    actor_hidden_dims: list = [576, 288, 144]
+    critic_hidden_dims: list = [512, 256, 128]
+    init_noise_std: float = .015
+    min_noise_std: float = .005
+
+
+@configclass
+class DeformableFittedRecoveredRoutedMLPPPORunnerCfg(DeformableFittedRecoveredMLPPPORunnerCfg):
+    experiment_name = "deformable_real2sim_recovered_routed_mlp5_v3"
+    policy = DeformableRoutedMLPPolicyCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Each expert has a narrow demonstrated contact margin. The earlier
+        # 5e-6/weight-2 update degraded it despite preserving attitude, so keep
+        # expert updates smaller and compare their local raw feedback tightly.
+        self.algorithm.learning_rate = 1.e-6
+        self.algorithm.steep_preservation_weight = 10.0
+        self.algorithm.steep_reference_action_scale = 0.01
+        # Enabled only with a checked training replay dataset at launch.
+        self.algorithm.reference_replay_weight = 0.0
+        self.algorithm.reference_replay_action_scale = 0.002
+        self.algorithm.reference_replay_batch_size = 256
+        self.algorithm.reference_replay_max_delta = 0.0

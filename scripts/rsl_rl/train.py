@@ -48,6 +48,8 @@ parser.add_argument("--video_interval", type=int, default=2000, help="Interval b
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument("--reference_replay", type=str, default=None,
+                    help="Training-only sensor replay for the frozen loaded actor; never used at inference.")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
     "--resume_training",
@@ -67,6 +69,9 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.reference_replay:
+    if not args_cli.checkpoint or args_cli.resume_training or not Path(args_cli.reference_replay).is_file():
+        parser.error("--reference_replay needs an existing dataset and a fine-tune checkpoint")
 if args_cli.steep_teacher_checkpoint:
     if not args_cli.checkpoint or args_cli.resume_training:
         parser.error("--steep_teacher_checkpoint requires --checkpoint without optimizer resume")
@@ -213,9 +218,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
-    from scripts.utils.deformable_checkpoint import validate_deformable_checkpoint, snapshot_real2sim_model
+    from scripts.utils.deformable_checkpoint import (
+        validate_deformable_checkpoint, snapshot_real2sim_model, configure_recovery_precision)
+    precision = configure_recovery_precision(agent_cfg.policy.to_dict(),agent_cfg.algorithm.to_dict())
+    if precision:
+        agent_cfg.recovery_numerical_precision = precision
+        print("[INFO]: Recovery actor uses FP32 math; TF32 disabled to match acceptance/deployment")
     if args_cli.checkpoint:
-        validate_deformable_checkpoint(env_cfg, args_cli.checkpoint)
+        validate_deformable_checkpoint(env_cfg, args_cli.checkpoint, policy_cfg=agent_cfg.policy.to_dict())
     if args_cli.steep_teacher_checkpoint:
         validate_deformable_checkpoint(env_cfg, args_cli.steep_teacher_checkpoint)
         if not getattr(agent_cfg.algorithm, "steep_preservation_weight", 0.):
@@ -338,6 +348,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "scope": "Frozen initial actor on current actor-observable histories; training only",
         }
         print(f"[INFO]: Frozen steep reference actor from {agent_cfg.steep_policy_reference['checkpoint']}")
+
+    if args_cli.reference_replay:
+        manifest = runner.alg.initialize_reference_replay(args_cli.reference_replay, env_cfg.real2sim_model_sha256)
+        agent_cfg.reference_sensor_replay = {
+            "path": str(Path(args_cli.reference_replay).resolve()),
+            "sha256": manifest["sha256"], "samples": manifest["samples"],
+            "partition": manifest["partition"],
+            "scope": "Training sensor neighborhoods only; targets from the frozen loaded actor",
+        }
+        print(f"[INFO]: Frozen-reference sensor replay: {manifest['samples']} training samples")
 
     if getattr(runner.alg, "flat_posture_weight", 0.0):
         if (env_cfg.action_contract_version != "minangle_physical_v3"

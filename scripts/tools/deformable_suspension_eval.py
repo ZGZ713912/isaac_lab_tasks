@@ -69,8 +69,8 @@ def validate_agent(cfg, requested_history=None):
         if not isinstance(cfg[key], dict) or not cfg[key].get("class_name"):
             raise ValueError(f"Saved {key}.class_name is required")
     history = cfg["policy"].get("history_length")
-    if type(history) is not int or history not in (1, 4, 8):
-        raise ValueError("Saved policy.history_length must be 1, 4 or 8")
+    if type(history) is not int or history not in (1, 4, 5, 8):
+        raise ValueError("Saved policy.history_length must be 1, 4, 5 or 8")
     if requested_history is not None and requested_history != history:
         raise ValueError("--history must match saved policy.history_length")
     if cfg.get("class_name", "OnPolicyRunner") != "OnPolicyRunner":
@@ -158,7 +158,7 @@ def parser():
     p.add_argument("--num_envs", "--num-envs", type=int, default=32)
     p.add_argument("--steps", type=int, default=600, help="Policy steps per scenario and mode, including settling")
     p.add_argument("--seed", type=int, default=1234)
-    p.add_argument("--history", type=int, choices=(1, 4, 8), help="Baseline history, or assert checkpoint history")
+    p.add_argument("--history", type=int, choices=(1, 4, 5, 8), help="Baseline history, or assert checkpoint history")
     p.add_argument("--scenarios", nargs="+", choices=SCENARIOS, default=list(SCENARIOS))
     p.add_argument("--strict", action="store_true", help="Exit 1 on POLICY acceptance failure (ZERO if no checkpoint)")
     p.add_argument("--policy-only", action="store_true", help="Skip ZERO when comparing matching checkpoints.")
@@ -166,6 +166,18 @@ def parser():
                    help="Constant long ramp (0..20 deg); retains physical safety and disables cell-boundary resets.")
     p.add_argument("--trace-dir", type=Path,
                    help="Save per-step physical metrics and leg state to NPZ files for plots.")
+    p.add_argument("--policy-data-dir", type=Path,
+                   help="Record raw actor/critic observations and teacher targets for separate training runs.")
+    p.add_argument("--student-checkpoint", type=Path,
+                   help="Training data only: execute a five-frame MLP while labeling its states with the teacher.")
+    p.add_argument("--geometry-guide", action="store_true",
+                   help="Training data only: label and execute sensor geometry targets with a verified MLP fallback.")
+    p.add_argument("--geometry-correction-limit", type=float, default=.04,
+                   help="Training guide's maximum correction to each leg target in radians.")
+    p.add_argument("--geometry-correction-smoothing", type=float, default=1.,
+                   help="Training guide's fraction of the remaining correction applied per step.")
+    p.add_argument("--geometry-yaw-support-gate", action="store_true",
+                   help="Training guide: retain base support on ten-degree spin starts.")
     p.add_argument("--real2sim-mode", choices=("nominal", "randomized"), default="nominal",
                    help="Nominal removes noise for paired control; randomized retains training parameter/noise ranges.")
     p.add_argument("--batch-scenarios", action="store_true",
@@ -187,6 +199,10 @@ def configure_grade(cfg, grade):
     sub.angle_range = (grade, grade)
     sub.angle_choices = None
     sub.segment_length = 20.0
+    # Match the original precision benchmark's reset support. Training tasks
+    # use different cell spacings, which otherwise change edge exposure even
+    # with identical seeds, headings and physical models.
+    cfg.scene.env_spacing = 6.0
     cfg.boundary_reset_enabled = False
     cfg.spawn_dir_jitter = False
 
@@ -264,13 +280,53 @@ def evaluate(args, agent_cfg, history, app):
             runner = OnPolicyRunner(wrapped, saved, log_dir=None, device=args.device)
             runner.load(str(args.checkpoint.resolve()), load_optimizer=False, map_location=u.device)
             policy = runner.get_inference_policy(device=u.device)
+        student = None
+        if getattr(args, "student_checkpoint", None) is not None:
+            from scripts.utils.deformable_checkpoint import load_deformable_agent_config
+            from agent_rl.rsl_rl.modules.actor_critic_suspension_mlp import ActorCriticSuspensionMLP
+            student_cfg = load_deformable_agent_config(args.student_checkpoint, u.device)
+            if student_cfg["policy"]["class_name"] != "ActorCriticSuspensionMLP" or validate_agent(student_cfg) != 5:
+                raise ValueError("Data aggregation requires a standalone five-frame suspension MLP")
+            validate_deformable_checkpoint(cfg, args.student_checkpoint)
+            dummy = {"policy": torch.zeros(u.num_envs, 160, device=u.device),
+                     "critic": torch.zeros(u.num_envs, 40, device=u.device)}
+            student = ActorCriticSuspensionMLP(
+                dummy, student_cfg["obs_groups"], cfg.action_space,
+                **{k: v for k, v in student_cfg["policy"].items() if k != "class_name"}).to(u.device)
+            state = torch.load(args.student_checkpoint, map_location=u.device, weights_only=False)
+            student.load_state_dict(state["model_state_dict"], strict=True)
+            student.eval()
+        guide, guide_config = None, None
+        if getattr(args, "geometry_guide", False):
+            from deformable_geometry_teacher import GeometryTeacher
+            from agent_tasks.direct.deformable_suspension import cfg_utils as geometry_utils
+            if agent_cfg["policy"]["class_name"] != "ActorCriticSuspensionMLP" or history != 5:
+                raise ValueError("Geometry collection requires a sensor-only five-frame MLP fallback")
+            bottom = u._bottom_samples
+            guide_config = dict(lower=cfg.leg_target_lower_limit, upper=cfg.leg_target_upper_limit,
+                                baseline=cfg.default_q_cmd, clearance=.006,
+                                target_step=cfg.leg_target_rate_limit * u.step_dt, damping_s=.05,
+                                correction_limit=getattr(args, "geometry_correction_limit", .04),
+                                correction_smoothing=getattr(args, "geometry_correction_smoothing", 1.),
+                                yaw_support_gate=getattr(args, "geometry_yaw_support_gate", False),
+                                bottom_bounds=[bottom[:, 0].min().item(), bottom[:, 0].max().item(),
+                                               bottom[:, 1].min().item(), bottom[:, 1].max().item(),
+                                               bottom[:, 2].min().item()])
+            guide = GeometryTeacher(copy.deepcopy(runner.alg.policy.actor), geometry_utils,
+                                    **guide_config).to(u.device).eval()
         output = {"task": args.task, "checkpoint": str(args.checkpoint.resolve()) if args.checkpoint else None,
                   "seed": args.seed, "num_envs": args.num_envs, "steps": args.steps,
                   "step_dt_s": u.step_dt, "settle_s": 0.5, "history": history,
                   "friction": friction, "command_frame": command_frame, "results": {}}
         output["batch_scenarios"] = batched
+        output["reset_cell_spacing_m"] = cfg.scene.env_spacing
         output["total_envs"] = u.num_envs
         output["command_profile"] = getattr(args, "command_profile", "stress")
+        if student is not None:
+            output["training_data_controller"] = str(args.student_checkpoint.resolve())
+        if guide is not None:
+            output["training_data_controller"] = "sensor_only_geometry_guide"
+            output["geometry_guide_config"] = guide_config
         output["policy_preprocessing"] = {
             "previous_action_pair_filter": bool(agent_cfg["policy"].get("previous_action_pair_filter", False))
             if agent_cfg else False,
@@ -304,6 +360,8 @@ def evaluate(args, agent_cfg, history, app):
                     [], [], [], [], [], [], [], [], []
                 )
                 trace_loads, trace_roll, trace_wheel_effort, trace_wheel_speed, trace_wheel_target = [], [], [], [], []
+                policy_data_dir = getattr(args, "policy_data_dir", None)
+                policy_frames, critic_frames, teacher_actions, teacher_values = [], [], [], []
 
                 def controlled_reset(ids):
                     # Match each env's nth reset, even when the other mode survives longer.
@@ -439,9 +497,18 @@ def evaluate(args, agent_cfg, history, app):
                         current = u._drive_cmd_b() * command.new_tensor((1.0, 1.0, 0.25))
                         obs["policy"][:, -31:-28] = current
                         obs["critic"][:, 1:4] = current
-                        actions = policy(obs) if mode == "POLICY" else torch.zeros(u.num_envs, cfg.action_space, device=u.device)
+                        expert_actions = policy(obs) if mode == "POLICY" else torch.zeros(u.num_envs, cfg.action_space, device=u.device)
+                        if guide is not None and mode == "POLICY":
+                            expert_actions = guide(obs["policy"])
+                        actions = (student.act_inference({"policy": obs["policy"][:, -160:]})
+                                   if student is not None and mode == "POLICY" else expert_actions)
                         if not torch.isfinite(actions).all():
                             raise RuntimeError("Nonfinite policy actions")
+                        if policy_data_dir is not None and mode == "POLICY":
+                            policy_frames.append(obs["policy"].detach().cpu().numpy().copy())
+                            critic_frames.append(obs["critic"].detach().cpu().numpy().copy())
+                            teacher_actions.append(expert_actions.clamp(-1., 1.).detach().cpu().numpy().copy())
+                            teacher_values.append(runner.alg.policy.evaluate(obs).detach().cpu().numpy().copy())
                         previous_target.copy_(u.leg_target)
                         obs, _, _, _ = wrapped.step(actions)
                         if (step + 1) % 100 == 0:
@@ -449,6 +516,19 @@ def evaluate(args, agent_cfg, history, app):
                 for env_id in range(u.num_envs):
                     if ages[env_id]:
                         finish(env_id, False, False, censored=True)
+                if policy_frames:
+                    policy_data_dir.mkdir(parents=True, exist_ok=True)
+                    path = policy_data_dir / f"policy_data_{'_'.join(group)}.npz"
+                    np.savez_compressed(
+                        path, policy_obs=np.stack(policy_frames), critic_obs=np.stack(critic_frames),
+                        teacher_actions=np.stack(teacher_actions), teacher_values=np.stack(teacher_values),
+                        env_scenarios=np.asarray(case_names), seed=np.asarray(args.seed),
+                        grade_deg=np.asarray(grade), teacher_checkpoint=np.asarray(str(args.checkpoint.resolve())),
+                        controller_checkpoint=np.asarray(str((args.student_checkpoint or args.checkpoint).resolve())),
+                        real2sim_model_sha256=np.asarray(getattr(cfg, "real2sim_model_sha256", "")),
+                        geometry_guide_config=np.asarray(json.dumps(guide_config, sort_keys=True)),
+                        history=np.asarray(history), step_dt_s=np.asarray(u.step_dt))
+                    output.setdefault("policy_training_data", []).append(str(path.resolve()))
                 for case_index, scenario in enumerate(group):
                     result = summarize([e for e in episodes if e["scenario"] == scenario], command_frame)
                     result["initial_state_sha256"] = initial_hashes[scenario]
@@ -510,6 +590,14 @@ def main():
             p.error("--agent-yaml requires --checkpoint")
         if args.policy_only and not args.checkpoint:
             p.error("--policy-only requires --checkpoint")
+        if args.student_checkpoint and (not args.checkpoint or not args.policy_data_dir):
+            p.error("--student-checkpoint requires teacher --checkpoint and --policy-data-dir")
+        if args.geometry_guide and (not args.checkpoint or not args.policy_data_dir or args.student_checkpoint):
+            p.error("--geometry-guide requires --checkpoint and --policy-data-dir without --student-checkpoint")
+        if not math.isfinite(args.geometry_correction_limit) or not 0 < args.geometry_correction_limit <= .25:
+            p.error("--geometry-correction-limit must be finite and in (0, .25]")
+        if not math.isfinite(args.geometry_correction_smoothing) or not 0 < args.geometry_correction_smoothing <= 1:
+            p.error("--geometry-correction-smoothing must be finite and in (0, 1]")
         if args.grade_deg is not None and (not math.isfinite(args.grade_deg) or not 0 <= args.grade_deg <= 20):
             p.error("--grade-deg must be finite and in [0, 20]")
         if args.grade_deg is not None and (args.num_envs > 24 or args.steps > 600):

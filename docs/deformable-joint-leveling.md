@@ -1,5 +1,9 @@
 # V3 联合支撑调平奖励
 
+2026-10-08 后续训练已增加 [5 帧历史 MLP 入口](deformable-mlp5.md)，沿用本页
+Joint 目标与动力学。新网络从头初始化；下面的 Transformer checkpoint
+和热启动命令保留为此前对照记录。
+
 2026-10-08 的 Mixed 长训完成 2500 次更新、512 个环境，最终模型为
 `logs/rsl_rl/deformable_real2sim_support_leveling_mixed_v3/2026-10-08_06-03-36_support_leveling_mixed_short_20261008_060329_910497/model_2499.pt`。
 名义模型评估覆盖 0/5/10/17/20°、六类车体系 play 命令，每类 16 个姿态、6 s。

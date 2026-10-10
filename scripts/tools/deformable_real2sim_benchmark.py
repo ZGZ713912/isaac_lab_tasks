@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import shlex
+import signal
 import sys
 
 from deformable_precision_pipeline import ROOT, extract_report, run_child, timestamp, write_json
@@ -76,7 +77,8 @@ def main(argv=None):
                 str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in (ROOT / "scripts/tools/deformable_suspension_eval.py",
                              ROOT / "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_env.py",
-                             ROOT / "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py")
+                             ROOT / "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_transformer.py",
+                             ROOT / "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_suspension_mlp.py")
             }
             log = run_child(command, name, args, state)
             report = extract_report(log)
@@ -98,4 +100,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt(f"Benchmark interrupted by signal {signum}")
+    signal.signal(signal.SIGTERM, interrupted)
     raise SystemExit(main())

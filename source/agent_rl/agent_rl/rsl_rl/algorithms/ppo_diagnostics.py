@@ -4,7 +4,10 @@
 """Repository-local diagnostics for the feed-forward rsl_rl 3.0.1 PPO update."""
 
 import copy
+import hashlib
+import json
 import math
+from pathlib import Path
 import torch
 from rsl_rl.algorithms import PPO
 
@@ -22,7 +25,9 @@ class DiagnosticPPO(PPO):
                  steep_reference_action_scale=0.03, flat_posture_weight=0.0,
                  flat_posture_target_deg=19.0, flat_posture_tilt_deg=3.0,
                  flat_posture_anchor="mean", flat_posture_max_spread_deg=0.0,
-                 reference_all_postures=False, **kwargs):
+                 reference_all_postures=False, reference_neighborhood_jitter=0.0,
+                 reference_replay_weight=0.0, reference_replay_action_scale=0.002,
+                 reference_replay_batch_size=256, reference_replay_max_delta=0.0, **kwargs):
         if policy.is_recurrent or kwargs.get("rnd_cfg") or kwargs.get("symmetry_cfg"):
             raise ValueError("DiagnosticPPO supports feed-forward PPO without RND or symmetry only")
         super().__init__(policy, **kwargs)
@@ -36,6 +41,24 @@ class DiagnosticPPO(PPO):
         self.steep_reference_full_deg = steep_reference_full_deg
         self.steep_reference_action_scale = steep_reference_action_scale
         self.reference_all_postures = reference_all_postures
+        if not math.isfinite(reference_neighborhood_jitter) or reference_neighborhood_jitter < 0:
+            raise ValueError("Reference neighborhood jitter must be finite and nonnegative")
+        self.reference_neighborhood_jitter = reference_neighborhood_jitter
+        if (not math.isfinite(reference_replay_weight) or reference_replay_weight < 0
+                or not math.isfinite(reference_replay_action_scale) or reference_replay_action_scale <= 0
+                or type(reference_replay_batch_size) is not int or reference_replay_batch_size <= 0):
+            raise ValueError("Reference replay needs finite nonnegative weight, positive scale and batch size")
+        if reference_replay_weight and not steep_preservation_weight:
+            raise ValueError("Reference replay requires a frozen policy reference")
+        self.reference_replay_weight = reference_replay_weight
+        self.reference_replay_action_scale = reference_replay_action_scale
+        self.reference_replay_batch_size = reference_replay_batch_size
+        if (not math.isfinite(reference_replay_max_delta) or reference_replay_max_delta < 0
+                or reference_replay_max_delta and not reference_replay_weight):
+            raise ValueError("Replay maximum drift requires finite nonnegative bounds and enabled replay")
+        self.reference_replay_max_delta = reference_replay_max_delta
+        self._reference_replay_obs = None
+        self._reference_replay_targets = None
         self._steep_reference_actor = None
         self._steep_grade_reference_actor = None
         if flat_posture_weight < 0 or not 17.0 <= flat_posture_target_deg <= 75.0 or flat_posture_tilt_deg <= 0:
@@ -70,6 +93,102 @@ class DiagnosticPPO(PPO):
         actor.load_state_dict(actor_state, strict=True)
         self._steep_grade_reference_actor = actor.eval().requires_grad_(False)
 
+    def initialize_reference_replay(self, path, expected_physics_sha256=None):
+        """Replay training vehicles only, without loading any acceptance states.
+
+        On-policy preservation misses short startup/contact events once the
+        rollout moves away from them. Keep those sensor neighborhoods present
+        throughout training. Targets always come from the frozen loaded actor,
+        never from potentially unsafe actions in the collection.
+        """
+        import numpy as np
+        if self._steep_reference_actor is None or not self.reference_replay_weight:
+            raise RuntimeError("Initialize the frozen reference and enable replay first")
+        path = Path(path)
+        manifest = json.loads(path.with_suffix(".json").read_text())
+        if (manifest.get("schema") != "deformable_sensor_replay_v1"
+                or manifest.get("partition") != "training_vehicles_env_id_mod4_ne3"
+                or not manifest.get("sources")
+                or any(source["seed"] in (1234, 4321) for source in manifest["sources"])
+                or (expected_physics_sha256 is not None
+                    and any(source.get("physics_sha256") != expected_physics_sha256
+                            for source in manifest["sources"]))
+                or manifest["sha256"] != hashlib.sha256(path.read_bytes()).hexdigest()):
+            raise ValueError("Reference replay needs exact training-only provenance and dataset identity")
+        with np.load(path, allow_pickle=False) as data:
+            observations = data["policy_obs"]
+            ids = data["env_id"]
+            seeds = data["seed"]
+            grades = data["grade_deg"]
+            source_seeds = {int(source["seed"]) for source in manifest["sources"]}
+            if (observations.ndim != 2 or observations.shape[1] != 160 or not len(observations)
+                    or observations.dtype != np.float32 or not np.isfinite(observations).all()
+                    or any(value.shape != (len(observations),) for value in (ids, seeds, grades))
+                    or ids.dtype.kind not in "iu" or seeds.dtype.kind not in "iu"
+                    or np.any(ids < 0) or np.any(ids % 4 == 3)
+                    or set(np.unique(seeds).tolist()) != source_seeds
+                    or set(np.unique(grades).tolist()) != {0., 5., 10., 17., 20.}
+                    or manifest.get("samples") != len(observations)):
+                raise ValueError("Reference replay must contain finite H5 sensor states from training vehicles")
+            for source in manifest["sources"]:
+                rows = (seeds == source["seed"]) & (grades == source["grade_deg"])
+                if np.any(np.isin(ids[rows], source.get("excluded_failed_vehicles", []))):
+                    raise ValueError("Reference replay includes a failed or boundary-reset vehicle")
+            self._reference_replay_obs = torch.as_tensor(observations.copy(), device=self.device)
+        if self.reference_replay_max_delta:
+            with torch.no_grad():
+                self._reference_replay_targets = self._steep_reference_actor(self._reference_replay_obs)
+        return manifest
+
+    def _project_replay_drift(self):
+        """Bound worst replay feedback drift from the accepted starting actor.
+
+        Mean regularization can hide a single contact-critical observation.
+        Project actor parameters toward the admitted actor until all replay
+        raw means satisfy the bound. Value/noise learning remains independent;
+        the held-out physics gate still determines whether this actor is safe.
+        """
+        if self._reference_replay_targets is None:
+            raise RuntimeError("Initialize reference replay targets before projection")
+        with torch.no_grad():
+            proposed = {name: parameter.clone() for name, parameter in self.policy.actor.named_parameters()
+                        if parameter.requires_grad}
+            reference = dict(self._steep_reference_actor.named_parameters())
+            for step in range(11):
+                alpha = 2.**(-step) if step < 10 else 0.
+                if step:
+                    for name, parameter in self.policy.actor.named_parameters():
+                        if name in proposed:
+                            parameter.copy_(reference[name].lerp(proposed[name], alpha))
+                delta = (self.policy.actor(self._reference_replay_obs)-self._reference_replay_targets).abs().max()
+                if delta <= self.reference_replay_max_delta:
+                    return float(delta), alpha
+        raise RuntimeError("Replay projection could not preserve the admitted actor")
+
+    def _reference_replay_loss(self):
+        if self._reference_replay_obs is None:
+            raise RuntimeError("Initialize reference replay before updating the policy")
+        ids = torch.randint(len(self._reference_replay_obs), (self.reference_replay_batch_size,),
+                            device=self._reference_replay_obs.device)
+        observations = self._reference_replay_obs[ids]
+        with torch.no_grad():
+            target = self._steep_reference_actor(observations)
+        # Raw means retain the stabilizing gain even outside the action clip.
+        loss = ((self.policy.actor(observations)-target) / self.reference_replay_action_scale).square().mean()
+        if self.reference_neighborhood_jitter:
+            frames = observations.reshape(len(observations), 5, 32)
+            scale = frames.new_tensor([0.]*4 + [.02]*3 + [.01, .01, 0.] + [.01]*12
+                                     + [.005]*4 + [.02]*6)
+            neighborhood = frames + self.reference_neighborhood_jitter*scale*(
+                torch.randn(len(frames), 1, 32, device=frames.device) + .25*torch.randn_like(frames))
+            neighborhood[..., 9] = -(1-neighborhood[..., 7:9].square().sum(-1)).clamp_min(.01).sqrt()
+            neighborhood = neighborhood.flatten(1)
+            with torch.no_grad():
+                local_target = self._steep_reference_actor(neighborhood)
+            loss = loss + ((self.policy.actor(neighborhood)-local_target)
+                           / self.reference_replay_action_scale).square().mean()
+        return loss
+
     def _steep_preservation_loss(self, obs, action_mean):
         if self._steep_reference_actor is None:
             raise RuntimeError("Initialize the steep reference after loading fine-tune weights")
@@ -88,7 +207,28 @@ class DiagnosticPPO(PPO):
                 mix = obs["training_steep_reference_mix"].clamp(0., 1.)
                 target = target.lerp(self._steep_grade_reference_actor(actor_obs), mix)
         cost = ((action_mean - target) / self.steep_reference_action_scale).square().mean(-1)
-        return (cost * gate).mean(), gate.mean()
+        loss = (cost * gate).mean()
+        if self.reference_neighborhood_jitter:
+            # Trajectory values alone do not constrain the stabilizing gains.
+            # Keep commands fixed and probe coherent small sensor deviations,
+            # using only the actor's existing unnormalized history ABI.
+            count = min(256, len(actor_obs))
+            ids = torch.linspace(0, len(actor_obs)-1, count, device=actor_obs.device).long()
+            frames = actor_obs[ids].reshape(count, -1, 32)
+            scale = frames.new_tensor([0.]*4 + [.02]*3 + [.01, .01, 0.] + [.01]*12
+                                     + [.005]*4 + [.02]*6)
+            neighborhood = frames + self.reference_neighborhood_jitter*scale*(
+                torch.randn(count, 1, 32, device=frames.device) + .25*torch.randn_like(frames))
+            neighborhood[..., 9] = -(1-neighborhood[..., 7:9].square().sum(-1)).clamp_min(.01).sqrt()
+            neighborhood = neighborhood.flatten(1)
+            with torch.no_grad():
+                local_target = self._steep_reference_actor(neighborhood)
+                if self._steep_grade_reference_actor is not None:
+                    local_target = local_target.lerp(self._steep_grade_reference_actor(neighborhood), mix[ids])
+            local_mean = self.policy.actor(neighborhood)
+            local_cost = ((local_mean-local_target)/self.steep_reference_action_scale).square().mean(-1)
+            loss = loss + (local_cost*gate[ids]).mean()
+        return loss, gate.mean()
 
     def _flat_posture_loss(self, obs, action_mean):
         """Soft common-height preference for the native 16/17/75 deg action map."""
@@ -148,6 +288,10 @@ class DiagnosticPPO(PPO):
                 metrics["steep_grade_reference_fraction"] = 0.0
         if self.flat_posture_weight:
             metrics.update(flat_posture=0.0, flat_posture_fraction=0.0)
+        if self.reference_replay_weight:
+            metrics["reference_replay"] = 0.0
+        if self.reference_replay_max_delta:
+            metrics.update(reference_replay_max_delta=0.0,reference_replay_retained_step=0.0)
         mean_std = None
         num_updates = 0
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -222,6 +366,10 @@ class DiagnosticPPO(PPO):
                 loss = loss + self.flat_posture_weight * flat_loss
                 metrics["flat_posture"] += flat_loss.item()
                 metrics["flat_posture_fraction"] += flat_fraction.item()
+            if self.reference_replay_weight:
+                replay_loss = self._reference_replay_loss()
+                loss = loss + self.reference_replay_weight * replay_loss
+                metrics["reference_replay"] += replay_loss.item()
             self.optimizer.zero_grad()
             loss.backward()
             if self.is_multi_gpu:
@@ -240,6 +388,11 @@ class DiagnosticPPO(PPO):
             metrics["surrogate"] += surrogate_loss.item()
             metrics["entropy"] += entropy.item()
             num_updates += 1
+
+        if self.reference_replay_max_delta:
+            drift, retained = self._project_replay_drift()
+            metrics["reference_replay_max_delta"] = drift*num_updates
+            metrics["reference_replay_retained_step"] = retained*num_updates
 
         metrics = {key: value / num_updates for key, value in metrics.items()}
         for index, std in enumerate(mean_std / num_updates):

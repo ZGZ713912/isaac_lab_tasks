@@ -64,11 +64,12 @@ def test_state_dependent_noise_is_rejected():
 def test_grade_configuration_and_invalid_bounds():
     sub = SimpleNamespace(angle_range=(0, 5), segment_length=1, angle_choices=(5, 10, 17, 20))
     cfg = SimpleNamespace(terrain=SimpleNamespace(terrain_generator=SimpleNamespace(sub_terrains={"periodic_slope": sub})),
-                          boundary_reset_enabled=True, spawn_dir_jitter=True)
+                          boundary_reset_enabled=True, spawn_dir_jitter=True, scene=SimpleNamespace(env_spacing=8.))
     evaluate.configure_grade(cfg, 17)
     assert sub.angle_range == (17, 17) and sub.segment_length == 20
     assert sub.angle_choices is None
     assert not cfg.boundary_reset_enabled and not cfg.spawn_dir_jitter
+    assert cfg.scene.env_spacing == 6.
     with pytest.raises(ValueError):
         evaluate.configure_grade(cfg, 21)
 

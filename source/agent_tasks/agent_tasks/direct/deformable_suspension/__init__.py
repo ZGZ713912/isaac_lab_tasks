@@ -191,6 +191,10 @@ for _suffix, _cfg, _runner in (
     ("Support-Leveling-Ten", "DeformableFittedSupportLevelingTenEnvCfg", "DeformableFittedSupportLevelingTenPPORunnerCfg"),
     ("Support-Leveling-Mixed", "DeformableFittedSupportLevelingMixedEnvCfg", "DeformableFittedSupportLevelingMixedPPORunnerCfg"),
     ("Support-Leveling-Joint", "DeformableFittedSupportLevelingJointEnvCfg", "DeformableFittedSupportLevelingJointPPORunnerCfg"),
+    ("Support-Leveling-Joint-History-MLP", "DeformableFittedSupportLevelingMLPEnvCfg", "DeformableFittedSupportLevelingMLPPPORunnerCfg"),
+    ("Support-Leveling-Recovered-History-MLP", "DeformableFittedRecoveredMLPEnvCfg", "DeformableFittedRecoveredMLPPPORunnerCfg"),
+    ("Support-Leveling-Recovered-History-Routed-MLP", "DeformableFittedRecoveredMLPEnvCfg", "DeformableFittedRecoveredRoutedMLPPPORunnerCfg"),
+    ("Rough-Keyboard-Play-History-MLP", "DeformableFittedMLPKeyboardPlayEnvCfg", "DeformableFittedSupportLevelingMLPPPORunnerCfg"),
     ("Rough-Keyboard-Play", "DeformableFittedKeyboardPlayEnvCfg", "DeformableFittedPPORunnerCfg"),
 ):
     gym.register(

@@ -24,7 +24,7 @@ ablation = load("ablation_test", "scripts/tools/deformable_ablation.py")
 MLP = load("mlp_test", "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_suspension_mlp.py").ActorCriticSuspensionMLP
 
 
-@pytest.mark.parametrize("history", [1, 4, 8])
+@pytest.mark.parametrize("history", [1, 4, 5, 8])
 @pytest.mark.parametrize("noise_type", ["scalar", "log"])
 @pytest.mark.parametrize("floor", [0.0, 0.03])
 def test_policy_interface_and_floor(history, noise_type, floor):

@@ -82,6 +82,29 @@ def test_default_diagnostics_do_not_enable_a_reference():
         module.DiagnosticPPO(Policy(), device="cpu", steep_preservation_weight=-1.)
 
 
+def test_neighborhood_reference_detects_gain_change_that_trajectory_values_cannot():
+    policy = Policy()
+    algorithm = module.DiagnosticPPO(policy, device="cpu", steep_preservation_weight=1.,
+                                     reference_all_postures=True, reference_neighborhood_jitter=.5)
+    algorithm.initialize_steep_reference()
+    obs = histories([0., 20.])
+    before = policy.actor(obs["policy"]).detach()
+    # Gyroscope is zero on these trajectories, so a changed gain leaves their
+    # action values identical while changing the nearby restoring response.
+    with torch.no_grad():
+        policy.actor.weight[:, -28].add_(2.)
+    torch.testing.assert_close(policy.actor(obs["policy"]), before)
+    loss, fraction = algorithm._steep_preservation_loss(obs, policy.actor(obs["policy"]))
+    assert loss.item() > 0 and fraction.item() == 1
+    loss.backward()
+    assert (policy.actor.weight.grad[:, -28] > 0).all()
+    assert all(p.grad is None for p in algorithm._steep_reference_actor.parameters())
+    assert all(p.grad is None for p in policy.critic.parameters())
+    for invalid in (-1., float("nan")):
+        with pytest.raises(ValueError, match="neighborhood"):
+            module.DiagnosticPPO(Policy(), device="cpu", reference_neighborhood_jitter=invalid)
+
+
 def test_flat_common_posture_cost_preserves_differences_and_steep_actions():
     algorithm = module.DiagnosticPPO(Policy(), device="cpu", flat_posture_weight=1.)
     action = torch.tensor([[-.2]*4, [-2./58.]*4, [-.1, 0., -.02, -.01], [-.2]*4], requires_grad=True)
