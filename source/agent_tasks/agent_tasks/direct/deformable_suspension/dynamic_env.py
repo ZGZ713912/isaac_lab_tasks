@@ -62,6 +62,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._obs_tick = -1
         self._obs_cache = None
         self._last_wheel_slip = torch.zeros(self.num_envs, 4, device=self.device)
+        # Enabled by the offline evaluator only. These references expose the
+        # exact tire inputs/wrench without adding actor observations or work to training.
+        self._record_tire_diagnostics = False
+        self._last_tire_gap_m = None
+        self._last_tire_active_load_n = None
+        self._last_tire_force_w = None
+        self._tire_spin_radius_m = du.WHEEL_RADIUS
+        self._trace_body_masses = None
         self._tire_deflection = torch.zeros_like(self._last_wheel_slip)
         self._wheel_drive = WheelVelocityPI((self.num_envs, 4), self.device, cfg)
         self._wheel_target = self._wheel_drive.target
@@ -234,13 +242,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         else:
             leg_tau = self._leg_adrc.update(q, self.leg_target)
         self.robot.set_joint_effort_target(leg_tau, joint_ids=self._legs_idx)
-        _, points, normals, _, roll = self._wheel_geometry_w()
+        _, points, normals, axle, roll = self._wheel_geometry_w()
         data = self.robot.data
         q = data.joint_pos[:, self._legs_idx]
         self._filter_drive_command()
         target = (du.omni_matrix(q) @ self._drive_cmd_b(self._drive_command).unsqueeze(-1)).squeeze(-1)
         wheel_speed = data.joint_vel[:, self._wheels_idx]
         load = self.wheel_normal_forces
+        sensed_load = load
         # A stale force sample must never keep an already-separated tire active.
         gap = points[..., 2] - self._ground_height(points)
         load = torch.where(gap <= self.cfg.tire_contact_gap, load, torch.zeros_like(load))
@@ -276,6 +285,22 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             body_ids=self._wheel_body_ids, is_global=False)
         self._last_servo_force.copy_(forces.sum(1))
         self._last_servo_torque_z.copy_(torch.cross(points - data.root_com_pos_w[:, None], forces, dim=-1)[..., 2].sum(1))
+        if self._record_tire_diagnostics:
+            self._last_tire_gap_m = gap.detach()
+            self._last_tire_active_load_n = load.detach()
+            self._last_tire_sensed_load_n = sensed_load.detach()
+            self._last_tire_force_w = forces.detach()
+            self._last_tire_contact_points_w = points.detach()
+            self._last_tire_ground_normals_w = normals.detach()
+            self._last_tire_axle_direction_w = axle.detach()
+            self._last_tire_roll_direction_w = roll.detach()
+            self._last_tire_wheel_spin_rad_s = wheel_speed.detach().clone()
+            self._last_tire_contact_velocity_without_spin_w = velocity.detach()
+            self._last_tire_model_slip_m_s = self._last_wheel_slip.detach().clone()
+            self._last_tire_wheel_com_positions_w = data.body_com_pos_w[:, self._wheel_body_ids].detach()
+            masses = self._trace_body_masses
+            self._last_tire_articulation_com_w = ((data.body_com_pos_w * masses[..., None]).sum(1)
+                                                 / masses.sum(-1, keepdim=True)).detach()
 
     def _get_observations(self):
         if self._obs_tick == self.common_step_counter and self._obs_cache is not None:
@@ -480,6 +505,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             log["health/settled_env_fraction"] = settled.mean().item()
             log["health/terminated_env_fraction"] = self.reset_terminated.float().mean().item()
             log["health/timeout_env_fraction"] = self.reset_time_outs.float().mean().item()
+            # Log the whole sampled population, including unfinished or short
+            # failed episodes. Reset-only means can hide that a specialist is
+            # mostly practicing flat ground on a shared periodic terrain.
+            grade20 = ground_grade >= 19.0
+            standing = self._drive_command.abs().amax(-1) < 1.e-6
+            log["sampling/ground_grade_deg"] = ground_grade.mean().item()
+            log["sampling/grade20_fraction"] = grade20.float().mean().item()
+            log["sampling/grade20_standing_fraction"] = (grade20 & standing).float().mean().item()
             if self._periodic:
                 half = q.new_tensor(self.cfg.terrain.terrain_generator.size) / 2
                 outside = (data.root_link_pos_w[:, :2].abs() > half - 0.8).any(-1)

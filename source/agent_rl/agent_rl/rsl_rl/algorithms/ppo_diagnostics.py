@@ -27,7 +27,8 @@ class DiagnosticPPO(PPO):
                  flat_posture_anchor="mean", flat_posture_max_spread_deg=0.0,
                  reference_all_postures=False, reference_neighborhood_jitter=0.0,
                  reference_replay_weight=0.0, reference_replay_action_scale=0.002,
-                 reference_replay_batch_size=256, reference_replay_max_delta=0.0, **kwargs):
+                 reference_replay_batch_size=256, reference_replay_max_delta=0.0,
+                 reference_motion_admission=False, reference_motion_relaxed_fraction=.1, **kwargs):
         if policy.is_recurrent or kwargs.get("rnd_cfg") or kwargs.get("symmetry_cfg"):
             raise ValueError("DiagnosticPPO supports feed-forward PPO without RND or symmetry only")
         super().__init__(policy, **kwargs)
@@ -41,6 +42,13 @@ class DiagnosticPPO(PPO):
         self.steep_reference_full_deg = steep_reference_full_deg
         self.steep_reference_action_scale = steep_reference_action_scale
         self.reference_all_postures = reference_all_postures
+        if type(reference_motion_admission) is not bool or reference_motion_admission and not steep_preservation_weight:
+            raise ValueError("Motion admission requires a boolean flag and frozen policy preservation")
+        self.reference_motion_admission = reference_motion_admission
+        if not math.isfinite(reference_motion_relaxed_fraction) or not 0 <= reference_motion_relaxed_fraction < 1:
+            raise ValueError("Motion reference fraction must be finite and between zero and one")
+        self.reference_motion_relaxed_fraction = reference_motion_relaxed_fraction
+        self._motion_relaxed_fraction = 0.
         if not math.isfinite(reference_neighborhood_jitter) or reference_neighborhood_jitter < 0:
             raise ValueError("Reference neighborhood jitter must be finite and nonnegative")
         self.reference_neighborhood_jitter = reference_neighborhood_jitter
@@ -199,6 +207,12 @@ class DiagnosticPPO(PPO):
                 / (self.steep_reference_full_deg - self.steep_reference_start_deg)).clamp(0., 1.)
         if self.reference_all_postures:
             gate = torch.ones_like(gate)
+        if self.reference_motion_admission:
+            from agent_rl.rsl_rl.algorithms.deformable_motion_admission import motion_preservation_factor
+            factor = motion_preservation_factor(actor_obs,self.policy.get_critic_obs(obs),
+                                               relaxed_fraction=self.reference_motion_relaxed_fraction)
+            gate = gate*factor
+            self._motion_relaxed_fraction = (factor < 1.).float().mean().item()
         with torch.no_grad():
             target = self._steep_reference_actor(actor_obs)
             if self._steep_grade_reference_actor is not None:
@@ -284,6 +298,8 @@ class DiagnosticPPO(PPO):
         }
         if self.steep_preservation_weight:
             metrics.update(steep_preservation=0.0, steep_reference_fraction=0.0)
+            if self.reference_motion_admission:
+                metrics["reference_motion_relaxed_fraction"] = 0.
             if self._steep_grade_reference_actor is not None:
                 metrics["steep_grade_reference_fraction"] = 0.0
         if self.flat_posture_weight:
@@ -359,6 +375,8 @@ class DiagnosticPPO(PPO):
                 loss = loss + self.steep_preservation_weight * preservation_loss
                 metrics["steep_preservation"] += preservation_loss.item()
                 metrics["steep_reference_fraction"] += reference_fraction.item()
+                if self.reference_motion_admission:
+                    metrics["reference_motion_relaxed_fraction"] += self._motion_relaxed_fraction
                 if self._steep_grade_reference_actor is not None:
                     metrics["steep_grade_reference_fraction"] += obs_batch["training_steep_reference_mix"].mean().item()
             if self.flat_posture_weight:

@@ -194,6 +194,7 @@ for _suffix, _cfg, _runner in (
     ("Support-Leveling-Joint-History-MLP", "DeformableFittedSupportLevelingMLPEnvCfg", "DeformableFittedSupportLevelingMLPPPORunnerCfg"),
     ("Support-Leveling-Recovered-History-MLP", "DeformableFittedRecoveredMLPEnvCfg", "DeformableFittedRecoveredMLPPPORunnerCfg"),
     ("Support-Leveling-Recovered-History-Routed-MLP", "DeformableFittedRecoveredMLPEnvCfg", "DeformableFittedRecoveredRoutedMLPPPORunnerCfg"),
+    ("Support-Leveling-Recovered-History-Default-Split-MLP", "DeformableFittedRecoveredMLPEnvCfg", "DeformableFittedRecoveredDefaultSplitMLPPPORunnerCfg"),
     ("Rough-Keyboard-Play-History-MLP", "DeformableFittedMLPKeyboardPlayEnvCfg", "DeformableFittedSupportLevelingMLPPPORunnerCfg"),
     ("Rough-Keyboard-Play", "DeformableFittedKeyboardPlayEnvCfg", "DeformableFittedPPORunnerCfg"),
 ):

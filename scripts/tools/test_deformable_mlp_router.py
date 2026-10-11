@@ -72,6 +72,23 @@ def test_native_exporter_and_torchscript_preserve_routing_and_flat_history():
     assert torch.equal(scripted(x), actor(x))
 
 
+def test_specialization_cannot_update_other_experts_or_change_initial_outputs():
+    original=policy()
+    actor=module.SensorRoutedMLP([[12,8],[16,8],[20,8]],[8],trainable_expert_indices=[1])
+    actor.load_state_dict(original.state_dict())
+    x=torch.randn(8,160);x[:,-14:-10]=.1
+    assert torch.equal(original(x),actor(x))
+    frozen={key:value.clone() for key,value in actor.experts[0].state_dict().items()}
+    optimizer=torch.optim.SGD([p for p in actor.parameters() if p.requires_grad],lr=.01)
+    actor(x).square().mean().backward();optimizer.step()
+    for key,value in frozen.items():
+        assert torch.equal(value,actor.experts[0].state_dict()[key])
+    assert not torch.equal(original.experts[1][-1].bias,actor.experts[1][-1].bias)
+    for invalid in [[],[1,1],[-1],[3],[True]]:
+        with pytest.raises(ValueError,match='Trainable experts'):
+            module.SensorRoutedMLP([[12,8],[16,8],[20,8]],[8],trainable_expert_indices=invalid)
+
+
 def test_resuming_cannot_silently_change_routing_or_expert_contract(tmp_path):
     spec = importlib.util.spec_from_file_location("routed_checkpoint_contract", ROOT/"scripts/utils/deformable_checkpoint.py")
     checker = importlib.util.module_from_spec(spec)

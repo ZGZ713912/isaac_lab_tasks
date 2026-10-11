@@ -23,6 +23,18 @@ EXPERIMENT = "deformable_real2sim_recovered_mlp5_v3"
 ROUTED_CLASS = "ActorCriticSuspensionRoutedMLP"
 ROUTED_TASK = "Robotics-Deformable-Suspension-Support-Leveling-Recovered-History-Routed-MLP-Real2Sim-v3"
 ROUTED_EXPERIMENT = "deformable_real2sim_recovered_routed_mlp5_v3"
+SPLIT_CLASS = "ActorCriticSuspensionDefaultSplitMLP"
+SPLIT_TASK = "Robotics-Deformable-Suspension-Support-Leveling-Recovered-History-Default-Split-MLP-Real2Sim-v3"
+SPLIT_EXPERIMENT = "deformable_real2sim_recovered_default_split_mlp5_v3"
+ROUTED_CLASSES = (ROUTED_CLASS, SPLIT_CLASS)
+
+
+def policy_task(policy_class):
+    return {ROUTED_CLASS: ROUTED_TASK, SPLIT_CLASS: SPLIT_TASK}.get(policy_class, TASK)
+
+
+def policy_experiment(policy_class):
+    return {ROUTED_CLASS: ROUTED_EXPERIMENT, SPLIT_CLASS: SPLIT_EXPERIMENT}.get(policy_class, EXPERIMENT)
 
 
 def checkpoint_info(path):
@@ -31,7 +43,7 @@ def checkpoint_info(path):
     params = path.parent / "params"
     agent = yaml.safe_load((params / "agent.yaml").read_text())
     policy = agent["policy"]
-    if (policy["class_name"] not in ("ActorCriticSuspensionMLP", ROUTED_CLASS) or policy["history_length"] != 5
+    if (policy["class_name"] not in ("ActorCriticSuspensionMLP", *ROUTED_CLASSES) or policy["history_length"] != 5
             or policy.get("actor_obs_normalization", False) or policy.get("critic_obs_normalization", False)
             or policy["activation"] != "elu"):
         raise ValueError("Guarded recovery requires the sensor-only five-frame ELU MLP")
@@ -48,14 +60,33 @@ def checkpoint_info(path):
     if not state or not all(torch.isfinite(value).all() for value in state.values()):
         raise ValueError("Recovery checkpoint has nonfinite policy tensors")
     architectures = [("critic", 40, policy["critic_hidden_dims"], 1)]
-    routed = policy["class_name"] == ROUTED_CLASS
+    routed = policy["class_name"] in ROUTED_CLASSES
+    split = policy["class_name"] == SPLIT_CLASS
+    routed_keys = ["expert_hidden_dims", "router_hidden_dims", "routing_confidence", "routing_load_threshold"]
     if routed:
         experts = policy["expert_hidden_dims"]
         if len(experts) < 2:
             raise ValueError("Routed recovery requires at least two MLP experts")
         architectures.extend((f"actor.experts.{index}", 160, hidden, 4) for index, hidden in enumerate(experts))
-        architectures.append(("actor.router", 160, policy["router_hidden_dims"], len(experts)))
-        for key in ("routing_confidence", "routing_load_threshold"):
+        architectures.append(("actor.router", 160, policy["router_hidden_dims"], 3 if split else len(experts)))
+        gate_keys = ["routing_confidence", "routing_load_threshold"]
+        if split:
+            if len(experts) != 4 or not .5 < policy["split_routing_confidence"] < 1:
+                raise ValueError("Default split checkpoint requires four experts and a valid split confidence")
+            architectures.append(("actor.split_router", 160, policy["split_router_hidden_dims"], 2))
+            gate_keys.append("split_routing_confidence")
+            routed_keys.extend(("split_router_hidden_dims", "split_routing_confidence"))
+            moving = policy.get("moving_expert_hidden_dims")
+            if (moving is not None) != ("actor.moving_expert.0.weight" in state):
+                raise ValueError("Moving expert metadata differs from checkpoint tensors")
+            if moving is not None:
+                tolerance=policy.get("standing_command_tolerance")
+                if not isinstance(tolerance,(int,float)) or not math.isfinite(tolerance) or not 0<=tolerance<=1.e-6:
+                    raise ValueError("Standing command tolerance must denote numerical zero")
+                architectures.append(("actor.moving_expert",160,moving,4))
+                gate_keys.append("standing_command_tolerance")
+                routed_keys.extend(("moving_expert_hidden_dims","standing_command_tolerance"))
+        for key in gate_keys:
             expected = torch.tensor(policy[key])
             if not torch.equal(state["actor."+key], expected):
                 raise ValueError("Routing gate metadata differs from checkpoint tensors")
@@ -74,8 +105,7 @@ def checkpoint_info(path):
     return dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), iteration=payload["iter"],
                 actor_hidden_dims=policy["actor_hidden_dims"], critic_hidden_dims=policy["critic_hidden_dims"],
                 policy_class=policy["class_name"],
-                routed_parameters={key: policy[key] for key in ("expert_hidden_dims", "router_hidden_dims",
-                                                               "routing_confidence", "routing_load_threshold")} if routed else {})
+                routed_parameters={key: policy[key] for key in routed_keys} if routed else {})
 
 
 def qualify(checkpoint, directory, baseline_directory):
@@ -97,33 +127,56 @@ def actor_update_info(source, candidate):
     before=torch.load(source,map_location="cpu",weights_only=False)["model_state_dict"]
     after=torch.load(candidate,map_location="cpu",weights_only=False)["model_state_dict"]
     keys=[key for key in before if key.startswith("actor.") and key.endswith((".weight",".bias"))
-          and not key.startswith("actor.router.")]
+          and not key.startswith(("actor.router.", "actor.split_router."))]
     if not keys or any(key not in after or before[key].shape != after[key].shape for key in keys):
         raise ValueError("Policy update requires matching actor parameter structures")
     if any(not torch.equal(value,after.get(key)) for key,value in before.items()
-           if key.startswith("actor.router.")):
+           if key.startswith(("actor.router.", "actor.split_router."))):
         raise ValueError("Recovery router changed during PPO despite its frozen contract")
+    if any(not torch.equal(before[key],after[key]) for key in keys if key.startswith("actor.moving_expert.")):
+        raise ValueError("Frozen moving expert changed during static specialization")
     changed=sum(not torch.equal(before[key],after[key]) for key in keys)
+    params = Path(candidate).parent/"params"/"agent.yaml"
+    if params.is_file():
+        import yaml
+        allowed = yaml.safe_load(params.read_text())["policy"].get("trainable_expert_indices")
+        if allowed is not None and any(not torch.equal(before[key],after[key]) for key in keys
+                                      if key.startswith("actor.experts.") and int(key.split(".")[2]) not in allowed):
+            raise ValueError("Frozen expert changed during specialization")
     return dict(changed_tensors=changed,max_parameter_delta=max(
         float((before[key]-after[key]).abs().max()) for key in keys),policy_updated=changed>0)
 
 
 def training_command(args, checkpoint, name, updates, envs, info):
-    routed = info.get("policy_class") == ROUTED_CLASS
-    command = [sys.executable, "-B", "-u", "scripts/rsl_rl/train.py", "--task", ROUTED_TASK if routed else TASK,
+    routed = info.get("policy_class") in ROUTED_CLASSES
+    command = [sys.executable, "-B", "-u", "scripts/rsl_rl/train.py", "--task", policy_task(info.get("policy_class")),
             "--checkpoint", str(checkpoint), "--run_name", name, "--num_envs", str(envs),
             "--max_iterations", str(updates), "--seed", str(args.seed), "--device", args.device,
             "--headless", "--finetune_noise_std", ".015",
             "agent.policy.actor_hidden_dims=" + json.dumps(info["actor_hidden_dims"], separators=(",", ":")),
             "agent.policy.critic_hidden_dims=" + json.dumps(info["critic_hidden_dims"], separators=(",", ":"))]
     if routed:
+        parameters=info["routed_parameters"].copy()
+        if getattr(args,"trainable_experts",None) is not None:
+            parameters["trainable_expert_indices"]=args.trainable_experts
         command.extend("agent.policy."+key+"="+json.dumps(value, separators=(",", ":"))
-                       for key, value in info["routed_parameters"].items())
+                       for key, value in parameters.items())
+    if getattr(args,"motion_aware_preservation",False):
+        command.append("agent.algorithm.reference_motion_admission=true")
+    for argument, field in (("learning_rate","learning_rate"),("preservation_weight","steep_preservation_weight"),
+                            ("reference_action_scale","steep_reference_action_scale"),
+                            ("motion_relaxed_fraction","reference_motion_relaxed_fraction")):
+        value=getattr(args,argument,None)
+        if value is not None:
+            command.append("agent.algorithm."+field+"="+str(value))
     replay = getattr(args, "reference_replay", None)
     if replay:
         if not routed:
             raise ValueError("Sensor replay recovery currently requires the routed MLP task")
-        command.extend(["--reference_replay", str(replay), "agent.algorithm.reference_replay_weight=10.0"])
+        command.extend(["--reference_replay", str(replay),
+                        "agent.algorithm.reference_replay_weight="+str(getattr(args,"reference_replay_weight",10.))])
+        if getattr(args,"reference_replay_action_scale",None) is not None:
+            command.append("agent.algorithm.reference_replay_action_scale="+str(args.reference_replay_action_scale))
         bound = getattr(args,"reference_replay_max_delta",0.)
         if bound:
             command.append("agent.algorithm.reference_replay_max_delta="+str(bound))
@@ -131,7 +184,7 @@ def training_command(args, checkpoint, name, updates, envs, info):
 
 
 def benchmark_command(args, checkpoint, directory):
-    task = ROUTED_TASK if checkpoint_info(checkpoint).get("policy_class") == ROUTED_CLASS else TASK
+    task = policy_task(checkpoint_info(checkpoint).get("policy_class"))
     return [sys.executable, "-B", "-u", "scripts/tools/deformable_real2sim_benchmark.py",
             "--task", task, "--checkpoint", str(checkpoint), "--output-dir", str(directory),
             "--grades", "0", "5", "10", "17", "20", "--steps", "600", "--seed", "1234",
@@ -154,10 +207,25 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=47)
     parser.add_argument("--reference-replay", type=Path, default=None)
     parser.add_argument("--reference-replay-max-delta", type=float, default=0.)
+    parser.add_argument("--trainable-experts",type=int,nargs="+",default=None)
+    parser.add_argument("--motion-aware-preservation",action="store_true")
+    parser.add_argument("--motion-relaxed-fraction",type=float,default=None)
+    parser.add_argument("--learning-rate",type=float,default=None)
+    parser.add_argument("--preservation-weight",type=float,default=None)
+    parser.add_argument("--reference-action-scale",type=float,default=None)
+    parser.add_argument("--reference-replay-weight",type=float,default=10.)
+    parser.add_argument("--reference-replay-action-scale",type=float,default=None)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--timeout-hours", type=float, default=96.)
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
+    if any(value is not None and (not math.isfinite(value) or value <= 0) for value in
+           (args.learning_rate,args.preservation_weight,args.reference_action_scale,
+            args.reference_replay_weight,args.reference_replay_action_scale)):
+        parser.error("Recovery optimization rates, weights and scales must be finite and positive")
+    if args.motion_relaxed_fraction is not None and (not args.motion_aware_preservation
+            or not math.isfinite(args.motion_relaxed_fraction) or not 0 <= args.motion_relaxed_fraction < 1):
+        parser.error("A finite motion fraction between zero and one requires explicit motion admission")
     if (min(args.iterations, args.chunk_iterations, args.preflight_iterations) <= 0
             or not 1 <= args.num_envs <= 1024 or not 1 <= args.preflight_envs <= 1024
             or args.seed < 0 or args.seed in (1234, 4321)
@@ -173,6 +241,10 @@ def main(argv=None):
         if not args.reference_replay.is_file() or not args.reference_replay.with_suffix(".json").is_file():
             parser.error("Sensor replay requires its saved dataset and provenance manifest")
     info = checkpoint_info(args.checkpoint)
+    if args.trainable_experts is not None and (info["policy_class"] not in ROUTED_CLASSES
+            or len(set(args.trainable_experts)) != len(args.trainable_experts)
+            or any(not 0 <= index < len(info["routed_parameters"]["expert_hidden_dims"]) for index in args.trainable_experts)):
+        parser.error("Expert specialization requires distinct valid routed expert indices")
     admission = qualify(args.checkpoint, args.qualified_evaluation_dir, args.baseline_dir)
     if not admission["transformer_level_recovered"]:
         print("REJECTED: standalone MLP has not restored the paired Transformer baseline", flush=True)
@@ -194,6 +266,11 @@ def main(argv=None):
     state = dict(status="running", started_at=timestamp(), jobs=[], admission=admission,
                  last_accepted_checkpoint=str(args.checkpoint), total_training_updates=0,
                  requested_long_updates=args.iterations, stages=[], source_sha256={})
+    state["training_specialization"] = dict(trainable_experts=args.trainable_experts,
+                                            motion_aware_preservation=args.motion_aware_preservation)
+    state["optimization_overrides"] = {key:getattr(args,key) for key in (
+        "learning_rate","preservation_weight","reference_action_scale","motion_relaxed_fraction",
+        "reference_replay_weight","reference_replay_action_scale") if getattr(args,key) is not None}
     if args.reference_replay:
         state["reference_sensor_replay"] = dict(path=str(args.reference_replay),
             sha256=hashlib.sha256(args.reference_replay.read_bytes()).hexdigest(),
@@ -202,7 +279,10 @@ def main(argv=None):
     for relative in dict.fromkeys([*SOURCES, "scripts/tools/deformable_mlp_guarded_train.py",
                                   "source/agent_rl/agent_rl/rsl_rl/modules/sensor_routed_mlp.py",
                                   "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_suspension_routed_mlp.py",
-                                  "scripts/tools/deformable_mlp_replay.py"]):
+                                  "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_suspension_default_split_mlp.py",
+                                  "scripts/tools/deformable_mlp_replay.py",
+                                  "scripts/tools/deformable_mlp_motion_replay.py",
+                                  "source/agent_rl/agent_rl/rsl_rl/algorithms/deformable_motion_admission.py"]):
         data = (ROOT / relative).read_bytes()
         destination = args.output_dir / "source" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -214,7 +294,7 @@ def main(argv=None):
         for stage, updates, envs in stages:
             name = args.output_dir.name+"_"+stage
             run_child(training_command(args, source, name, updates, envs, info), "train_"+stage, args, state)
-            experiment = ROUTED_EXPERIMENT if info.get("policy_class") == ROUTED_CLASS else EXPERIMENT
+            experiment = policy_experiment(info.get("policy_class"))
             candidate = latest_checkpoint(experiment, name)
             info = checkpoint_info(candidate)
             if info["iteration"] != updates-1:

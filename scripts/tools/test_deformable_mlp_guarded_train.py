@@ -115,3 +115,51 @@ def test_critic_noise_only_changes_do_not_count_as_policy_optimization(tmp_path)
     torch.save(dict(model_state_dict=state),b)
     with pytest.raises(ValueError,match="router changed"):
         pipeline.actor_update_info(a,b)
+
+
+def test_specialist_optimizer_overrides_leave_default_training_unchanged():
+    info=dict(policy_class=pipeline.SPLIT_CLASS,actor_hidden_dims=[12,8],critic_hidden_dims=[16,8],
+              routed_parameters=dict(expert_hidden_dims=[[12,8]]*4,router_hidden_dims=[8],
+                                     split_router_hidden_dims=[8],split_routing_confidence=.995))
+    args=SimpleNamespace(seed=53,device='cuda:0',trainable_experts=[3],
+                         reference_replay=Path('training/policy_obs.npz'))
+    default=pipeline.training_command(args,Path('model.pt'),'specialist',100,128,info)
+    assert default[default.index('--task')+1]==pipeline.SPLIT_TASK
+    assert 'agent.policy.trainable_expert_indices=[3]' in default
+    assert 'agent.policy.split_routing_confidence=0.995' in default
+    assert not any(value.startswith('agent.algorithm.learning_rate=') for value in default)
+    assert not any(value.startswith('agent.algorithm.reference_motion_relaxed_fraction=') for value in default)
+    args.motion_aware_preservation=True;args.motion_relaxed_fraction=0.
+    args.learning_rate=5.e-6;args.preservation_weight=1.;args.reference_action_scale=.03
+    args.reference_replay_weight=.1;args.reference_replay_action_scale=.03
+    specialized=pipeline.training_command(args,Path('model.pt'),'specialist',100,128,info)
+    for field,value in [('reference_motion_admission','true'),('reference_motion_relaxed_fraction','0.0'),
+                        ('learning_rate','5e-06'),('steep_preservation_weight','1.0'),
+                        ('steep_reference_action_scale','0.03'),('reference_replay_weight','0.1'),
+                        ('reference_replay_action_scale','0.03')]:
+        assert f'agent.algorithm.{field}={value}' in specialized
+    assert 'agent.algorithm.reference_replay_max_delta=0.0' not in specialized
+
+
+@pytest.mark.parametrize('option',['--learning-rate','--preservation-weight','--reference-action-scale',
+                                    '--reference-replay-weight','--reference-replay-action-scale'])
+@pytest.mark.parametrize('value',['0','nan','inf'])
+def test_invalid_specialist_optimization_fails_before_loading_or_starting(option,value):
+    with patch.object(pipeline,'checkpoint_info') as inspect,patch.object(pipeline,'run_child') as run:
+        with pytest.raises(SystemExit) as error:
+            pipeline.main(['--checkpoint','unused.pt','--qualified-evaluation-dir','unused',
+                           '--output-dir','unused',option,value,'--run'])
+    assert error.value.code==2
+    inspect.assert_not_called();run.assert_not_called()
+
+
+@pytest.mark.parametrize('options',[['--motion-relaxed-fraction','0'],
+                                     ['--motion-aware-preservation','--motion-relaxed-fraction','nan'],
+                                     ['--motion-aware-preservation','--motion-relaxed-fraction','1']])
+def test_motion_relaxation_requires_valid_explicit_admission(options):
+    with patch.object(pipeline,'checkpoint_info') as inspect,patch.object(pipeline,'run_child') as run:
+        with pytest.raises(SystemExit) as error:
+            pipeline.main(['--checkpoint','unused.pt','--qualified-evaluation-dir','unused',
+                           '--output-dir','unused',*options,'--run'])
+    assert error.value.code==2
+    inspect.assert_not_called();run.assert_not_called()

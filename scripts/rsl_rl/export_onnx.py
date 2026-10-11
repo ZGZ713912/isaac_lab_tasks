@@ -67,9 +67,19 @@ def _build_actor(state_dict: dict) -> tuple[nn.Module, int, int]:
                 raise ValueError("Routed MLP requires 160 sensor inputs")
             return [int(state_dict[key].shape[0]) for key in keys[:-1]]
         count = len({key.split(".")[2] for key in state_dict if key.startswith("actor.experts.")})
-        actor = module.SensorRoutedMLP(
+        split_parameters = {}
+        constructor = module.SensorRoutedMLP
+        if "actor.split_router.0.weight" in state_dict:
+            constructor = module.SensorDefaultSplitMLP
+            split_parameters = dict(split_router_hidden_dims=hidden("actor.split_router."),
+                                    split_routing_confidence=float(state_dict["actor.split_routing_confidence"]))
+            if "actor.moving_expert.0.weight" in state_dict:
+                split_parameters.update(moving_expert_hidden_dims=hidden("actor.moving_expert."),
+                                        standing_command_tolerance=float(state_dict["actor.standing_command_tolerance"]))
+        actor = constructor(
             [hidden(f"actor.experts.{index}.") for index in range(count)], hidden("actor.router."),
-            float(state_dict["actor.routing_confidence"]), float(state_dict["actor.routing_load_threshold"]))
+            float(state_dict["actor.routing_confidence"]), float(state_dict["actor.routing_load_threshold"]),
+            **split_parameters)
         actor.load_state_dict({key[len("actor."):]: value for key, value in state_dict.items()
                                if key.startswith("actor.")}, strict=True)
         return actor.eval(), 160, 4

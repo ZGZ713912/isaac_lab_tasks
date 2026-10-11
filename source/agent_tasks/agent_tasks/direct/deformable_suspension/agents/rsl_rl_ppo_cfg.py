@@ -409,6 +409,7 @@ class DeformableRoutedMLPPolicyCfg(DeformableHistoryMLPPolicyCfg):
     router_hidden_dims: list = [128, 64]
     routing_confidence: float = .995
     routing_load_threshold: float = .02
+    trainable_expert_indices: list | None = None
     actor_hidden_dims: list = [576, 288, 144]
     critic_hidden_dims: list = [512, 256, 128]
     init_noise_std: float = .015
@@ -433,3 +434,22 @@ class DeformableFittedRecoveredRoutedMLPPPORunnerCfg(DeformableFittedRecoveredML
         self.algorithm.reference_replay_action_scale = 0.002
         self.algorithm.reference_replay_batch_size = 256
         self.algorithm.reference_replay_max_delta = 0.0
+        self.algorithm.reference_motion_admission = False
+        self.algorithm.reference_motion_relaxed_fraction = .1
+
+
+@configclass
+class DeformableDefaultSplitMLPPolicyCfg(DeformableRoutedMLPPolicyCfg):
+    class_name: str = "ActorCriticSuspensionDefaultSplitMLP"
+    expert_hidden_dims: list = [[576,288,144],[512,256,128],[704,352,176],[576,288,144]]
+    split_router_hidden_dims: list = [128,64]
+    split_routing_confidence: float = .995
+    moving_expert_hidden_dims: list | None = None
+    standing_command_tolerance: float = 1.e-6
+    trainable_expert_indices: list | None = [3]
+
+
+@configclass
+class DeformableFittedRecoveredDefaultSplitMLPPPORunnerCfg(DeformableFittedRecoveredRoutedMLPPPORunnerCfg):
+    experiment_name = "deformable_real2sim_recovered_default_split_mlp5_v3"
+    policy = DeformableDefaultSplitMLPPolicyCfg()

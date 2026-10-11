@@ -10,7 +10,7 @@ import yaml
 
 def configure_recovery_precision(policy_cfg, algorithm_cfg):
     """Use deployment FP32 math for contact-sensitive policy preservation."""
-    if (policy_cfg.get("class_name") not in ("ActorCriticSuspensionMLP", "ActorCriticSuspensionRoutedMLP")
+    if (policy_cfg.get("class_name") not in ("ActorCriticSuspensionMLP", "ActorCriticSuspensionRoutedMLP", "ActorCriticSuspensionDefaultSplitMLP")
             or policy_cfg.get("history_length") != 5 or not algorithm_cfg.get("steep_preservation_weight",0.)):
         return None
     import torch
@@ -55,13 +55,18 @@ def snapshot_real2sim_model(cfg, log_dir):
 def validate_deformable_policy(checkpoint, policy_cfg):
     """MLP fine-tunes require the same architecture, including history width."""
     saved = load_deformable_agent_config(checkpoint, "cpu")["policy"]
-    mlp_classes = ("ActorCriticSuspensionMLP", "ActorCriticSuspensionRoutedMLP")
+    mlp_classes = ("ActorCriticSuspensionMLP", "ActorCriticSuspensionRoutedMLP", "ActorCriticSuspensionDefaultSplitMLP")
     if not any(name in mlp_classes for name in (saved["class_name"], policy_cfg["class_name"])):
         return  # Existing Transformer geometry-input expansion remains supported.
     keys = ["class_name", "history_length", "actor_hidden_dims", "critic_hidden_dims",
             "activation", "actor_obs_normalization", "critic_obs_normalization"]
-    if "ActorCriticSuspensionRoutedMLP" in (saved["class_name"], policy_cfg["class_name"]):
+    routed_classes = ("ActorCriticSuspensionRoutedMLP", "ActorCriticSuspensionDefaultSplitMLP")
+    if any(name in routed_classes for name in (saved["class_name"], policy_cfg["class_name"])):
         keys.extend(("expert_hidden_dims", "router_hidden_dims", "routing_confidence", "routing_load_threshold"))
+    if "ActorCriticSuspensionDefaultSplitMLP" in (saved["class_name"], policy_cfg["class_name"]):
+        keys.extend(("split_router_hidden_dims", "split_routing_confidence"))
+        if any(config.get("moving_expert_hidden_dims") is not None for config in (saved,policy_cfg)):
+            keys.extend(("moving_expert_hidden_dims", "standing_command_tolerance"))
     for key in keys:
         if saved.get(key) != policy_cfg.get(key):
             raise ValueError(

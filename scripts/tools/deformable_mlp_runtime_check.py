@@ -115,6 +115,8 @@ def select_probes(actor, observations, per_expert=32):
         route = torch.where((confidence >= actor.routing_confidence)
                             & (observations[:, -14:-10].abs().mean(-1) > actor.routing_load_threshold),
                             route, torch.zeros_like(route))
+        if hasattr(actor,"routing_indices"):
+            route = actor.routing_indices(observations)
     selected = []
     for expert in range(len(actor.experts)):
         ids = torch.where(route == expert)[0]
@@ -122,6 +124,10 @@ def select_probes(actor, observations, per_expert=32):
             raise ValueError("Runtime probes must cover every routed expert")
         selected.extend(ids[torch.linspace(0,len(ids)-1,per_expert).long()].tolist())
     selected.extend(torch.argsort((confidence-actor.routing_confidence).abs())[:32].tolist())
+    if hasattr(actor,"split_router"):
+        with torch.inference_mode():
+            split_confidence = actor.split_router(observations).softmax(-1).max(-1).values
+        selected.extend(torch.argsort((split_confidence-actor.split_routing_confidence).abs())[:32].tolist())
     ids = list(dict.fromkeys(selected))
     return observations[ids], route[ids].tolist()
 

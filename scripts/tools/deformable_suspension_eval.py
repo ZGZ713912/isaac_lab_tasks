@@ -360,6 +360,27 @@ def evaluate(args, agent_cfg, history, app):
                     [], [], [], [], [], [], [], [], []
                 )
                 trace_loads, trace_roll, trace_wheel_effort, trace_wheel_speed, trace_wheel_target = [], [], [], [], []
+                trace_points, trace_normals, trace_axles, trace_wheel_com, trace_whole_com = [], [], [], [], []
+                trace_tire_gap, trace_tire_load, trace_tire_force, trace_friction = [], [], [], []
+                trace_tire_roll = []
+                trace_tire_sensed_load = []
+                trace_tire_spin, trace_tire_velocity, trace_tire_slip = [], [], []
+                trace_policy_routes = []
+                current_policy_route = torch.full((u.num_envs,),-1,dtype=torch.long,device=u.device)
+                trace_masses = None
+                if trace_dir is not None:
+                    # Physics masses are fixed: this task explicitly disallows
+                    # material/mass events. Read actual PhysX masses once rather
+                    # than estimating the articulation COM from the base alone.
+                    trace_masses = u.robot.root_physx_view.get_masses().to(device=u.device, dtype=torch.float32)
+                    if trace_masses.ndim == 3 and trace_masses.shape[-1] == 1:
+                        trace_masses = trace_masses.squeeze(-1)
+                    if (trace_masses.shape != u.robot.data.body_com_pos_w.shape[:2]
+                            or not torch.isfinite(trace_masses).all() or (trace_masses < 0).any()
+                            or not (trace_masses.sum(-1) > 0).all()):
+                        raise RuntimeError("Physical trace masses do not match articulation bodies")
+                    u._record_tire_diagnostics = True
+                    u._trace_body_masses = trace_masses
                 policy_data_dir = getattr(args, "policy_data_dir", None)
                 policy_frames, critic_frames, teacher_actions, teacher_values = [], [], [], []
 
@@ -459,7 +480,23 @@ def evaluate(args, agent_cfg, history, app):
                         trace_boundary.append(terrain_boundary.cpu().numpy())
                         trace_positions.append(data.root_link_pos_w.detach().cpu().numpy().copy())
                         trace_loads.append(load.detach().cpu().numpy().copy())
-                        trace_roll.append(u._wheel_geometry_w()[-1].detach().cpu().numpy().copy())
+                        roll_directions = u._wheel_geometry_w()[-1]
+                        trace_roll.append(roll_directions.detach().cpu().numpy().copy())
+                        trace_points.append(u._last_tire_contact_points_w.cpu().numpy().copy())
+                        trace_normals.append(u._last_tire_ground_normals_w.cpu().numpy().copy())
+                        trace_axles.append(u._last_tire_axle_direction_w.cpu().numpy().copy())
+                        trace_wheel_com.append(u._last_tire_wheel_com_positions_w.cpu().numpy().copy())
+                        trace_whole_com.append(u._last_tire_articulation_com_w.cpu().numpy().copy())
+                        trace_tire_roll.append(u._last_tire_roll_direction_w.cpu().numpy().copy())
+                        trace_tire_gap.append(u._last_tire_gap_m.cpu().numpy().copy())
+                        trace_tire_load.append(u._last_tire_active_load_n.cpu().numpy().copy())
+                        trace_tire_sensed_load.append(u._last_tire_sensed_load_n.cpu().numpy().copy())
+                        trace_tire_spin.append(u._last_tire_wheel_spin_rad_s.cpu().numpy().copy())
+                        trace_tire_velocity.append(u._last_tire_contact_velocity_without_spin_w.cpu().numpy().copy())
+                        trace_tire_slip.append(u._last_tire_model_slip_m_s.cpu().numpy().copy())
+                        trace_policy_routes.append(current_policy_route.cpu().numpy().copy())
+                        trace_tire_force.append(u._last_tire_force_w.cpu().numpy().copy())
+                        trace_friction.append(u._friction.detach().cpu().numpy().copy())
                         trace_wheel_effort.append(u._wheel_tau.detach().cpu().numpy().copy())
                         trace_wheel_speed.append(data.joint_vel[:, u._wheels_idx].detach().cpu().numpy().copy())
                         trace_wheel_target.append(u._wheel_target.detach().cpu().numpy().copy())
@@ -502,6 +539,10 @@ def evaluate(args, agent_cfg, history, app):
                             expert_actions = guide(obs["policy"])
                         actions = (student.act_inference({"policy": obs["policy"][:, -160:]})
                                    if student is not None and mode == "POLICY" else expert_actions)
+                        if trace_dir is not None and mode == "POLICY" and guide is None and student is None:
+                            route = getattr(runner.alg.policy.actor,"routing_indices",None)
+                            if route is not None:
+                                current_policy_route = route(runner.alg.policy.get_actor_obs(obs)).detach()
                         if not torch.isfinite(actions).all():
                             raise RuntimeError("Nonfinite policy actions")
                         if policy_data_dir is not None and mode == "POLICY":
@@ -551,6 +592,28 @@ def evaluate(args, agent_cfg, history, app):
                                             root_pos_w=np.stack(trace_positions)[:, ids],
                                             wheel_normal_forces_n=np.stack(trace_loads)[:, ids],
                                             wheel_roll_direction_w=np.stack(trace_roll)[:, ids],
+                                            wheel_contact_points_w=np.stack(trace_points)[:, ids],
+                                            wheel_ground_normals_w=np.stack(trace_normals)[:, ids],
+                                            wheel_axle_direction_w=np.stack(trace_axles)[:, ids],
+                                            wheel_com_positions_w=np.stack(trace_wheel_com)[:, ids],
+                                            articulation_com_position_w=np.stack(trace_whole_com)[:, ids],
+                                            body_masses_kg=trace_masses.cpu().numpy()[ids],
+                                            body_names=np.asarray(u.robot.body_names),
+                                            tire_active_load_n=np.stack(trace_tire_load)[:, ids],
+                                            tire_sensed_load_n=np.stack(trace_tire_sensed_load)[:, ids],
+                                            tire_contact_gap_m=np.stack(trace_tire_gap)[:, ids],
+                                            tire_force_w=np.stack(trace_tire_force)[:, ids],
+                                            tire_roll_direction_w=np.stack(trace_tire_roll)[:, ids],
+                                            tire_wheel_spin_rad_s=np.stack(trace_tire_spin)[:, ids],
+                                            tire_contact_velocity_without_spin_w=np.stack(trace_tire_velocity)[:, ids],
+                                            tire_model_slip_m_s=np.stack(trace_tire_slip)[:, ids],
+                                            tire_spin_radius_m=np.asarray(u._tire_spin_radius_m),
+                                            policy_routing_index=np.stack(trace_policy_routes)[:, ids],
+                                            policy_routing_snapshot=np.asarray("actual_policy_action_before_physics; -1 means unrecorded"),
+                                            tire_friction=np.stack(trace_friction)[:, ids],
+                                            tire_contact_gap_limit_m=np.asarray(cfg.tire_contact_gap),
+                                            traction_trace_schema=np.asarray("wheel_tire_wrench_v1"),
+                                            traction_snapshot=np.asarray("last_physics_actuation_before_integration"),
                                             wheel_motor_torque_nm=np.stack(trace_wheel_effort)[:, ids],
                                             wheel_speed_rad_s=np.stack(trace_wheel_speed)[:, ids],
                                             wheel_target_rad_s=np.stack(trace_wheel_target)[:, ids],
