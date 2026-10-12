@@ -9,7 +9,8 @@ from deformable_precision_pipeline import extract_report
 
 FLAT_LIMITS = dict(target_error_max_deg=1.e-4, physical_error_p95_deg=.15,
                    physical_error_max_deg=.5, flat_hold_fraction=.99,
-                   parked_diagonal_peak_to_peak_deg=.3, contact_rate=.98)
+                   parked_diagonal_peak_to_peak_deg=.3, contact_rate=.98,
+                   steady_window_s=1., target_check_after_s=1.)
 
 
 def checkpoint_digest(path):
@@ -60,10 +61,20 @@ def flat_assessment(directory):
             amplitudes = [float(np.ptp(diagonal[parked[:, i], i]))
                           for i in range(diagonal.shape[1]) if parked[:, i].sum() >= 100]
             valid = settled & hold
-            case = dict(flat_hold_fraction=float(hold[settled].mean()),
-                target_error_max_deg=float(target_error[settled].max()),
-                physical_error_p95_deg=float(np.quantile(physical_error[settled], .95)),
-                physical_error_max_deg=float(physical_error[settled].max()),
+            has_samples = bool(settled.any())
+            # The hard hold is a target contract; allow the servo its measured
+            # settling transient before judging physical encoder error.
+            steady = settled & (trace["time_s"][:, None] >= trace["time_s"][-1] - FLAT_LIMITS["steady_window_s"])
+            has_steady = bool(steady.any())
+            case = dict(settled_samples=int(settled.sum()), steady_samples=int(steady.sum()),
+                flat_hold_fraction=float(hold[settled].mean()) if has_samples else 0.,
+                target_error_max_deg=float(target_error[settled].max()) if has_samples else None,
+                physical_error_p95_deg=float(np.quantile(physical_error[settled], .95)) if has_samples else None,
+                physical_error_max_deg=float(physical_error[settled].max()) if has_samples else None,
+                physical_steady_error_p95_deg=float(np.quantile(physical_error[steady], .95)) if has_steady else None,
+                physical_steady_error_max_deg=float(physical_error[steady].max()) if has_steady else None,
+                physical_error_all_samples_p95_deg=float(np.quantile(physical_error[settled], .95)) if has_samples else None,
+                physical_error_all_samples_max_deg=float(physical_error[settled].max()) if has_samples else None,
                 raw_target_error_p95_deg=float(np.quantile(raw_error[valid], .95)) if valid.any() else None,
                 raw_target_error_mean_deg=float(raw_error[valid].mean()) if valid.any() else None,
                 parked_diagonal_peak_to_peak_deg=max(amplitudes) if amplitudes else None,
@@ -72,10 +83,11 @@ def flat_assessment(directory):
                 tilt_p95_deg=row["tilt_deg"]["abs_p95"], terminated_resets=row["terminated_resets"],
                 physical_terminated_resets=row["physical_terminated_resets"],
                 terrain_boundary_violations=row["terrain_boundary_violations"],
-                mean_abs_slip_m_s=row["mean_abs_slip_m_s"])
+                mean_abs_slip_m_s=row.get("mean_abs_slip_m_s"))
             checks = dict(
-                strict_minangle_target=case["target_error_max_deg"] <= FLAT_LIMITS["target_error_max_deg"],
-                measured_minangle=case["physical_error_p95_deg"] <= FLAT_LIMITS["physical_error_p95_deg"]
+                settled_samples=has_samples,
+                strict_minangle_target=has_samples and case["target_error_max_deg"] <= FLAT_LIMITS["target_error_max_deg"],
+                measured_minangle=has_samples and case["physical_error_p95_deg"] <= FLAT_LIMITS["physical_error_p95_deg"]
                     and case["physical_error_max_deg"] <= FLAT_LIMITS["physical_error_max_deg"],
                 continuous_flat_hold=case["flat_hold_fraction"] >= FLAT_LIMITS["flat_hold_fraction"],
                 no_parked_alternation=not amplitudes or max(amplitudes) <= FLAT_LIMITS["parked_diagonal_peak_to_peak_deg"],

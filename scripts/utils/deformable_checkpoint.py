@@ -104,11 +104,14 @@ def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None, *, allow_ru
         if (saved.get("policy_history_length") != "5"
                 or abs(saved_period - cfg.policy_history_period_s) > 1.e-9):
             raise ValueError("Guard transfer must preserve the checkpoint's five-frame history timing")
-    if saved_guard:
+    if saved_guard and not allow_runtime_guard_transition:
         for field in ("runtime_guard_version", "policy_history_period_s", "guard_enter_deg", "guard_exit_deg",
                       "guard_plane_tolerance_m", "guard_confirmation_s", "guard_attitude_tau_s",
-                      "guard_acceleration_tau_s", "guard_acceleration_fusion_scale"):
-            if str(getattr(cfg, field)) != str(saved.get(field)):
+                      "guard_acceleration_tau_s", "guard_acceleration_fusion_scale", "guard_flat_return_rate_limit",
+                      "guard_flat_return_acceleration_limit", "guard_flat_velocity_reference"):
+            requested = getattr(cfg, field)
+            serialized = str(requested).lower() if isinstance(requested, bool) else str(requested)
+            if serialized != str(saved.get(field)):
                 raise ValueError(f"Saved runtime guard contract differs: {field}")
         if (int(saved["decimation"]) != cfg.decimation
                 or abs(float(saved["sim"]["dt"]) - cfg.sim.dt) > 1.e-9):

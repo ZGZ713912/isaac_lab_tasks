@@ -33,6 +33,19 @@ def test_horizontal_body_on_unequal_legs_is_not_flat_ground():
     assert not guard.flat_hold.item()
 
 
+def test_flat_learning_starts_before_confirmation_but_runtime_waits():
+    guard = guard_module.SuspensionRuntimeGuard(2, "cpu")
+    angles = torch.deg2rad(torch.tensor([2.9, 5.]))
+    gravity = torch.stack((angles.sin(), torch.zeros(2), -angles.cos()), -1)
+    q = torch.full((2, 4), 1.0646473)
+    zeros = torch.zeros(2, 3)
+    guard.update(q, zeros, -guard_module.GRAVITY*gravity, zeros, gravity, .005)
+    assert guard.flat_candidate.tolist() == [True, False]
+    assert not guard.flat_hold.any()
+    guard.reset(torch.tensor([0]))
+    assert not guard.flat_candidate.any()
+
+
 def test_flat_hold_survives_acceleration_braking_and_turning():
     guard = guard_module.SuspensionRuntimeGuard(2, "cpu")
     q = torch.full((2, 4), 1.0646473192622632)
@@ -84,6 +97,25 @@ def test_history_retains_40ms_span_and_10ms_action_feedback():
     torch.testing.assert_close(result[1, :, 10], torch.tensor([4., 6., 8., 10., 12.]))
     with pytest.raises(ValueError):
         guard_module.CausalPolicyHistory(1, 5, .006, .01, "cpu")
+
+
+def test_flat_return_brakes_before_baseline_and_clears_velocity():
+    target = torch.tensor([[.9, 1.02, 1.0646473, 1.08]])
+    baseline = torch.full_like(target, 1.0646473)
+    velocity = torch.zeros_like(target)
+    peak_speed = 0.
+    for _ in range(220):
+        previous = target.clone()
+        before = velocity.clone()
+        target, velocity = guard_module.flat_return_target(target, baseline, velocity, .005, .5, 2.)
+        assert (target-baseline).abs().max() <= (previous-baseline).abs().max()+1.e-7
+        peak_speed = max(peak_speed, velocity.abs().max().item())
+        # Only the final sampled crossing may round its remaining velocity to zero.
+        moving = (target-baseline).abs() > 1.e-7
+        assert (velocity-before).abs()[moving].max().item() <= .010001 if moving.any() else True
+    torch.testing.assert_close(target, baseline)
+    assert velocity.count_nonzero() == 0
+    assert .1 < peak_speed <= .500001
 
 
 def test_flat_learning_supervises_each_leg_and_excludes_reference_conflict():
@@ -142,3 +174,72 @@ def test_acceptance_cannot_hide_one_raised_leg_in_a_mean(tmp_path):
     assert not assessment["passed"]
     assert not assessment["cases"]["static"]["checks"]["strict_minangle_target"]
     assert assessment["cases"]["static"]["target_error_max_deg"] == pytest.approx(2.)
+    with np.load(tmp_path/"traces/policy_static.npz") as source:
+        data = {name: source[name] for name in source.files}
+    data["episode_age_s"][:] = .2
+    np.savez(tmp_path/"traces/policy_static.npz", **data)
+    assessment = flat_assessment(tmp_path)
+    assert not assessment["passed"]
+    assert assessment["cases"]["static"]["physical_error_p95_deg"] is None
+    assert not assessment["cases"]["static"]["checks"]["settled_samples"]
+
+
+def test_acceptance_keeps_transient_error_even_if_last_second_is_perfect(tmp_path):
+    import json
+    import numpy as np
+    from deformable_guarded_assess import flat_assessment
+    (tmp_path/"traces").mkdir()
+    checkpoint = tmp_path/"model.pt"
+    checkpoint.write_bytes(b"test-checkpoint")
+    row = dict(failure_adjusted_all_contact_rate=1., tilt_deg=dict(abs_p95=0.),
+               terminated_resets=0, physical_terminated_resets=0, terrain_boundary_violations=0)
+    report = dict(checkpoint=str(checkpoint), seed=1, runtime_guard=dict(policy_rate_hz=200.),
+                  terrain=dict(grade_deg=2.), results=dict(POLICY=dict(static=row)))
+    (tmp_path/"run.log").write_text(json.dumps(report)+'\n')
+    q = np.full((600, 1, 4), math.atan2(.13694,.029108)-math.radians(17.))
+    measured = q.copy()
+    measured[:200] -= math.radians(1.)
+    guard = np.zeros((600, 1, 9))
+    guard[..., 0] = 1.
+    np.savez(tmp_path/"traces/policy_static.npz", episode_age_s=np.full((600,1),2.), runtime_guard=guard,
+             leg_target=q, joint_q=measured, raw_policy_actions=np.zeros_like(q),
+             time_s=np.linspace(1.,4.,600), columns=np.array(("cmd_vx_body", "cmd_vy_body", "cmd_wz")),
+             metrics=np.zeros((600,1,3)))
+    result = flat_assessment(tmp_path)
+    assert result["cases"]["static"]["physical_steady_error_max_deg"] == pytest.approx(0.)
+    assert not result["passed"]
+    assert not result["cases"]["static"]["checks"]["measured_minangle"]
+
+
+def test_guarded_checkpoint_requires_saved_timing_and_explicit_transition(tmp_path):
+    import yaml
+    from types import SimpleNamespace
+    contract = load_file("guarded_checkpoint_test", "scripts/utils/deformable_checkpoint.py")
+    checkpoint = tmp_path/"model.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    params = tmp_path/"params"
+    params.mkdir()
+    fields = dict(runtime_guard_version="sensor_plane_imu_v3", policy_history_period_s=.01,
+        guard_enter_deg=3., guard_exit_deg=3.5, guard_plane_tolerance_m=.006, guard_confirmation_s=.1,
+        guard_attitude_tau_s=.25, guard_acceleration_tau_s=.05, guard_acceleration_fusion_scale=.5,
+        guard_flat_return_rate_limit=.5, guard_flat_return_acceleration_limit=2., guard_flat_velocity_reference=True)
+    cfg = SimpleNamespace(action_contract_version="minangle_physical_v3", real2sim_enabled=False,
+                          runtime_guard_enabled=True, decimation=5, sim=SimpleNamespace(dt=.001), **fields)
+    saved = dict(action_contract_version=cfg.action_contract_version, real2sim_enabled=False,
+                 runtime_guard_enabled=True, policy_history_length=5, decimation=5, sim=dict(dt=.001), **fields)
+    path = params/"env.yaml"
+    path.write_text(yaml.safe_dump(saved))
+    contract.validate_deformable_checkpoint(cfg,checkpoint)
+    saved["decimation"]=10
+    path.write_text(yaml.safe_dump(saved))
+    with pytest.raises(ValueError,match="timing"):
+        contract.validate_deformable_checkpoint(cfg,checkpoint)
+    saved["runtime_guard_enabled"]=False
+    path.write_text(yaml.safe_dump(saved))
+    with pytest.raises(ValueError,match="explicit"):
+        contract.validate_deformable_checkpoint(cfg,checkpoint)
+    contract.validate_deformable_checkpoint(cfg,checkpoint,allow_runtime_guard_transition=True)
+    saved["decimation"]=5
+    path.write_text(yaml.safe_dump(saved))
+    with pytest.raises(ValueError,match="timing"):
+        contract.validate_deformable_checkpoint(cfg,checkpoint,allow_runtime_guard_transition=True)

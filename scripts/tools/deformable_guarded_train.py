@@ -20,7 +20,8 @@ TASK = "Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4"
 EXPERIMENT = "deformable_guarded_mlp5_v4"
 SCENARIOS = ["static", "forward", "lateral", "spin_positive", "spin_negative", "dynamic", "accel_brake", "reversal"]
 EXTRA_SOURCES = ["scripts/tools/deformable_guarded_train.py", "scripts/tools/deformable_guarded_assess.py",
-    "source/agent_tasks/agent_tasks/direct/deformable_suspension/runtime_guard.py"]
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/runtime_guard.py",
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/adrc.py"]
 
 
 def evaluate(args, state, checkpoint, name, grade, seed, transfer=False, randomized=False, steps=None):
@@ -75,6 +76,7 @@ def main(argv=None):
     parser.add_argument("--baseline-flat-dir", type=Path)
     parser.add_argument("--short-iterations", type=int, default=100)
     parser.add_argument("--short-envs", type=int, default=128)
+    parser.add_argument("--training-seed", type=int, default=67)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--chunk-iterations", type=int, default=1000)
     parser.add_argument("--num-envs", type=int, default=512)
@@ -123,7 +125,7 @@ def main(argv=None):
             state.update(status="needs_iteration", reason="Runtime guard fails measured flat requirements before PPO")
             return 3
         candidate = train(args, state, args.checkpoint, args.output_dir.name+"_short", args.short_iterations,
-                          args.short_envs, transfer=True)
+                          args.short_envs, transfer=True, seed=args.training_seed)
         verify_source(args, state)
         short_flat_dir = evaluate(args, state, candidate, "short_flat", 0, 1234)
         short_flat = flat_assessment(short_flat_dir)
@@ -134,6 +136,23 @@ def main(argv=None):
         if not gate["passed"]:
             state.update(status="needs_iteration", reason="Short training fails measured flat/actor convergence gate")
             return 3
+        # A second seed is used only after the candidate and gates are fixed.
+        admission = []
+        for grade in (2., 2.9, 0):
+            directory = evaluate(args, state, candidate, f"admission_grade_{grade:g}", grade, 2941)
+            admission.append(flat_assessment(directory))
+            write_json(args.output_dir / "independent_admission.json", dict(reports=admission,
+                       complete=False, passed=False))
+            if not admission[-1]["passed"]:
+                state.update(status="needs_iteration", reason=f"Independent {grade:g}-degree near-flat admission failed")
+                return 3
+        noisy = evaluate(args, state, candidate, "admission_randomized_flat", 0, 2941, randomized=True)
+        admission.append(flat_assessment(noisy))
+        write_json(args.output_dir / "independent_admission.json", dict(reports=admission,
+                   complete=True, passed=all(r["passed"] for r in admission)))
+        if not all(r["passed"] for r in admission):
+            state.update(status="needs_iteration", reason="Independent near-flat/noisy admission failed")
+            return 3
         base_slopes, short_slopes = args.output_dir / "baseline_slopes", args.output_dir / "short_slopes"
         for grade in (0, 5, 10, 17, 20):
             evaluate(args, state, args.checkpoint, f"baseline_slopes/grade_{grade}", grade, 1234, transfer=True, steps=1200)
@@ -142,18 +161,6 @@ def main(argv=None):
         write_json(args.output_dir / "short_slope_assessment.json", paired)
         if not paired["passed"]:
             state.update(status="needs_iteration", reason="Short training regressed paired contact/tilt/safety")
-            return 3
-        # A second seed is used only after the candidate and gates are fixed.
-        admission = []
-        for grade in (0, 2., 2.9):
-            directory = evaluate(args, state, candidate, f"admission_grade_{grade:g}", grade, 2941)
-            admission.append(flat_assessment(directory))
-        noisy = evaluate(args, state, candidate, "admission_randomized_flat", 0, 2941, randomized=True)
-        admission.append(flat_assessment(noisy))
-        write_json(args.output_dir / "independent_admission.json", dict(reports=admission,
-                   passed=all(r["passed"] for r in admission)))
-        if not all(r["passed"] for r in admission):
-            state.update(status="needs_iteration", reason="Independent near-flat/noisy admission failed")
             return 3
         state.update(short_qualified=True, last_qualified_checkpoint=str(candidate), status="long_training")
         write_json(args.output_dir / "status.json", state)

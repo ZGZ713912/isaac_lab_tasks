@@ -13,6 +13,19 @@ from torch.nn.functional import normalize
 GRAVITY = 9.80665
 
 
+def flat_return_target(previous, desired, velocity, dt, rate_limit, acceleration_limit):
+    """Brake before minangle instead of ending a constant-speed ramp abruptly."""
+    error = desired - previous
+    stopping_speed = (2. * acceleration_limit * error.abs()).sqrt().clamp(max=rate_limit)
+    goal = error.sign() * stopping_speed
+    next_velocity = velocity + (goal - velocity).clamp(-acceleration_limit * dt, acceleration_limit * dt)
+    movement = next_velocity * dt
+    crossing = (movement * error >= 0.) & (movement.abs() >= error.abs())
+    target = previous + torch.where(crossing, error, movement)
+    next_velocity = torch.where(crossing, torch.zeros_like(next_velocity), next_velocity)
+    return target, next_velocity
+
+
 def support_plane(q):
     s = math.sqrt(.5)
     radial = .12921 / s + .029108 * q.cos() + .13694 * q.sin() + .08542
@@ -42,6 +55,7 @@ class SuspensionRuntimeGuard:
         self.acceleration_fusion_scale = acceleration_fusion_scale
         self.valid = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self.flat_hold = self.valid.clone()
+        self.flat_candidate = self.valid.clone()
         self.confirmation = torch.zeros(num_envs, device=device)
         self.up = torch.zeros(num_envs, 3, device=device)
         self.up[:, 2] = 1.
@@ -54,6 +68,7 @@ class SuspensionRuntimeGuard:
     def reset(self, ids):
         self.valid[ids] = False
         self.flat_hold[ids] = False
+        self.flat_candidate[ids] = False
         self.confirmation[ids] = 0.
         self.up[ids] = self.up.new_tensor((0., 0., 1.))
         self.velocity[ids] = 0.
@@ -94,6 +109,7 @@ class SuspensionRuntimeGuard:
         grade = torch.acos((normal * self.up).sum(-1).clamp(-1., 1.)) * (180. / math.pi)
         planar = valid & grade.isfinite() & (error <= self.plane_tolerance_m)
         candidate = planar & (grade <= self.enter_deg)
+        self.flat_candidate.copy_(candidate)
         self.confirmation = torch.where(candidate & ~previous_hold, self.confirmation + dt, 0.)
         self.flat_hold = torch.where(previous_hold, planar & (grade <= self.exit_deg),
                                      candidate & (self.confirmation + 1.e-7 >= self.confirmation_s))

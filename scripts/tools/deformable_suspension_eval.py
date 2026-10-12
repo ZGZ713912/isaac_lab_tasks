@@ -343,6 +343,9 @@ def evaluate(args, agent_cfg, history, app):
                 policy_rate_hz=1./u.step_dt, history_period_s=cfg.policy_history_period_s,
                 enter_deg=cfg.guard_enter_deg, exit_deg=cfg.guard_exit_deg,
                 confirmation_s=cfg.guard_confirmation_s, plane_tolerance_m=cfg.guard_plane_tolerance_m,
+                return_rate_limit=cfg.guard_flat_return_rate_limit,
+                return_acceleration_limit=cfg.guard_flat_return_acceleration_limit,
+                explicit_velocity_reference=cfg.guard_flat_velocity_reference,
                 minangle_deg=math.degrees(cfg.leg_physical_angle_zero-cfg.default_q_cmd))
         if student is not None:
             output["training_data_controller"] = str(args.student_checkpoint.resolve())
