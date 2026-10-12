@@ -40,6 +40,18 @@ def replace_node_fields(text, node, changes):
     return text[:match.start()]+block+text[match.end():]
 
 
+def configure_deployment_timing(text):
+    """Double inference rate while preserving the trained 10 ms sensor history."""
+    text = replace_node_fields(text, "rl_bridge", dict(policy_rate=200.0, max_action_age=0.01))
+    pattern = r"(?ms)^rl_bridge:\n.*?(?=^[a-zA-Z_]\w*:\n|\Z)"
+    match = re.search(pattern, text)
+    block = match.group()
+    if re.search(r"(?m)^    history_rate:", block):
+        return replace_node_fields(text, "rl_bridge", dict(history_rate=100.0))
+    block = re.sub(r"(?m)^(    policy_rate:.*)$", r"\1\n    history_rate: 100.0", block)
+    return text[:match.start()] + block + text[match.end():]
+
+
 def validate_joint_bindings(text):
     """Semantic names alias physical sources; check the robot's bindings too."""
     bridge = yaml.safe_load(text)["rl_bridge"]["ros__parameters"]
@@ -127,7 +139,8 @@ def prepare(training_dir, output_dir, rmcs_root, runtime_samples=None):
     old_model = rmcs_root/"rmcs_ws/src/rmcs_rl/models/deformable_v3_transformer.onnx"
     run_logged([sys.executable,"-B",str(tool_dir/"check_policy_contract.py"),str(old_model),
                 "--config",str(source_config),"--node","rl_bridge"],output_dir/"original_contract.log")
-    text = replace_node_fields(original,"rl_bridge",dict(rl_obs_size=160,history_length=5))
+    text = configure_deployment_timing(original)
+    text = replace_node_fields(text,"rl_bridge",dict(rl_obs_size=160,history_length=5))
     text = replace_node_fields(text,"policy_server",dict(
         rl_model_path='"models/deformable_mlp5_routed_v3.onnx"',model_type='"mlp"',
         sequence_length=5,feature_size=32,rl_obs_size=160,normalization_from_metadata="false"))
@@ -192,8 +205,8 @@ def prepare(training_dir, output_dir, rmcs_root, runtime_samples=None):
     if runtime_samples is not None:
         from deformable_mlp_runtime_check import check
         native = check(checkpoint,model,runtime_samples,output_dir/"native_runtime",rmcs_root)
-        if not native["inference_p99_below_10ms"]:
-            raise ValueError("Native inference exceeds the 100 Hz policy budget on this host")
+        if not native["inference_p99_below_5ms"]:
+            raise ValueError("Native inference exceeds the 200 Hz policy budget on this host")
         shutil.copyfile(runtime_samples,output_dir/"runtime_samples.npz")
         shutil.copyfile(runtime_samples.with_suffix(".json"),output_dir/"runtime_samples.json")
     shutil.copyfile(checkpoint,output_dir/checkpoint.name)
@@ -203,7 +216,8 @@ def prepare(training_dir, output_dir, rmcs_root, runtime_samples=None):
     manifest = dict(status="prepared",checkpoint=str(checkpoint),checkpoint_sha256=integrity["sha256"],
                     model_id=model_id,onnx_sha256=hashlib.sha256(model.read_bytes()).hexdigest(),
                     input_shape=[1,160],output_shape=[1,4],history_length=5,frame_size=32,
-                    normalization="folded into model; no runtime normalization",policy_rate_hz=100,
+                    normalization="folded into model; no runtime normalization",policy_rate_hz=200,
+                    history_rate_hz=100,history_span_s=0.04,
                     source_config=str(source_config),source_config_sha256=hashlib.sha256(original.encode()).hexdigest(),
                     contracts="positive passed; wrong history/semantic joint order rejected; physical bindings checked separately",
                     hardware_validation="not performed",strict_horizontal_goal_achieved=assessment["strict_horizontal_goal_achieved"],
@@ -223,7 +237,8 @@ def prepare(training_dir, output_dir, rmcs_root, runtime_samples=None):
         "该目录是完成一万轮、逐段 Isaac Sim 验收后的最终模型，尚未运行实车。\n\n"
         "配置补丁只修改 RL 节点，保留 RMCS 其他并行工作。完整 YAML 用于校验和审阅，"
         "不要用它覆盖包含后续改动的配置。模型文件目标位置与原 Transformer 一样："
-        "`rmcs_ws/src/rmcs_rl/models/`。修改安装位置时保持模型字节、5 帧历史和 100 Hz 一致。\n\n"
+        "`rmcs_ws/src/rmcs_rl/models/`。保持模型字节及五帧历史一致：200 Hz 推理，"
+        "历史按 100 Hz 取样，跨度 40 ms；需配套支持 history_rate 的桥。\n\n"
         "应用前核对源配置哈希、最终 manifest 的 model_id、layout_hash 和原生正负检查日志。"
         "当前训练物理模型的轴力矩标定及实车运行仍需现场验证。17/20 度仍按最佳努力残余倾角验收，"
         "不能宣称全坡度三度以内调平。\n")

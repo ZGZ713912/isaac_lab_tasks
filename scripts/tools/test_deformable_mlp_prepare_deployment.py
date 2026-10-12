@@ -13,6 +13,18 @@ import deformable_mlp_prepare_deployment as module
 from deformable_mlp_prepare_deployment import replace_node_fields, prepare, run_logged, validate_joint_bindings, audit_training
 
 
+@pytest.mark.parametrize("history_line", ["", "    history_rate: 100.0\n"])
+def test_200hz_deployment_keeps_40ms_history_and_unrelated_settings(history_line):
+    original = ("rl_bridge:\n  ros__parameters:\n    policy_rate: 100.0\n"
+                + history_line + "    max_action_age: 0.02\n    history_length: 5\n"
+                "\ngimbal_controller:\n  ros__parameters:\n    gain: 12.3\n")
+    changed = module.configure_deployment_timing(original)
+    bridge = yaml.safe_load(changed)["rl_bridge"]["ros__parameters"]
+    assert bridge["policy_rate"] == 200.0 and bridge["max_action_age"] == .01
+    assert (bridge["history_length"] - 1) / bridge["history_rate"] == .04
+    assert changed.split("gimbal_controller:")[1] == original.split("gimbal_controller:")[1]
+
+
 def test_targeted_config_patch_preserves_other_nodes_and_comments():
     original = "# operator notes\nrl_bridge:\n  ros__parameters:\n    rl_obs_size: 256 # H8\n    history_length: 8\n\n# concurrent gimbal tuning\ngimbal_controller:\n  ros__parameters:\n    gain: 12.3\n"
     changed = replace_node_fields(original,"rl_bridge",dict(rl_obs_size=160,history_length=5))

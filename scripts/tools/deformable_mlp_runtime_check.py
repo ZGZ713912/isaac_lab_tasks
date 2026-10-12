@@ -183,6 +183,7 @@ def check(checkpoint, model, samples, output_dir, rmcs_root):
                   native_policy_model_sha256=hashlib.sha256((runtime_dir/"policy_model.cpp").read_bytes()).hexdigest(),
                   runtime_library_sha256=hashlib.sha256(library.read_bytes()).hexdigest(),
                   native_metrics=metrics,inference_p99_below_10ms=metrics["p99_ms"] < 10.,
+                  inference_p99_below_5ms=metrics["p99_ms"] < 5.,
                   scope="Actual RMCS C++ OnnxRuntime and PolicyModel on this host; no ROS or hardware motion")
     (output_dir/"validation.json").write_text(json.dumps(report,indent=2)+"\n")
     return report
