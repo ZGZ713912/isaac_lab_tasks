@@ -28,7 +28,8 @@ class DiagnosticPPO(PPO):
                  reference_all_postures=False, reference_neighborhood_jitter=0.0,
                  reference_replay_weight=0.0, reference_replay_action_scale=0.002,
                  reference_replay_batch_size=256, reference_replay_max_delta=0.0,
-                 reference_motion_admission=False, reference_motion_relaxed_fraction=.1, **kwargs):
+                 reference_motion_admission=False, reference_motion_relaxed_fraction=.1,
+                 flat_hold_weight=0.0, flat_hold_action_scale=.05, **kwargs):
         if policy.is_recurrent or kwargs.get("rnd_cfg") or kwargs.get("symmetry_cfg"):
             raise ValueError("DiagnosticPPO supports feed-forward PPO without RND or symmetry only")
         super().__init__(policy, **kwargs)
@@ -42,6 +43,11 @@ class DiagnosticPPO(PPO):
         self.steep_reference_full_deg = steep_reference_full_deg
         self.steep_reference_action_scale = steep_reference_action_scale
         self.reference_all_postures = reference_all_postures
+        if (not math.isfinite(flat_hold_weight) or flat_hold_weight < 0
+                or not math.isfinite(flat_hold_action_scale) or flat_hold_action_scale <= 0):
+            raise ValueError("Flat hold imitation needs finite nonnegative weight and positive scale")
+        self.flat_hold_weight = flat_hold_weight
+        self.flat_hold_action_scale = flat_hold_action_scale
         if type(reference_motion_admission) is not bool or reference_motion_admission and not steep_preservation_weight:
             raise ValueError("Motion admission requires a boolean flag and frozen policy preservation")
         self.reference_motion_admission = reference_motion_admission
@@ -207,6 +213,9 @@ class DiagnosticPPO(PPO):
                 / (self.steep_reference_full_deg - self.steep_reference_start_deg)).clamp(0., 1.)
         if self.reference_all_postures:
             gate = torch.ones_like(gate)
+        if self.flat_hold_weight:
+            # The old flat output must not compete with the new exact baseline.
+            gate = gate * (1. - self._flat_hold_gate(obs))
         if self.reference_motion_admission:
             from agent_rl.rsl_rl.algorithms.deformable_motion_admission import motion_preservation_factor
             factor = motion_preservation_factor(actor_obs,self.policy.get_critic_obs(obs),
@@ -243,6 +252,19 @@ class DiagnosticPPO(PPO):
             local_cost = ((local_mean-local_target)/self.steep_reference_action_scale).square().mean(-1)
             loss = loss + (local_cost*gate[ids]).mean()
         return loss, gate.mean()
+
+    @staticmethod
+    def _flat_hold_gate(obs):
+        if "training_flat_hold" not in obs:
+            raise ValueError("Flat hold training requires its sensor guard selector")
+        return obs["training_flat_hold"].detach().flatten().clamp(0., 1.)
+
+    def _flat_hold_loss(self, obs, action_mean):
+        gate = self._flat_hold_gate(obs)
+        # Every leg learns zero, including positive outputs that command 16deg.
+        # Hard projection in the environment/runtime is the actual guarantee.
+        cost = (action_mean / self.flat_hold_action_scale).square().mean(-1)
+        return (gate * cost).mean(), gate.mean()
 
     def _flat_posture_loss(self, obs, action_mean):
         """Soft common-height preference for the native 16/17/75 deg action map."""
@@ -304,6 +326,8 @@ class DiagnosticPPO(PPO):
                 metrics["steep_grade_reference_fraction"] = 0.0
         if self.flat_posture_weight:
             metrics.update(flat_posture=0.0, flat_posture_fraction=0.0)
+        if self.flat_hold_weight:
+            metrics.update(flat_hold_imitation=0.0, flat_hold_fraction=0.0)
         if self.reference_replay_weight:
             metrics["reference_replay"] = 0.0
         if self.reference_replay_max_delta:
@@ -384,6 +408,11 @@ class DiagnosticPPO(PPO):
                 loss = loss + self.flat_posture_weight * flat_loss
                 metrics["flat_posture"] += flat_loss.item()
                 metrics["flat_posture_fraction"] += flat_fraction.item()
+            if self.flat_hold_weight:
+                flat_loss, flat_fraction = self._flat_hold_loss(obs_batch, mu)
+                loss = loss + self.flat_hold_weight * flat_loss
+                metrics["flat_hold_imitation"] += flat_loss.item()
+                metrics["flat_hold_fraction"] += flat_fraction.item()
             if self.reference_replay_weight:
                 replay_loss = self._reference_replay_loss()
                 loss = loss + self.reference_replay_weight * replay_loss

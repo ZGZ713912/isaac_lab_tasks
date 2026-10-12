@@ -59,6 +59,8 @@ parser.add_argument(
 )
 parser.add_argument("--finetune_noise_std", type=float, default=None,
                     help="Reset action noise after loading fine-tune weights; incompatible with optimizer resume.")
+parser.add_argument("--runtime_guard_finetune", action="store_true",
+                    help="Explicitly initialize the 200Hz guarded task from a compatible old 100Hz MLP.")
 parser.add_argument("--steep_teacher_checkpoint", type=str, default=None,
                     help="Training-only compatible actor reference for 20 deg terrain; requires fresh fine-tuning.")
 parser.add_argument(
@@ -69,6 +71,8 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.runtime_guard_finetune and (not args_cli.checkpoint or args_cli.resume_training):
+    parser.error("--runtime_guard_finetune requires a checkpoint and fresh optimizer")
 if args_cli.reference_replay:
     if not args_cli.checkpoint or args_cli.resume_training or not Path(args_cli.reference_replay).is_file():
         parser.error("--reference_replay needs an existing dataset and a fine-tune checkpoint")
@@ -225,7 +229,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.recovery_numerical_precision = precision
         print("[INFO]: Recovery actor uses FP32 math; TF32 disabled to match acceptance/deployment")
     if args_cli.checkpoint:
-        validate_deformable_checkpoint(env_cfg, args_cli.checkpoint, policy_cfg=agent_cfg.policy.to_dict())
+        validate_deformable_checkpoint(env_cfg, args_cli.checkpoint, policy_cfg=agent_cfg.policy.to_dict(),
+                                      allow_runtime_guard_transition=args_cli.runtime_guard_finetune)
     if args_cli.steep_teacher_checkpoint:
         validate_deformable_checkpoint(env_cfg, args_cli.steep_teacher_checkpoint)
         if not getattr(agent_cfg.algorithm, "steep_preservation_weight", 0.):

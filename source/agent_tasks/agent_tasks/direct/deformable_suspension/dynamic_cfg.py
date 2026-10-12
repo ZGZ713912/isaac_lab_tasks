@@ -613,6 +613,30 @@ class DeformableFittedRecoveredMLPEnvCfg(DeformableFittedSupportLevelingMixedEnv
 
 
 @configclass
+class DeformableGuardedMLPEnvCfg(DeformableFittedRecoveredMLPEnvCfg):
+    """200Hz deployment control, hard flat baseline and IMU/odometry observer."""
+
+    runtime_guard_enabled = True
+    runtime_guard_version = "sensor_plane_imu_v1"
+    policy_history_period_s = .01
+    decimation = 5
+    sim = DeformableFittedRecoveredMLPEnvCfg().sim.copy()
+    sim.render_interval = decimation
+    max_sensor_delay_steps = 4  # Retain the previous maximum physical delay of 20ms.
+    height_settle_steps = 100
+    reward_scale = .05  # Preserve reward per second when doubling the policy rate.
+    imu_acceleration_noise_std = .03  # m/s^2, added to simulated specific force.
+    imu_acceleration_bias_std = .02
+    guard_enter_deg = 3.
+    guard_exit_deg = 3.5
+    guard_plane_tolerance_m = .006
+    guard_confirmation_s = .1
+    guard_attitude_tau_s = .25
+    guard_acceleration_tau_s = .05
+    guard_acceleration_fusion_scale = .5
+
+
+@configclass
 class DeformableFittedKeyboardPlayEnvCfg(_DeformableFittedReal2SimFields, DeformableDynamicKeyboardPlayEnvCfg):
     best_effort_leveling = True
     best_effort_tilt_weight = 6.0

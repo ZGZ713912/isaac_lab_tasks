@@ -206,6 +206,14 @@ for _suffix, _cfg, _runner in (
                 "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:{_runner}"},
     )
 
+gym.register(
+    id="Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4",
+    entry_point=f"{__name__}.dynamic_env:DeformableDynamicEnv",
+    disable_env_checker=True,
+    kwargs={"env_cfg_entry_point": f"{__name__}.dynamic_cfg:DeformableGuardedMLPEnvCfg",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DeformableGuardedRoutedMLPPPORunnerCfg"},
+)
+
 for _stage, _cfg in (
     ("Foundation", "DeformableBestEffortEnvCfg"),
     ("TenDegree", "DeformableBestEffortTenDegreeEnvCfg"),

@@ -18,7 +18,8 @@ import sys
 
 
 DEFAULT_TASK = "Robotics-Deformable-Suspension-Rough-History-Transformer-v2"
-SCENARIOS = ("static", "forward", "lateral", "spin_positive", "spin_negative", "dynamic")
+SCENARIOS = ("static", "forward", "lateral", "spin_positive", "spin_negative", "dynamic", "accel_brake", "reversal")
+DEFAULT_SCENARIOS = SCENARIOS[:6]
 TRACE_COLUMNS = (
     "roll_deg", "pitch_deg", "tilt_deg", "all_contact", "contact_and_horizontal",
     "min_load_n", "clearance_m", "leg_current_saturation", "wheel_torque_saturation",
@@ -35,7 +36,16 @@ def command_at(scenario, step, steps, profile="stress"):
         "lateral": (0.0, 1.0, 0.0), "spin_positive": (0.0, 0.0, 2 * math.pi),
         "spin_negative": (0.0, 0.0, -2 * math.pi),
     }
-    if scenario == "dynamic":
+    if scenario == "accel_brake":
+        phase = step / max(1, steps)
+        times = (0., .1, .2, .4, .5, .6, .7, .8, .9, 1.)
+        values = (0., 0., 1., 1., 0., 0., -1., -1., 0., 0.)
+        index = min(len(times)-2, sum(phase >= t for t in times)-1)
+        fraction = (phase-times[index])/(times[index+1]-times[index])
+        command = (values[index] + fraction*(values[index+1]-values[index]), 0., 0.)
+    elif scenario == "reversal":
+        command = ((0., 0., 0.), (1., 0., 0.), (-1., 0., 0.), (0., 0., 0.))[min(3, 4*step//steps)]
+    elif scenario == "dynamic":
         phases = ((0.0, 0.0, 0.0), (0.5, 0.0, 2 * math.pi),
                   (-0.5, 0.0, -2 * math.pi), (0.0, 0.0, 0.0))
         command = phases[min(3, 4 * step // steps)]
@@ -159,7 +169,9 @@ def parser():
     p.add_argument("--steps", type=int, default=600, help="Policy steps per scenario and mode, including settling")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--history", type=int, choices=(1, 4, 5, 8), help="Baseline history, or assert checkpoint history")
-    p.add_argument("--scenarios", nargs="+", choices=SCENARIOS, default=list(SCENARIOS))
+    p.add_argument("--scenarios", nargs="+", choices=SCENARIOS, default=list(DEFAULT_SCENARIOS))
+    p.add_argument("--runtime-guard-transfer", action="store_true",
+                   help="Evaluate the old 100Hz MLP in the new 200Hz guarded task as an explicit control.")
     p.add_argument("--strict", action="store_true", help="Exit 1 on POLICY acceptance failure (ZERO if no checkpoint)")
     p.add_argument("--policy-only", action="store_true", help="Skip ZERO when comparing matching checkpoints.")
     p.add_argument("--grade-deg", type=float,
@@ -231,7 +243,8 @@ def evaluate(args, agent_cfg, history, app):
     cfg = parse_env_cfg(args.task, device=args.device, num_envs=total_envs)
     from scripts.utils.deformable_checkpoint import validate_deformable_checkpoint
     if args.checkpoint:
-        validate_deformable_checkpoint(cfg, args.checkpoint)
+        validate_deformable_checkpoint(cfg, args.checkpoint,
+            allow_runtime_guard_transition=getattr(args, "runtime_guard_transfer", False))
     if cfg.action_contract_version not in ("minangle_residual_v2","minangle_physical_v3") or cfg.enable_chassis_servo:
         raise ValueError("Requires a minangle residual contract with chassis servo disabled")
     cfg.seed = args.seed
@@ -247,6 +260,9 @@ def evaluate(args, agent_cfg, history, app):
     if not randomized:
         for field in ("encoder_noise_std", "encoder_bias_std", "gyro_noise_std", "gyro_bias_std", "gravity_noise_std"):
             setattr(cfg, field, 0.0)
+        if getattr(cfg, "runtime_guard_enabled", False):
+            cfg.imu_acceleration_noise_std = 0.
+            cfg.imu_acceleration_bias_std = 0.
         cfg.max_sensor_delay_steps = 0
         if getattr(cfg, "real2sim_enabled", False):
             cfg.real2sim_randomize = False
@@ -322,6 +338,12 @@ def evaluate(args, agent_cfg, history, app):
         output["reset_cell_spacing_m"] = cfg.scene.env_spacing
         output["total_envs"] = u.num_envs
         output["command_profile"] = getattr(args, "command_profile", "stress")
+        if getattr(cfg, "runtime_guard_enabled", False):
+            output["runtime_guard"] = dict(version=cfg.runtime_guard_version,
+                policy_rate_hz=1./u.step_dt, history_period_s=cfg.policy_history_period_s,
+                enter_deg=cfg.guard_enter_deg, exit_deg=cfg.guard_exit_deg,
+                confirmation_s=cfg.guard_confirmation_s, plane_tolerance_m=cfg.guard_plane_tolerance_m,
+                minangle_deg=math.degrees(cfg.leg_physical_angle_zero-cfg.default_q_cmd))
         if student is not None:
             output["training_data_controller"] = str(args.student_checkpoint.resolve())
         if guide is not None:
@@ -366,6 +388,7 @@ def evaluate(args, agent_cfg, history, app):
                 trace_tire_sensed_load = []
                 trace_tire_spin, trace_tire_velocity, trace_tire_slip = [], [], []
                 trace_policy_routes = []
+                trace_guard, trace_applied_actions = [], []
                 current_policy_route = torch.full((u.num_envs,),-1,dtype=torch.long,device=u.device)
                 trace_masses = None
                 if trace_dir is not None:
@@ -477,6 +500,12 @@ def evaluate(args, agent_cfg, history, app):
                         trace_age.append((np.asarray(ages) + 1) * u.step_dt)
                         trace_dones.append(torch.stack((terminated, timeout), -1).cpu().numpy())
                         trace_actions.append(actions.detach().cpu().numpy().copy())
+                        trace_applied_actions.append(u.actions.detach().cpu().numpy().copy())
+                        if getattr(u, "_runtime_guard", None) is not None:
+                            guard = u._runtime_guard
+                            trace_guard.append(torch.cat((guard.flat_hold.float()[:, None],
+                                guard.grade_deg[:, None], guard.plane_error_m[:, None],
+                                -guard.up, guard.acceleration), -1).cpu().numpy().copy())
                         trace_boundary.append(terrain_boundary.cpu().numpy())
                         trace_positions.append(data.root_link_pos_w.detach().cpu().numpy().copy())
                         trace_loads.append(load.detach().cpu().numpy().copy())
@@ -588,6 +617,12 @@ def evaluate(args, agent_cfg, history, app):
                                             joint_q=np.stack(trace_q)[:, ids], leg_target=np.stack(trace_target)[:, ids],
                                             commanded_current_raw=np.stack(trace_current)[:, ids],
                                             raw_policy_actions=np.stack(trace_actions)[:, ids],
+                                            applied_policy_actions=np.stack(trace_applied_actions)[:, ids],
+                                            runtime_guard=(np.stack(trace_guard)[:, ids] if trace_guard
+                                                           else np.empty((0, 0, 9))),
+                                            runtime_guard_columns=np.asarray(("flat_hold", "grade_deg", "plane_error_m",
+                                                "gravity_b_x", "gravity_b_y", "gravity_b_z", "acceleration_b_x",
+                                                "acceleration_b_y", "acceleration_b_z")),
                                             terrain_boundary=np.stack(trace_boundary)[:, ids],
                                             root_pos_w=np.stack(trace_positions)[:, ids],
                                             wheel_normal_forces_n=np.stack(trace_loads)[:, ids],

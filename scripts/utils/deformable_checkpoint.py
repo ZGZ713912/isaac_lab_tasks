@@ -75,7 +75,7 @@ def validate_deformable_policy(checkpoint, policy_cfg):
             )
 
 
-def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None):
+def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None, *, allow_runtime_guard_transition=False):
     if not hasattr(cfg, "action_contract_version"):
         return  # Other robot families have their own contracts.
     if policy_cfg is not None:
@@ -95,6 +95,24 @@ def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None):
             f"Deformable observation contract mismatch: checkpoint={actual!r}, task={expected!r}. "
             "Legacy torque and Real2Sim current observations cannot share a checkpoint silently."
         )
+    saved_guard = saved.get("runtime_guard_enabled", "false") == "true"
+    requested_guard = getattr(cfg, "runtime_guard_enabled", False)
+    if saved_guard != requested_guard:
+        if not (allow_runtime_guard_transition and requested_guard and not saved_guard):
+            raise ValueError("Runtime guard contract differs; transfer requires an explicit fine-tune/evaluation flag")
+        saved_period = float(saved["sim"]["dt"]) * int(saved["decimation"])
+        if (saved.get("policy_history_length") != "5"
+                or abs(saved_period - cfg.policy_history_period_s) > 1.e-9):
+            raise ValueError("Guard transfer must preserve the checkpoint's five-frame history timing")
+    if saved_guard:
+        for field in ("runtime_guard_version", "policy_history_period_s", "guard_enter_deg", "guard_exit_deg",
+                      "guard_plane_tolerance_m", "guard_confirmation_s", "guard_attitude_tau_s",
+                      "guard_acceleration_tau_s", "guard_acceleration_fusion_scale"):
+            if str(getattr(cfg, field)) != str(saved.get(field)):
+                raise ValueError(f"Saved runtime guard contract differs: {field}")
+        if (int(saved["decimation"]) != cfg.decimation
+                or abs(float(saved["sim"]["dt"]) - cfg.sim.dt) > 1.e-9):
+            raise ValueError("Saved guarded policy control timing differs from the task")
     if expected:
         model_path = params / "real2sim_model.json"
         digest = hashlib.sha256(model_path.read_bytes()).hexdigest() if model_path.is_file() else None

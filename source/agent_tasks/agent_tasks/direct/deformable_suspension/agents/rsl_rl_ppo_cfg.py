@@ -439,6 +439,24 @@ class DeformableFittedRecoveredRoutedMLPPPORunnerCfg(DeformableFittedRecoveredML
 
 
 @configclass
+class DeformableGuardedRoutedMLPPPORunnerCfg(DeformableFittedRecoveredRoutedMLPPPORunnerCfg):
+    experiment_name = "deformable_guarded_mlp5_v4"
+    num_steps_per_env = 48  # Same 240ms physical rollout as the 100Hz reference.
+    max_iterations = 10000
+    save_interval = 100
+    policy = DeformableRoutedMLPPolicyCfg(trainable_expert_indices=None)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.gamma = .99 ** .5
+        self.algorithm.lam = .95 ** .5
+        self.algorithm.learning_rate = 1.e-5
+        self.algorithm.flat_hold_weight = 1.
+        self.algorithm.flat_hold_action_scale = .05
+        self.algorithm.flat_posture_weight = 0.
+
+
+@configclass
 class DeformableDefaultSplitMLPPolicyCfg(DeformableRoutedMLPPolicyCfg):
     class_name: str = "ActorCriticSuspensionDefaultSplitMLP"
     expert_hidden_dims: list = [[576,288,144],[512,256,128],[704,352,176],[576,288,144]]

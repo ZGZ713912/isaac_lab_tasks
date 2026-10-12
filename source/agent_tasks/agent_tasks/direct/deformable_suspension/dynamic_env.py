@@ -14,6 +14,7 @@ from .adrc import LegADRC
 from .real2sim import Real2SimActuator, load_real2sim_model
 from .wheel_drive import WheelVelocityPI
 from .traction_guidance import uphill_drive_margin
+from .runtime_guard import SuspensionRuntimeGuard, CausalPolicyHistory, GRAVITY
 
 
 class DeformableDynamicEnv(DeformableSuspensionEnv):
@@ -61,6 +62,20 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._history_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._obs_tick = -1
         self._obs_cache = None
+        self._runtime_guard = None
+        self._causal_history = None
+        if getattr(cfg, "runtime_guard_enabled", False):
+            self._runtime_guard = SuspensionRuntimeGuard(self.num_envs, self.device,
+                enter_deg=cfg.guard_enter_deg, exit_deg=cfg.guard_exit_deg,
+                plane_tolerance_m=cfg.guard_plane_tolerance_m, confirmation_s=cfg.guard_confirmation_s,
+                attitude_tau_s=cfg.guard_attitude_tau_s, acceleration_tau_s=cfg.guard_acceleration_tau_s,
+                acceleration_fusion_scale=cfg.guard_acceleration_fusion_scale)
+            self._causal_history = CausalPolicyHistory(self.num_envs, cfg.policy_history_length,
+                self.step_dt, cfg.policy_history_period_s, self.device)
+            self._guard_velocity_w = torch.zeros(self.num_envs, 3, device=self.device)
+            self._guard_velocity_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            self._imu_acceleration_bias = torch.zeros(self.num_envs, 3, device=self.device)
+            self._raw_policy_actions = torch.zeros(self.num_envs, 4, device=self.device)
         self._last_wheel_slip = torch.zeros(self.num_envs, 4, device=self.device)
         # Enabled by the offline evaluator only. These references expose the
         # exact tire inputs/wrench without adding actor observations or work to training.
@@ -218,6 +233,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
 
     def _pre_physics_step(self, actions):
         previous_target = self.leg_target.clone()
+        if self._runtime_guard is not None:
+            self._raw_policy_actions.copy_(actions)
+            actions = torch.where(self._runtime_guard.flat_hold[:, None], torch.zeros_like(actions), actions)
         super()._pre_physics_step(actions.clamp(-1.0, 1.0))
         if self.cfg.action_contract_version == "legacy_v1":
             self.leg_target = (self.q_cmd[:, None] - du.Q_LOW * (-self.actions).clamp_min(0.0)).clamp(
@@ -319,6 +337,24 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         twist = du.estimate_twist(q_obs, wheel_speed)
         gyro = data.root_ang_vel_b + self._gyro_bias + torch.randn_like(data.root_ang_vel_b) * self.cfg.gyro_noise_std
         gravity = data.projected_gravity_b + torch.randn_like(data.projected_gravity_b) * self.cfg.gravity_noise_std
+        if self._runtime_guard is not None:
+            # True motion generates a simulated accelerometer measurement. Neither
+            # world velocity nor world acceleration is appended to actor inputs.
+            velocity_w = data.root_link_lin_vel_w
+            acceleration_w = (velocity_w - self._guard_velocity_w) / self.step_dt
+            acceleration_w = torch.where(self._guard_velocity_valid[:, None], acceleration_w, 0.)
+            force_w = acceleration_w + acceleration_w.new_tensor((0., 0., GRAVITY))
+            specific_force = quat_apply_inverse(data.root_link_quat_w, force_w)
+            specific_force = (specific_force + self._imu_acceleration_bias
+                              + torch.randn_like(specific_force) * self.cfg.imu_acceleration_noise_std)
+            self._guard_velocity_w.copy_(velocity_w)
+            self._guard_velocity_valid[:] = True
+            gravity, changed = self._runtime_guard.update(q_obs, gyro, specific_force, twist, gravity, self.step_dt)
+            self._causal_history.reset(changed)
+            self._history_valid[changed] = False
+            self.actions[changed] = 0.
+            self.last_actions[changed] = 0.
+            self._prev2_actions[changed] = 0.
         # 32 = old 26 + wheel encoder4 + encoder-derived vx/vy2. No true velocity leaks.
         frame = torch.cat((self.q_cmd[:, None], self._drive_cmd_b() * q.new_tensor((1.0, 1.0, 0.25)),
                            gyro * 0.5, gravity, q_obs, qd_obs * 0.1,
@@ -334,9 +370,12 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         # Command and prior action are local controller state, not delayed sensors.
         delayed[:, :4] = frame[:, :4]
         delayed[:, 22:26] = frame[:, 22:26]
-        self._history = torch.roll(self._history, -1, dims=1)
-        self._history[:, -1] = delayed
-        self._history[fresh] = delayed[fresh, None]
+        if self._causal_history is not None:
+            self._history = self._causal_history.push(delayed, self.actions)
+        else:
+            self._history = torch.roll(self._history, -1, dims=1)
+            self._history[:, -1] = delayed
+            self._history[fresh] = delayed[fresh, None]
         self._history_valid[:] = True
         legacy = self.cfg.action_contract_version == "legacy_v1"
         critic = torch.cat((frame, data.root_lin_vel_b, self.body_top_height[:, None] * (1.0 if legacy else 5.0),
@@ -344,6 +383,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         if not legacy:
             critic = torch.nan_to_num(critic, nan=0.0, posinf=0.0, neginf=0.0).clamp(-10.0, 10.0)
         self._obs_cache = {"policy": self._history.flatten(1).clone(), "critic": critic.clone()}
+        if self._runtime_guard is not None:
+            # Training-only selector. The actor and critic contracts remain 160/40.
+            self._obs_cache["training_flat_hold"] = self._runtime_guard.flat_hold.float()[:, None]
         if getattr(self.cfg, "training_steep_reference_mix", False):
             _, _, normals, _, _ = self._wheel_geometry_w()
             mix = du.suspension_steep_reference_mix(
@@ -651,6 +693,14 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
         self._history_valid[env_ids] = False
         self._history[env_ids] = 0.0
         self._sensor_fifo[env_ids] = 0.0
+        if self._runtime_guard is not None:
+            self._runtime_guard.reset(env_ids)
+            self._causal_history.reset(env_ids)
+            self._guard_velocity_valid[env_ids] = False
+            self._guard_velocity_w[env_ids] = 0.
+            self._imu_acceleration_bias[env_ids] = (torch.randn(len(env_ids), 3, device=self.device)
+                                                  * self.cfg.imu_acceleration_bias_std)
+            self._raw_policy_actions[env_ids] = 0.
         self._obs_tick = -1
         self._obs_cache = None
         zeros = torch.zeros(len(env_ids), 4, 3, device=self.device)
