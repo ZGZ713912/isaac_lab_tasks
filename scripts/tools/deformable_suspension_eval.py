@@ -450,7 +450,7 @@ def evaluate(args, agent_cfg, history, app):
                     physical_terminated = terminated.clone()
                     data = u.robot.data
                     terrain_boundary = torch.zeros(u.num_envs, dtype=torch.bool, device=u.device)
-                    if grade is not None:
+                    if grade is not None and grade > 0.:
                         phase = (data.body_link_pos_w[:, u._wheel_body_ids, 0] + u._profile_x_offset) % 80.0
                         terrain_boundary = ~((phase >= 0.0) & (phase <= 20.0)).all(-1)
                         # Leaving the constant-grade interior is a measured
@@ -698,8 +698,10 @@ def main():
             p.error("--geometry-correction-smoothing must be finite and in (0, 1]")
         if args.grade_deg is not None and (not math.isfinite(args.grade_deg) or not 0 <= args.grade_deg <= 20):
             p.error("--grade-deg must be finite and in [0, 20]")
-        if args.grade_deg is not None and (args.num_envs > 24 or args.steps > 600):
-            p.error("Constant-ramp budget supports at most 24 envs and 600 steps within the plane interior")
+        guard_task = args.task == "Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4"
+        step_budget = (2400 if args.grade_deg == 0 else 1200) if guard_task else 600
+        if args.grade_deg is not None and (args.num_envs > 24 or args.steps > step_budget):
+            p.error(f"Constant-ramp budget supports at most 24 envs and {step_budget} steps; boundary failures remain measured")
         if args.batch_scenarios and args.num_envs != 16:
             p.error("Batched scenarios require 16 envs per scenario to preserve reset heading strata")
         agent_cfg = None
