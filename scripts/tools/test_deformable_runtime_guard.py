@@ -397,6 +397,34 @@ def test_checkpoint_collection_uses_the_subprocess_timestamp(tmp_path, fault):
             training_checkpoint(log, "deformable_guarded_mlp5_v4", "training_short", tmp_path)
 
 
+def test_paired_slope_early_rejection_cannot_count_as_full_coverage(tmp_path):
+    import json
+    from deformable_guarded_assess import paired_slopes
+    old, new = tmp_path / "old", tmp_path / "new"
+    for grade in (0, 5, 10, 17, 20):
+        for root in (old, new):
+            directory = root / f"grade_{grade}"
+            directory.mkdir(parents=True)
+            row = dict(initial_state_sha256="same-state", failure_adjusted_all_contact_rate=1.,
+                       tilt_deg=dict(abs_p95=1.), terminated_resets=0)
+            report = dict(checkpoint="probe", seed=1234, num_envs=16, steps=1200, step_dt_s=.005,
+                          command_profile="play", command_frame="body", history=dict(length=5),
+                          results=dict(POLICY=dict(static=row)))
+            if root == new and grade == 5:
+                row["tilt_deg"]["abs_p95"] = 4.
+                row["terminated_resets"] = 1
+            (directory / "run.log").write_text(json.dumps(report) + '\n')
+    first = paired_slopes(old, new, grades=(0,))
+    assert first["passed"] and not first["complete"]
+    early = paired_slopes(old, new, grades=(5,))
+    assert not early["passed"] and not early["complete"]
+    full = paired_slopes(old, new)
+    assert full["complete"] and not full["passed"]
+    assert full["grades"]["5"]["cases"]["static"]["tilt_p95_delta_deg"] == 3.
+    with pytest.raises(ValueError, match="coverage"):
+        paired_slopes(old, new, grades=())
+
+
 def test_two_second_return_excludes_only_encoder_transient_and_keeps_all_resets(tmp_path):
     import json
     import numpy as np

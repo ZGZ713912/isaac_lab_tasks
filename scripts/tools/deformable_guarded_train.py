@@ -184,6 +184,11 @@ def main(argv=None):
         for grade in (0, 5, 10, 17, 20):
             evaluate(args, state, args.checkpoint, f"baseline_slopes/grade_{grade}", grade, 1234, transfer=True, steps=1200)
             evaluate(args, state, candidate, f"short_slopes/grade_{grade}", grade, 1234, steps=1200)
+            grade_assessment = paired_slopes(base_slopes, short_slopes, grades=(grade,))
+            write_json(args.output_dir / f"short_grade_{grade}_assessment.json", grade_assessment)
+            if not grade_assessment["passed"]:
+                state.update(status="needs_iteration", reason=f"Short training regressed paired {grade:g}-degree behavior")
+                return 3
         paired = paired_slopes(base_slopes, short_slopes)
         write_json(args.output_dir / "short_slope_assessment.json", paired)
         if not paired["passed"]:
@@ -224,6 +229,11 @@ def main(argv=None):
             slopes = args.output_dir / f"long_{chunk+1:02d}_slopes"
             for grade in (0, 5, 10, 17, 20):
                 evaluate(args, state, trial, f"long_{chunk+1:02d}_slopes/grade_{grade}", grade, 1234, steps=1200)
+                grade_assessment = paired_slopes(base_slopes, slopes, grades=(grade,))
+                write_json(args.output_dir / f"long_{chunk+1:02d}_grade_{grade}_assessment.json", grade_assessment)
+                if not grade_assessment["passed"]:
+                    state.update(status="needs_iteration", reason=f"Long chunk regressed paired {grade:g}-degree behavior")
+                    return 3
             assessment = paired_slopes(base_slopes, slopes)
             write_json(args.output_dir / f"long_{chunk+1:02d}_slope_assessment.json", assessment)
             if not assessment["passed"]:

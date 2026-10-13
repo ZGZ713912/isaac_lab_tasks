@@ -110,9 +110,13 @@ def baseline_safety(assessment):
                 scope="Reference safety only. Candidate encoder precision still requires full flat_assessment.")
 
 
-def paired_slopes(baseline, candidate):
-    result = dict(grades={}, limits=dict(contact_drop=.002, tilt_increase_deg=.15))
-    for grade in (0, 5, 10, 17, 20):
+def paired_slopes(baseline, candidate, grades=(0, 5, 10, 17, 20)):
+    grades = tuple(grades)
+    if not grades or len(set(grades)) != len(grades) or any(g not in (0, 5, 10, 17, 20) for g in grades):
+        raise ValueError("Invalid paired grade coverage")
+    result = dict(grades={}, complete=set(grades) == {0, 5, 10, 17, 20},
+                  limits=dict(contact_drop=.002, tilt_increase_deg=.15))
+    for grade in grades:
         old = extract_report(Path(baseline) / f"grade_{grade}" / "run.log")
         new = extract_report(Path(candidate) / f"grade_{grade}" / "run.log")
         for key in ("seed", "num_envs", "steps", "step_dt_s", "command_profile", "command_frame", "history"):
