@@ -617,7 +617,8 @@ class DeformableGuardedMLPEnvCfg(DeformableFittedRecoveredMLPEnvCfg):
     """200Hz deployment control, hard flat baseline and IMU/odometry observer."""
 
     runtime_guard_enabled = True
-    runtime_guard_version = "sensor_plane_imu_v3"
+    runtime_guard_version = "sensor_plane_imu_v8"
+    reset_height_buffer = 0.0  # Start on the support surface, as when enabling on the grounded vehicle.
     policy_history_period_s = .01
     decimation = 5
     sim = DeformableFittedRecoveredMLPEnvCfg().sim.copy()
@@ -637,6 +638,13 @@ class DeformableGuardedMLPEnvCfg(DeformableFittedRecoveredMLPEnvCfg):
     guard_flat_return_rate_limit = .5
     guard_flat_return_acceleration_limit = 2.
     guard_flat_velocity_reference = True
+    guard_flat_terminal_braking = True
+    guard_flat_terminal_acceleration_limit = 1.
+    guard_startup_trajectory = True
+    guard_coordinated_return = True
+    guard_flat_return_minimum_duration_s = 1.2
+    guard_training_ground_truth = True  # PPO labels only; never an actor observation.
+    training_progress_steps_per_iteration = 48
     terrain = DeformableFittedRecoveredMLPEnvCfg().terrain.copy()
     terrain.terrain_generator.sub_terrains["periodic_slope"].angle_choices = (0., 2., 2.9, 5., 10., 17., 20.)
 

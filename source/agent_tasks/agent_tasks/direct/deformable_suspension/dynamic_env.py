@@ -14,7 +14,9 @@ from .adrc import LegADRC
 from .real2sim import Real2SimActuator, load_real2sim_model
 from .wheel_drive import WheelVelocityPI
 from .traction_guidance import uphill_drive_margin
-from .runtime_guard import SuspensionRuntimeGuard, CausalPolicyHistory, flat_return_target, GRAVITY
+from .runtime_guard import (SuspensionRuntimeGuard, CausalPolicyHistory, flat_return_target,
+                            flat_terminal_velocity, coordinated_flat_return, GRAVITY)
+from .training_supervision import flat_ground_label
 
 
 class DeformableDynamicEnv(DeformableSuspensionEnv):
@@ -78,6 +80,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self._raw_policy_actions = torch.zeros(self.num_envs, 4, device=self.device)
             self._guard_target_velocity = torch.zeros_like(self._raw_policy_actions)
             self._guard_servo_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            self._guard_return_start = torch.zeros_like(self._raw_policy_actions)
+            self._guard_return_time = torch.zeros(self.num_envs, device=self.device)
+            self._guard_return_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._last_wheel_slip = torch.zeros(self.num_envs, 4, device=self.device)
         # Enabled by the offline evaluator only. These references expose the
         # exact tire inputs/wrench without adding actor observations or work to training.
@@ -252,28 +257,51 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
                 flat_target, flat_velocity = flat_return_target(previous_target, desired_target,
                     self._guard_target_velocity, self.step_dt, self.cfg.guard_flat_return_rate_limit,
                     self.cfg.guard_flat_return_acceleration_limit)
-                flat = self._runtime_guard.flat_hold[:, None]
-                self._guard_target_velocity = torch.where(flat, flat_velocity,
+                smooth = self._runtime_guard.flat_hold
+                if self.cfg.guard_startup_trajectory:
+                    smooth = smooth | self._runtime_guard.flat_candidate | self._runtime_guard.encoder_flat_candidate
+                if self.cfg.guard_coordinated_return:
+                    starting = smooth & ~self._guard_return_active
+                    self._guard_return_start[starting] = previous_target[starting]
+                    self._guard_return_time[starting] = 0.
+                    self._guard_return_time[smooth] += self.step_dt
+                    self._guard_return_active.copy_(smooth)
+                    coordinated_target, coordinated_velocity = coordinated_flat_return(
+                        self._guard_return_start, self.q_cmd[:, None], self._guard_return_time,
+                        self.cfg.guard_flat_return_minimum_duration_s, self.cfg.guard_flat_return_rate_limit,
+                        self.cfg.guard_flat_return_acceleration_limit)
+                    flat_target = torch.where(smooth[:, None], coordinated_target, flat_target)
+                    flat_velocity = torch.where(smooth[:, None], coordinated_velocity, flat_velocity)
+                smooth = smooth[:, None]
+                self._guard_target_velocity = torch.where(smooth, flat_velocity,
                     (self.leg_target-previous_target)/self.step_dt)
-                self.leg_target = torch.where(flat, flat_target, self.leg_target)
+                self.leg_target = torch.where(smooth, flat_target, self.leg_target)
 
     def _apply_action(self):
         data = self.robot.data
         q = data.joint_pos[:, self._legs_idx]
         qd = data.joint_vel[:, self._legs_idx]
+        measured_q = self._leg_actuator.sensor_measurement(q, qd)[0] if self._leg_actuator is not None else q
         reference_velocity = None
         if self._runtime_guard is not None and self.cfg.guard_flat_velocity_reference:
             flat = self._runtime_guard.flat_hold
-            changed = flat != self._guard_servo_active
+            smooth = flat
+            if self.cfg.guard_startup_trajectory:
+                smooth = smooth | self._runtime_guard.flat_candidate | self._runtime_guard.encoder_flat_candidate
+            changed = smooth != self._guard_servo_active
             # Keep ESO/disturbance and motor feedback continuous; reset only
             # the differentiator when selecting/deselecting explicit velocity.
             self._leg_adrc.x1[changed] = self._leg_adrc.angle_zero - self.leg_target[changed]
             self._leg_adrc.x2[changed] = -self._guard_target_velocity[changed]
-            self._guard_servo_active.copy_(flat)
-            reference_velocity = torch.where(flat[:, None], -self._guard_target_velocity,
+            self._guard_servo_active.copy_(smooth)
+            velocity = self._guard_target_velocity
+            if self.cfg.guard_flat_terminal_braking:
+                terminal = flat_terminal_velocity(measured_q, self.q_cmd[:, None], velocity,
+                                                  self.cfg.guard_flat_terminal_acceleration_limit)
+                velocity = torch.where(smooth[:, None], terminal, velocity)
+            reference_velocity = torch.where(smooth[:, None], -velocity,
                 torch.full_like(self._guard_target_velocity, float("nan")))
         if self._leg_actuator is not None:
-            measured_q, _, _ = self._leg_actuator.sensor_measurement(q, qd)
             raw_current = self._leg_adrc.update(
                 measured_q, self.leg_target,
                 applied_current_raw=self._leg_actuator.command_current_raw,
@@ -416,7 +444,15 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             # Runtime projection still uses confirmed hold; this selector is
             # absent from both actor and critic observation groups.
             baseline_learning = self._runtime_guard.flat_candidate | self._runtime_guard.flat_hold
+            if self.cfg.guard_training_ground_truth:
+                # Ground labels train the same noisy sensor actor even while
+                # the IMU observer is invalid or awaiting confirmation. They
+                # must not influence runtime projection or actor/critic inputs.
+                _, points, normals, _, _ = self._wheel_geometry_w()
+                baseline_learning = (flat_ground_label(points, normals, self._ground_height(points))
+                                     | self._runtime_guard.flat_hold)
             self._obs_cache["training_flat_hold"] = baseline_learning.float()[:, None]
+            self._obs_cache["training_flat_startup"] = (baseline_learning & ~self._runtime_guard.flat_hold).float()[:, None]
         if getattr(self.cfg, "training_steep_reference_mix", False):
             _, _, normals, _, _ = self._wheel_geometry_w()
             mix = du.suspension_steep_reference_mix(
@@ -734,6 +770,9 @@ class DeformableDynamicEnv(DeformableSuspensionEnv):
             self._raw_policy_actions[env_ids] = 0.
             self._guard_target_velocity[env_ids] = 0.
             self._guard_servo_active[env_ids] = False
+            self._guard_return_start[env_ids] = 0.
+            self._guard_return_time[env_ids] = 0.
+            self._guard_return_active[env_ids] = False
         self._obs_tick = -1
         self._obs_cache = None
         zeros = torch.zeros(len(env_ids), 4, 3, device=self.device)

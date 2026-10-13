@@ -10,7 +10,7 @@ from deformable_precision_pipeline import extract_report
 FLAT_LIMITS = dict(target_error_max_deg=1.e-4, physical_error_p95_deg=.15,
                    physical_error_max_deg=.5, flat_hold_fraction=.99,
                    parked_diagonal_peak_to_peak_deg=.3, contact_rate=.98,
-                   steady_window_s=1., target_check_after_s=1.)
+                   steady_window_s=1., target_check_after_s=2.)
 
 
 def checkpoint_digest(path):
@@ -43,7 +43,7 @@ def flat_assessment(directory):
     for name, row in report["results"]["POLICY"].items():
         with np.load(directory / "traces" / f"policy_{name}.npz") as trace:
             age = trace["episode_age_s"]
-            settled = age >= 1.
+            settled = age >= FLAT_LIMITS["target_check_after_s"]
             guard = trace["runtime_guard"]
             hold = guard[..., 0] > .5
             target_error = np.abs(np.rad2deg(trace["leg_target"]-baseline_q))
@@ -98,6 +98,16 @@ def flat_assessment(directory):
             result["cases"][name] = case
     result["passed"] = bool(result["cases"]) and all(row["passed"] for row in result["cases"].values())
     return result
+
+
+def baseline_safety(assessment):
+    """A safe but biased reference may train; a candidate must pass every gate."""
+    keys = ("settled_samples", "strict_minangle_target", "continuous_flat_hold",
+            "no_parked_alternation", "supported", "no_physical_reset", "no_boundary_failure")
+    cases = {name: {key: row["checks"][key] for key in keys}
+             for name, row in assessment["cases"].items()}
+    return dict(cases=cases, passed=bool(cases) and all(all(row.values()) for row in cases.values()),
+                scope="Reference safety only. Candidate encoder precision still requires full flat_assessment.")
 
 
 def paired_slopes(baseline, candidate):

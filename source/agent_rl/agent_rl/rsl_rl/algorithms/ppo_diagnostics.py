@@ -29,7 +29,7 @@ class DiagnosticPPO(PPO):
                  reference_replay_weight=0.0, reference_replay_action_scale=0.002,
                  reference_replay_batch_size=256, reference_replay_max_delta=0.0,
                  reference_motion_admission=False, reference_motion_relaxed_fraction=.1,
-                 flat_hold_weight=0.0, flat_hold_action_scale=.05, **kwargs):
+                 flat_hold_weight=0.0, flat_hold_action_scale=.05, flat_hold_startup_weight=1., **kwargs):
         if policy.is_recurrent or kwargs.get("rnd_cfg") or kwargs.get("symmetry_cfg"):
             raise ValueError("DiagnosticPPO supports feed-forward PPO without RND or symmetry only")
         super().__init__(policy, **kwargs)
@@ -48,6 +48,9 @@ class DiagnosticPPO(PPO):
             raise ValueError("Flat hold imitation needs finite nonnegative weight and positive scale")
         self.flat_hold_weight = flat_hold_weight
         self.flat_hold_action_scale = flat_hold_action_scale
+        if not math.isfinite(flat_hold_startup_weight) or flat_hold_startup_weight < 1.:
+            raise ValueError("Flat startup weight must be finite and at least one")
+        self.flat_hold_startup_weight = flat_hold_startup_weight
         if type(reference_motion_admission) is not bool or reference_motion_admission and not steep_preservation_weight:
             raise ValueError("Motion admission requires a boolean flag and frozen policy preservation")
         self.reference_motion_admission = reference_motion_admission
@@ -256,15 +259,21 @@ class DiagnosticPPO(PPO):
     @staticmethod
     def _flat_hold_gate(obs):
         if "training_flat_hold" not in obs:
-            raise ValueError("Flat hold training requires its sensor guard selector")
+            raise ValueError("Flat hold training requires its training-only selector")
         return obs["training_flat_hold"].detach().flatten().clamp(0., 1.)
 
     def _flat_hold_loss(self, obs, action_mean):
         gate = self._flat_hold_gate(obs)
+        weight = gate
+        if self.flat_hold_startup_weight > 1.:
+            if "training_flat_startup" not in obs:
+                raise ValueError("Flat startup weighting requires its training-only selector")
+            startup = obs["training_flat_startup"].detach().flatten().clamp(0., 1.)
+            weight = gate * (1. + (self.flat_hold_startup_weight-1.) * startup)
         # Every leg learns zero, including positive outputs that command 16deg.
         # Hard projection in the environment/runtime is the actual guarantee.
         cost = (action_mean / self.flat_hold_action_scale).square().mean(-1)
-        return (gate * cost).mean(), gate.mean()
+        return (weight * cost).mean(), gate.mean()
 
     def _flat_posture_loss(self, obs, action_mean):
         """Soft common-height preference for the native 16/17/75 deg action map."""

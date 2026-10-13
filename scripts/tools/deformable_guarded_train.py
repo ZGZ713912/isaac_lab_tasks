@@ -11,17 +11,25 @@ from pathlib import Path
 import shutil
 import sys
 
-from deformable_guarded_assess import flat_assessment, convergence, paired_slopes, report_in
+from deformable_guarded_assess import FLAT_LIMITS, baseline_safety, flat_assessment, convergence, paired_slopes, report_in
+from deformable_guarded_reuse import reuse_short_run, training_checkpoint
 from deformable_mlp_guarded_train import checkpoint_info, actor_update_info
 from deformable_mlp_train import SOURCES
-from deformable_precision_pipeline import ROOT, latest_checkpoint, run_child, timestamp, write_json
+from deformable_precision_pipeline import ROOT, run_child, timestamp, write_json
 
 TASK = "Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4"
 EXPERIMENT = "deformable_guarded_mlp5_v4"
 SCENARIOS = ["static", "forward", "lateral", "spin_positive", "spin_negative", "dynamic", "accel_brake", "reversal"]
 EXTRA_SOURCES = ["scripts/tools/deformable_guarded_train.py", "scripts/tools/deformable_guarded_assess.py",
+    "scripts/tools/deformable_guarded_reuse.py",
     "source/agent_tasks/agent_tasks/direct/deformable_suspension/runtime_guard.py",
-    "source/agent_tasks/agent_tasks/direct/deformable_suspension/adrc.py"]
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/training_supervision.py",
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/adrc.py",
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/env.py",
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/wheel_drive.py",
+    "source/agent_tasks/agent_tasks/direct/deformable_suspension/real2sim.py",
+    "source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_suspension_routed_mlp.py",
+    "source/agent_rl/agent_rl/rsl_rl/modules/sensor_routed_mlp.py"]
 
 
 def evaluate(args, state, checkpoint, name, grade, seed, transfer=False, randomized=False, steps=None):
@@ -50,8 +58,8 @@ def train(args, state, checkpoint, name, updates, envs, transfer=False, seed=67)
         "--device", args.device, "--headless", "--finetune_noise_std", ".01"]
     if transfer:
         command.append("--runtime_guard_finetune")
-    run_child(command, name, args, state)
-    candidate = latest_checkpoint(EXPERIMENT, name)
+    log = run_child(command, name, args, state)
+    candidate = training_checkpoint(log, EXPERIMENT, name)
     info = checkpoint_info(candidate)
     update = actor_update_info(checkpoint, candidate)
     if info["iteration"] != updates-1 or not update["policy_updated"]:
@@ -74,6 +82,8 @@ def main(argv=None):
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--baseline-flat-dir", type=Path)
+    parser.add_argument("--reuse-short-run", type=Path,
+                        help="Reuse completed short weights; every training/runtime source must match")
     parser.add_argument("--short-iterations", type=int, default=100)
     parser.add_argument("--short-envs", type=int, default=128)
     parser.add_argument("--training-seed", type=int, default=67)
@@ -99,10 +109,12 @@ def main(argv=None):
     args.output_dir.mkdir(parents=True)
     state = dict(status="running", started_at=timestamp(), current_job=None, jobs=[], training=[],
         checkpoint=str(args.checkpoint), checkpoint_sha256=info["sha256"], task=TASK,
-        short_iterations=args.short_iterations, planned_long_iterations=args.iterations,
+        short_iterations=args.short_iterations, short_completed_updates=0,
+        planned_long_iterations=args.iterations,
         long_completed_updates=0, long_qualified_updates=0, last_qualified_checkpoint=None,
         hardware_run=False, requirements=dict(minangle_deg=17., flat_enter_deg=3., policy_rate_hz=200.,
-                                               history_period_s=.01, frozen_router=True))
+                                               history_period_s=.01, frozen_router=True,
+                                               flat_return_allowed_s=FLAT_LIMITS["target_check_after_s"]))
     state["sources"] = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
                         for name in sorted(set(SOURCES+EXTRA_SOURCES))}
     for name in state["sources"]:
@@ -111,6 +123,15 @@ def main(argv=None):
         shutil.copyfile(ROOT / name, target)
     write_json(args.output_dir / "status.json", state)
     try:
+        candidate = None
+        if args.reuse_short_run:
+            candidate, record = reuse_short_run(args.checkpoint, args.reuse_short_run,
+                state["sources"], args.short_iterations, args.training_seed)
+            state["training"].append(record)
+            state.update(short_reused_updates=args.short_iterations, new_short_updates=0,
+                         short_training_reused_from=str(args.reuse_short_run.resolve()))
+            if not args.baseline_flat_dir:
+                args.baseline_flat_dir = args.reuse_short_run / "baseline_flat"
         if args.baseline_flat_dir:
             base_flat = args.baseline_flat_dir.resolve()
             report = report_in(base_flat)
@@ -121,11 +142,17 @@ def main(argv=None):
             base_flat = evaluate(args, state, args.checkpoint, "baseline_flat", 0, 1234, transfer=True)
         baseline_flat = flat_assessment(base_flat)
         write_json(args.output_dir / "baseline_flat_assessment.json", baseline_flat)
-        if not baseline_flat["passed"]:
-            state.update(status="needs_iteration", reason="Runtime guard fails measured flat requirements before PPO")
+        baseline_gate = baseline_safety(baseline_flat)
+        write_json(args.output_dir / "baseline_safety_assessment.json", baseline_gate)
+        if not baseline_gate["passed"]:
+            state.update(status="needs_iteration", reason="Runtime guard fails flat safety before PPO")
             return 3
-        candidate = train(args, state, args.checkpoint, args.output_dir.name+"_short", args.short_iterations,
-                          args.short_envs, transfer=True, seed=args.training_seed)
+        if candidate is None:
+            candidate = train(args, state, args.checkpoint, args.output_dir.name+"_short", args.short_iterations,
+                              args.short_envs, transfer=True, seed=args.training_seed)
+            state["new_short_updates"] = args.short_iterations
+        state.update(short_completed_updates=args.short_iterations, short_checkpoint=str(candidate),
+                     short_checkpoint_sha256=state["training"][0]["checkpoint_sha256"])
         verify_source(args, state)
         short_flat_dir = evaluate(args, state, candidate, "short_flat", 0, 1234)
         short_flat = flat_assessment(short_flat_dir)
@@ -162,6 +189,7 @@ def main(argv=None):
         if not paired["passed"]:
             state.update(status="needs_iteration", reason="Short training regressed paired contact/tilt/safety")
             return 3
+        verify_source(args, state)
         state.update(short_qualified=True, last_qualified_checkpoint=str(candidate), status="long_training")
         write_json(args.output_dir / "status.json", state)
         for chunk in range((args.iterations+args.chunk_iterations-1)//args.chunk_iterations):
@@ -170,11 +198,28 @@ def main(argv=None):
             trial = train(args, state, candidate, args.output_dir.name+f"_long_{chunk+1:02d}", updates,
                           args.num_envs, seed=68+chunk)
             state["long_completed_updates"] += updates
+            verify_source(args, state)
             directory = evaluate(args, state, trial, f"long_{chunk+1:02d}_flat", 0, 1234)
             flat = flat_assessment(directory)
             write_json(args.output_dir / f"long_{chunk+1:02d}_flat_assessment.json", flat)
             if not flat["passed"]:
                 state.update(status="needs_iteration", reason="Long chunk regressed measured flat requirements")
+                return 3
+            edge_reports = []
+            for grade in (2., 2.9):
+                edge_dir = evaluate(args, state, trial, f"long_{chunk+1:02d}_grade_{grade:g}", grade, 2941)
+                edge_reports.append(flat_assessment(edge_dir))
+                write_json(args.output_dir / f"long_{chunk+1:02d}_admission.json",
+                           dict(reports=edge_reports, complete=False, passed=False))
+                if not edge_reports[-1]["passed"]:
+                    state.update(status="needs_iteration", reason="Long chunk regressed near-flat boundary requirements")
+                    return 3
+            noisy_dir = evaluate(args, state, trial, f"long_{chunk+1:02d}_randomized_flat", 0, 2941, randomized=True)
+            edge_reports.append(flat_assessment(noisy_dir))
+            write_json(args.output_dir / f"long_{chunk+1:02d}_admission.json",
+                       dict(reports=edge_reports, complete=True, passed=all(r["passed"] for r in edge_reports)))
+            if not edge_reports[-1]["passed"]:
+                state.update(status="needs_iteration", reason="Long chunk regressed noisy flat requirements")
                 return 3
             slopes = args.output_dir / f"long_{chunk+1:02d}_slopes"
             for grade in (0, 5, 10, 17, 20):
@@ -184,6 +229,7 @@ def main(argv=None):
             if not assessment["passed"]:
                 state.update(status="needs_iteration", reason="Long chunk regressed paired slope behavior")
                 return 3
+            verify_source(args, state)
             candidate = trial
             state.update(last_qualified_checkpoint=str(candidate), long_qualified_updates=state["long_completed_updates"])
             write_json(args.output_dir / "status.json", state)

@@ -108,7 +108,9 @@ def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None, *, allow_ru
         for field in ("runtime_guard_version", "policy_history_period_s", "guard_enter_deg", "guard_exit_deg",
                       "guard_plane_tolerance_m", "guard_confirmation_s", "guard_attitude_tau_s",
                       "guard_acceleration_tau_s", "guard_acceleration_fusion_scale", "guard_flat_return_rate_limit",
-                      "guard_flat_return_acceleration_limit", "guard_flat_velocity_reference"):
+                      "guard_flat_return_acceleration_limit", "guard_flat_velocity_reference", "guard_flat_terminal_braking",
+                      "guard_flat_terminal_acceleration_limit", "guard_startup_trajectory",
+                      "guard_coordinated_return", "guard_flat_return_minimum_duration_s"):
             requested = getattr(cfg, field)
             serialized = str(requested).lower() if isinstance(requested, bool) else str(requested)
             if serialized != str(saved.get(field)):

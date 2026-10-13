@@ -254,6 +254,8 @@ def evaluate(args, agent_cfg, history, app):
     cfg.policy_history_length = history
     cfg.observation_space = 32 * history
     cfg.events = None
+    if getattr(cfg, "runtime_guard_enabled", False):
+        cfg.guard_training_ground_truth = False  # Actor evaluation needs no training labels.
     grade = getattr(args, "grade_deg", None)
     configure_grade(cfg, grade)
     randomized = getattr(args, "real2sim_mode", "nominal") == "randomized"
@@ -345,7 +347,13 @@ def evaluate(args, agent_cfg, history, app):
                 confirmation_s=cfg.guard_confirmation_s, plane_tolerance_m=cfg.guard_plane_tolerance_m,
                 return_rate_limit=cfg.guard_flat_return_rate_limit,
                 return_acceleration_limit=cfg.guard_flat_return_acceleration_limit,
-                explicit_velocity_reference=cfg.guard_flat_velocity_reference,
+                    explicit_velocity_reference=cfg.guard_flat_velocity_reference,
+                    terminal_braking=cfg.guard_flat_terminal_braking,
+                    terminal_acceleration_limit=cfg.guard_flat_terminal_acceleration_limit,
+                    startup_trajectory=cfg.guard_startup_trajectory,
+                    coordinated_return=cfg.guard_coordinated_return,
+                    return_minimum_duration_s=cfg.guard_flat_return_minimum_duration_s,
+                    reset_height_buffer_m=cfg.reset_height_buffer,
                 minangle_deg=math.degrees(cfg.leg_physical_angle_zero-cfg.default_q_cmd))
         if student is not None:
             output["training_data_controller"] = str(args.student_checkpoint.resolve())

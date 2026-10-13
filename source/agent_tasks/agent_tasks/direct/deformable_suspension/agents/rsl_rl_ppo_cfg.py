@@ -453,6 +453,7 @@ class DeformableGuardedRoutedMLPPPORunnerCfg(DeformableFittedRecoveredRoutedMLPP
         self.algorithm.learning_rate = 1.e-5
         self.algorithm.flat_hold_weight = 1.
         self.algorithm.flat_hold_action_scale = .05
+        self.algorithm.flat_hold_startup_weight = 50.
         self.algorithm.flat_posture_weight = 0.
 
 

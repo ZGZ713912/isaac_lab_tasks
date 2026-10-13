@@ -26,6 +26,33 @@ def flat_return_target(previous, desired, velocity, dt, rate_limit, acceleration
     return target, next_velocity
 
 
+def flat_terminal_velocity(measured_q, baseline_q, trajectory_velocity, acceleration_limit):
+    """Brake against measured distance to minangle, not only the target ramp.
+
+    ADRC can lead a moving target because of its velocity reference. Do not
+    keep asking it to move past the final baseline when the encoder has
+    already arrived. Return velocity along URDF q; physical alpha has the
+    opposite sign.
+    """
+    error = baseline_q - measured_q
+    stopping_speed = (2. * acceleration_limit * error.abs()).sqrt()
+    speed = torch.minimum(trajectory_velocity.abs(), stopping_speed)
+    return torch.where(trajectory_velocity * error > 0., error.sign() * speed, 0.)
+
+
+def coordinated_flat_return(start, baseline, elapsed, minimum_duration, rate_limit, acceleration_limit):
+    """All legs follow one quintic phase so diagonals finish together."""
+    distance = (baseline - start).abs().amax(-1)
+    duration = torch.maximum(torch.full_like(distance, minimum_duration), 1.875 * distance / rate_limit)
+    duration = torch.maximum(duration, (5.774 * distance / acceleration_limit).sqrt())
+    phase = (elapsed / duration).clamp(0., 1.)[:, None]
+    progress = phase.pow(3) * (10. - 15. * phase + 6. * phase.square())
+    speed = 30. * phase.square() * (1. - phase).square() / duration[:, None]
+    target = start + (baseline - start) * progress
+    velocity = (baseline - start) * speed
+    return target, velocity
+
+
 def support_plane(q):
     s = math.sqrt(.5)
     radial = .12921 / s + .029108 * q.cos() + .13694 * q.sin() + .08542
@@ -56,6 +83,9 @@ class SuspensionRuntimeGuard:
         self.valid = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self.flat_hold = self.valid.clone()
         self.flat_candidate = self.valid.clone()
+        self.sensor_ready = self.valid.clone()
+        self.sensor_valid_time = torch.zeros(num_envs, device=device)
+        self.encoder_flat_candidate = self.valid.clone()
         self.confirmation = torch.zeros(num_envs, device=device)
         self.up = torch.zeros(num_envs, 3, device=device)
         self.up[:, 2] = 1.
@@ -69,6 +99,9 @@ class SuspensionRuntimeGuard:
         self.valid[ids] = False
         self.flat_hold[ids] = False
         self.flat_candidate[ids] = False
+        self.sensor_ready[ids] = False
+        self.sensor_valid_time[ids] = 0.
+        self.encoder_flat_candidate[ids] = False
         self.confirmation[ids] = 0.
         self.up[ids] = self.up.new_tensor((0., 0., 1.))
         self.velocity[ids] = 0.
@@ -108,6 +141,10 @@ class SuspensionRuntimeGuard:
         normal, error = support_plane(torch.nan_to_num(q))
         grade = torch.acos((normal * self.up).sum(-1).clamp(-1., 1.)) * (180. / math.pi)
         planar = valid & grade.isfinite() & (error <= self.plane_tolerance_m)
+        # One plausible sample before free fall must not enable the fast TD
+        # path. Require a continuous sensor confirmation window first.
+        self.sensor_valid_time = torch.where(valid, self.sensor_valid_time + dt, 0.)
+        self.sensor_ready = valid & (self.sensor_valid_time + 1.e-7 >= self.confirmation_s)
         candidate = planar & (grade <= self.enter_deg)
         self.flat_candidate.copy_(candidate)
         self.confirmation = torch.where(candidate & ~previous_hold, self.confirmation + dt, 0.)
@@ -118,6 +155,14 @@ class SuspensionRuntimeGuard:
         self.grade_deg.copy_(grade)
         self.plane_error_m.copy_(error)
         self.reset(~valid)
+        # Initial AHRS plus encoders are sufficient to select a gentle
+        # startup trajectory. An invalid accelerometer still forbids hold.
+        initial_up = normalize(-torch.nan_to_num(initial_gravity), dim=-1)
+        initial_grade = torch.acos((normal * initial_up).sum(-1).clamp(-1., 1.)) * (180. / math.pi)
+        self.encoder_flat_candidate = (~self.sensor_ready & q.isfinite().all(-1)
+            & initial_gravity.isfinite().all(-1) & (initial_gravity.norm(dim=-1) > 1.e-9)
+            & initial_grade.isfinite() & (initial_grade <= self.enter_deg)
+            & (error <= self.plane_tolerance_m))
         return -self.up.clone(), previous_hold != self.flat_hold
 
 
