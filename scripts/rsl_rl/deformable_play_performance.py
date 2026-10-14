@@ -104,7 +104,14 @@ class PlayPerformance:
             phase_seconds=dict(self.seconds), phase_calls=dict(self.calls), motion=self.motion)
         report.update(extra or {})
         if self.enabled:
-            print("[perf-summary] " + json.dumps(report, ensure_ascii=False), flush=True)
+            summary = {key: value for key, value in report.items() if key not in ("motion", "field", "third_person")}
+            if "field" in report:
+                summary["field"] = {key: report["field"][key] for key in
+                    ("collision_meshes", "query_triangles", "physics_scene_count", "resets", "physics_probes")}
+            if "third_person" in report:
+                summary["third_person"] = {key: report["third_person"][key] for key in
+                    ("input_counts", "target_yaw", "live_input")}
+            print("[perf-summary] " + json.dumps(summary, ensure_ascii=False), flush=True)
         if output:
             path=Path(output)
             path.parent.mkdir(parents=True,exist_ok=True)

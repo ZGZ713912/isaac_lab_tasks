@@ -23,6 +23,39 @@ def resolve_field_asset(asset_root):
     return root, entry, hashlib.sha256(package.read_bytes()).hexdigest()
 
 
+def collision_coverage(asset_root, field_path, records):
+    """List original visual body instances without an enabled field collider."""
+    inventory = Path(asset_root) / "full_field/source_inventory.json"
+    report = Path(asset_root) / "full_field/checks/collision_coverage_report.json"
+    if not inventory.is_file():
+        return dict(status="unknown", reason="No source body inventory in this package")
+    source = json.loads(inventory.read_text())
+    definitions = {item["body_id"]: item for item in source["body_definitions"]}
+    enabled = {item["path"].split("/Collisions/", 1)[0] for item in records if "/Collisions/" in item["path"]}
+    coverage = json.loads(report.read_text()) if report.is_file() else {}
+    disabled = coverage.get("disabled_overlays", {}).get("names", [])
+    rejected = coverage.get("rejected_source_geometry", {}).get("names", [])
+    uncovered = []
+    matched = 0
+    for item in source["body_instances"]:
+        path = field_path + "/" + item["body_instance_path"].split("/", 2)[2]
+        if path in enabled:
+            matched += 1
+            continue
+        definition = definitions[item["body_id"]]
+        name = definition["owner_product_name"]
+        reason = "disabled-overlay" if name in disabled else (
+            "rejected-source-geometry" if name in rejected else "no-enabled-collider")
+        uncovered.append(dict(path=path, body_id=item["body_id"], name=name, reason=reason))
+    return dict(status="partial", source_inventory=str(inventory),
+                source_inventory_sha256=hashlib.sha256(inventory.read_bytes()).hexdigest(),
+                source_report=str(report) if report.is_file() else None,
+                source_report_sha256=hashlib.sha256(report.read_bytes()).hexdigest() if report.is_file() else None,
+                source_body_definitions=len(definitions), source_body_instances=len(source["body_instances"]),
+                enabled_source_body_instances=matched, uncovered_body_instances=len(uncovered),
+                uncovered=uncovered)
+
+
 @wp.kernel
 def _support_rays(mesh_id: wp.uint64, starts: wp.array(dtype=wp.vec3),
                   positions: wp.array(dtype=wp.vec3), normals: wp.array(dtype=wp.vec3),

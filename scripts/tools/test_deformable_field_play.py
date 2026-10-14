@@ -124,3 +124,19 @@ def test_asset_contract_and_missing_external_entry(tmp_path):
     (tmp_path/"asset_package.json").write_text(json.dumps(package))
     with pytest.raises(ValueError,match="metres"):
         surface.resolve_field_asset(tmp_path)
+
+
+def test_coverage_records_uncollidable_visual_instances(tmp_path):
+    data = tmp_path / "full_field"
+    data.mkdir()
+    inventory = dict(body_definitions=[dict(body_id=1, owner_product_name="floor"),
+                                      dict(body_id=2, owner_product_name="decoration")],
+                     body_instances=[dict(body_id=1, body_instance_path="/Field/b1"),
+                                     dict(body_id=2, body_instance_path="/Field/b2")])
+    (data / "source_inventory.json").write_text(json.dumps(inventory))
+    records = [dict(path="/World/Field/b1/Collisions/Mesh")]
+    report = surface.collision_coverage(tmp_path, "/World/Field", records)
+    assert report["enabled_source_body_instances"] == 1
+    assert report["uncovered_body_instances"] == 1
+    assert report["uncovered"] == [dict(path="/World/Field/b2", body_id=2,
+                                         name="decoration", reason="no-enabled-collider")]

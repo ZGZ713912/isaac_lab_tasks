@@ -114,7 +114,9 @@ class PlayLifecycle:
         self.begin_shutdown()
         try:
             if self.env is not None:
+                print("[play] Closing environment", flush=True)
                 self.env.close()
+                print("[play] Environment closed", flush=True)
         finally:
             try:
                 if self.app is not None:

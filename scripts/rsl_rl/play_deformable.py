@@ -65,6 +65,7 @@ parser.add_argument("--spawn-xy", nargs=2, type=float, default=None, metavar=("X
 parser.add_argument("--spawn-yaw", type=float, default=0., help="Initial field heading in source-world degrees.")
 parser.add_argument("--teleop-replay", type=str, default=None, help="Bounded diagnostic replay of third-person input events.")
 parser.add_argument("--capture-output", type=str, default=None, help="Save the final GUI viewport for validation.")
+parser.add_argument("--verify-input-api", action="store_true", help="Probe native Kit input during bounded GUI replay.")
 parser.add_argument("--debug_motion", action="store_true", help="Print commanded and measured motion every 0.5 simulation seconds.")
 parser.add_argument("--max_steps", type=int, default=0, help="Stop after this many policy steps; 0 runs until closed.")
 parser.add_argument("--render_hz", type=float, default=50.0, help="GUI refresh rate in simulation time; control timing is preserved.")
@@ -120,11 +121,13 @@ if args_cli.field_root:
     package = Path(args_cli.field_root).expanduser().resolve() / "asset_package.json"
     if not package.is_file():
         parser.error(f"field package not found: {package}")
+if args_cli.verify_input_api and (not args_cli.teleop_replay or args_cli.headless):
+    parser.error("--verify-input-api requires bounded GUI --teleop-replay")
 
 sys.argv = [sys.argv[0]] + hydra_args
 from play_lifecycle import PlayLifecycle
 
-shutdown = PlayLifecycle()
+shutdown = PlayLifecycle(timeout=30. if args_cli.field_root else 8.)
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 shutdown.bind_app(simulation_app)
@@ -391,6 +394,19 @@ def main() -> None:
             third_person_controller.update_camera()
         else:
             camera_follow(env)
+    input_probe = None
+    if args_cli.verify_input_api:
+        from deformable_input_probe import probe_kit_input
+        for _ in range(3):
+            simulation_app.update()
+        input_probe = probe_kit_input(third_person_controller)
+        print("[input-api-probe] " + json.dumps(input_probe), flush=True)
+        # Kit layout updates can advance its timeline without the 1 kHz drive
+        # loop. Start the measured rollout from a fresh pose and observation.
+        with torch.inference_mode():
+            obs, _ = env.reset()
+        third_person_controller.reset()
+        third_person_controller.update_camera()
     print("[INFO] play 已启动" if third_person_controller is not None else
           "[INFO] play 已启动：W/S 前后，A/D 横移，X/Z 自旋，Q 查询/切换基准，L 归零")
     print("[INFO] 请确保 Isaac Sim 窗口有焦点才能接收键盘输入")
@@ -497,14 +513,26 @@ def main() -> None:
         extras["field"]["physics_probes"] = getattr(env.unwrapped, "field_physics_probes", [])
     if third_person_controller is not None:
         extras["third_person"] = third_person_controller.audit()
+        extras["third_person"]["native_input_probe"] = input_probe
     performance.finish(args_cli.profile_output, extra=extras)
     if args_cli.capture_output and not args_cli.headless:
         from omni.kit.viewport.utility import get_active_viewport, capture_viewport_to_file
         capture_path = Path(args_cli.capture_output).resolve()
         capture_path.parent.mkdir(parents=True, exist_ok=True)
         capture = capture_viewport_to_file(get_active_viewport(), str(capture_path))
-        for _ in range(12):
+        task = simulation_app.run_coroutine(capture.wait_for_result(), run_until_complete=False)
+        deadline = time.perf_counter() + 10.
+        while not task.done() and time.perf_counter() < deadline:
             simulation_app.update()
+        if not task.done():
+            task.cancel()
+            raise RuntimeError("Viewport capture did not complete within 10 seconds")
+        if not task.result():
+            raise RuntimeError("Viewport capture returned no color buffer")
+        import omni.kit.renderer_capture
+        omni.kit.renderer_capture.acquire_renderer_capture_interface().wait_async_capture()
+        if not capture_path.is_file():
+            raise RuntimeError("Viewport capture finished without writing its image")
         print(f"[capture] {capture_path}", flush=True)
 
 
@@ -520,6 +548,8 @@ if __name__ == "__main__":
         traceback.print_exc()
         raise
     finally:
-        if third_person_controller is not None:
-            third_person_controller.close()
-        shutdown.close()
+        try:
+            if third_person_controller is not None:
+                third_person_controller.close()
+        finally:
+            shutdown.close()

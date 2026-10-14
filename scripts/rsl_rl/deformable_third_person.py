@@ -1,6 +1,7 @@
 """Kit input adapter and world-up camera for physical third-person driving."""
 
 import weakref
+import torch
 
 import carb.input
 import carb.windowing
@@ -21,9 +22,13 @@ class ThirdPersonController:
         self.live_input = live_input
         self._subscription = None
         self._last_mouse = self._restore_cursor = None
-        self._keyboard_active = True
+        self._keyboard_active = False
+        viewport = get_active_viewport_window()
+        if viewport is not None:
+            viewport.get_frame("deformable-third-person-input")
         self._closed = False
         self.camera_samples = []
+        self._camera_sample_step = -1000
         self.input_counts = dict(key=0, move=0, right=0, scroll=0)
         self.reset()
         if live_input:
@@ -32,7 +37,7 @@ class ThirdPersonController:
 
     def __str__(self):
         return ("第三人称驾驶：W/S 前后，A/D 横移；按住右键，左右转车头/上下调整视角；"
-                "松开后完成目标朝向；滚轮缩放；L 停止，R 重置，Esc 释放鼠标。")
+                "松开后完成目标朝向；滚轮缩放；L 停止，R 重置，Esc 释放鼠标。请先点击场地视口。")
 
     def yaw(self):
         return quaternion_yaw(self.env.robot.data.root_link_quat_w[0].tolist())
@@ -61,7 +66,9 @@ class ThirdPersonController:
         window = get_active_viewport_window()
         if window is None or window.viewport_widget is None:
             return False
-        widget = window.viewport_widget
+        # ViewportWidget wraps a private ui.Frame. Use Kit's public overlay
+        # frame API to get the actual viewport's screen bounds instead.
+        widget = window.get_frame("deformable-third-person-input")
         x, y = position
         return (widget.screen_position_x <= x <= widget.screen_position_x + widget.computed_width
                 and widget.screen_position_y <= y <= widget.screen_position_y + widget.computed_height)
@@ -128,7 +135,10 @@ class ThirdPersonController:
             self.release_mouse()
         if self.state.reset_requested:
             self.state.reset_requested = False
-            obs, _ = self.wrapper.reset()
+            # IsaacLab materializes some articulation buffers inside env.step's
+            # inference context; resetting those tensors needs the same context.
+            with torch.inference_mode():
+                obs, _ = self.wrapper.reset()
             self.reset()
             return obs
         yaw_rate = float(self.env.robot.data.root_ang_vel_b[0, 2])
@@ -141,7 +151,10 @@ class ThirdPersonController:
         yaw = self.yaw()
         eye, pivot = self.state.camera_pose(position, yaw, cast)
         self.env.viewport_camera_controller.update_view_location(eye=eye, lookat=pivot)
-        if len(self.camera_samples) < 256:
+        step = self.env.common_step_counter
+        sample_period = max(1, round(.1 / self.env.step_dt))
+        if len(self.camera_samples) < 256 and step - self._camera_sample_step >= sample_period:
+            self._camera_sample_step = step
             self.camera_samples.append(dict(step=self.env.common_step_counter, yaw=yaw,
                 target_yaw=self.state.target_yaw, eye=eye.tolist(), pivot=pivot.tolist(),
                 pitch_deg=self.state.pitch_deg, distance_requested=self.state.distance,
