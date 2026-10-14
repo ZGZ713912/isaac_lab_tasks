@@ -450,7 +450,7 @@ class DeformableGuardedRoutedMLPPPORunnerCfg(DeformableFittedRecoveredRoutedMLPP
         super().__post_init__()
         self.algorithm.gamma = .99 ** .5
         self.algorithm.lam = .95 ** .5
-        self.algorithm.learning_rate = 1.e-5
+        self.algorithm.learning_rate = 1.e-6
         self.algorithm.flat_hold_weight = 1.
         self.algorithm.flat_hold_action_scale = .05
         self.algorithm.flat_hold_startup_weight = 1.

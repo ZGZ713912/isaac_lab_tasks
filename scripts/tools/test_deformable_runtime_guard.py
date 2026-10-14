@@ -425,6 +425,39 @@ def test_paired_slope_early_rejection_cannot_count_as_full_coverage(tmp_path):
         paired_slopes(old, new, grades=())
 
 
+@pytest.mark.parametrize("fault", [None, "architecture", "runtime", "snapshot", "nonliteral"])
+def test_fixed_checkpoint_physics_cache_accepts_only_literal_training_changes(tmp_path, fault):
+    import hashlib
+    from deformable_guarded_reuse import TRAINING_CONFIG, evaluation_sources_match
+    root, saved = tmp_path / "current", tmp_path / "previous"
+    runtime = "source/agent_tasks/agent_tasks/direct/deformable_suspension/dynamic_env.py"
+    old = ("class DeformableGuardedRoutedMLPPPORunnerCfg:\n"
+           "    observation_space = 160\n"
+           "    def __post_init__(self):\n"
+           "        self.algorithm.learning_rate = 1.e-5\n"
+           "        self.algorithm.flat_hold_startup_weight = 1.\n"
+           "        self.policy.history_length = 5\n")
+    new = old.replace("1.e-5", "1.e-6")
+    if fault == "architecture":
+        new = new.replace("history_length = 5", "history_length = 8")
+    elif fault == "nonliteral":
+        new = new.replace("1.e-6", "get_learning_rate()")
+    previous, current = {}, {}
+    for name, a, b in ((TRAINING_CONFIG, old, new), (runtime, "runtime", "runtime")):
+        if name == runtime and fault == "runtime":
+            b = "changed-runtime"
+        snapshot, actual = saved / "source" / name, root / name
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        actual.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(a)
+        actual.write_text(b)
+        previous[name] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+        current[name] = hashlib.sha256(actual.read_bytes()).hexdigest()
+        if name == TRAINING_CONFIG and fault == "snapshot":
+            snapshot.write_text("corrupt-snapshot")
+    assert evaluation_sources_match(saved, previous, current, root) is (fault is None)
+
+
 def test_two_second_return_excludes_only_encoder_transient_and_keeps_all_resets(tmp_path):
     import json
     import numpy as np

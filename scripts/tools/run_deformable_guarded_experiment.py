@@ -13,7 +13,7 @@ import sys
 
 from deformable_guarded_assess import flat_assessment, report_in
 from deformable_guarded_train import EXTRA_SOURCES, SOURCES, TASK, evaluate
-from deformable_guarded_reuse import ACCEPTANCE_ONLY_SOURCES, reuse_short_run
+from deformable_guarded_reuse import evaluation_sources_match, reuse_short_run
 from deformable_precision_pipeline import ROOT, run_child, timestamp, write_json
 
 
@@ -52,13 +52,11 @@ def main():
         if previous and (previous / "startup_assessment.json").is_file():
             old = json.loads((previous / "status.json").read_text())
             prior = json.loads((previous / "startup_assessment.json").read_text())
-            excluded = ACCEPTANCE_ONLY_SOURCES | {"scripts/tools/run_deformable_guarded_experiment.py"}
             cache_ok = (prior.get("complete") and prior.get("passed")
                         and old.get("probe_checkpoint") == str(args.probe_checkpoint)
-                        and all(old["sources"].get(name) == value
-                                and (previous / "source" / name).is_file()
-                                and hashlib.sha256((previous / "source" / name).read_bytes()).hexdigest() == value
-                                for name, value in sources.items() if name not in excluded))
+                        and all(r["checkpoint_sha256"] == hashlib.sha256(args.probe_checkpoint.read_bytes()).hexdigest()
+                                for r in prior["reports"])
+                        and evaluation_sources_match(previous, old["sources"], sources))
         for grade in (2., 2.9):
             if cache_ok:
                 directory = previous / f"startup_probe_{grade:g}"
@@ -89,6 +87,13 @@ def main():
                    "--short-envs", "128", "--training-seed", str(args.training_seed),
                    "--iterations", "10000", "--chunk-iterations", "1000", "--num-envs", "512",
                    "--device", args.device, "--run"]
+        if previous and (previous / "training" / "baseline_flat" / "report.json").is_file():
+            baseline_state = json.loads((previous / "training" / "status.json").read_text())
+            if (baseline_state["checkpoint"] == str(args.checkpoint)
+                    and baseline_state["checkpoint_sha256"] == hashlib.sha256(args.checkpoint.read_bytes()).hexdigest()
+                    and evaluation_sources_match(previous / "training", baseline_state["sources"], sources)):
+                command.extend(("--baseline-flat-dir", str(previous / "training" / "baseline_flat")))
+                state["baseline_reused_from"] = str(previous / "training" / "baseline_flat")
         if previous and (previous / "training" / "status.json").is_file():
             try:
                 reuse_short_run(args.checkpoint, previous / "training",

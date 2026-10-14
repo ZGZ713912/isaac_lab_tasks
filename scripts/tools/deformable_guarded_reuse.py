@@ -1,5 +1,6 @@
 """Reuse a completed short PPO run when only its acceptance procedure changes."""
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,61 @@ ACCEPTANCE_ONLY_SOURCES = frozenset((
     "scripts/tools/deformable_guarded_train.py",
     "scripts/tools/deformable_guarded_reuse.py",
 ))
+
+TRAINING_CONFIG = "source/agent_tasks/agent_tasks/direct/deformable_suspension/agents/rsl_rl_ppo_cfg.py"
+
+
+def evaluation_config_equivalent(old, new):
+    """Only two numeric optimizer/loss settings may differ in cached physics."""
+    def signature(source):
+        tree = ast.parse(source)
+        found = set()
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == "DeformableGuardedRoutedMLPPPORunnerCfg":
+                for method in node.body:
+                    if isinstance(method, ast.FunctionDef) and method.name == "__post_init__":
+                        kept = []
+                        for statement in method.body:
+                            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                                target = ast.unparse(statement.targets[0])
+                                if target in ("self.algorithm.learning_rate", "self.algorithm.flat_hold_startup_weight"):
+                                    value = statement.value
+                                    if (not isinstance(value, ast.Constant) or type(value.value) not in (int, float)
+                                            or not 0 < value.value < float("inf")):
+                                        raise ValueError("Cached evaluation needs literal positive training settings")
+                                    found.add(target)
+                                    continue
+                            kept.append(statement)
+                        method.body = kept
+        if len(found) != 2:
+            raise ValueError("Guarded training configuration was not identified")
+        return ast.dump(tree, include_attributes=False)
+    return signature(old) == signature(new)
+
+
+def evaluation_sources_match(directory, previous, current, root=ROOT):
+    """Validate saved bytes and current physics; training-only changes are explicit."""
+    directory, root = Path(directory), Path(root)
+    ignored = ACCEPTANCE_ONLY_SOURCES | {"scripts/tools/run_deformable_guarded_experiment.py"}
+    checked = 0
+    for name, expected in current.items():
+        if name in ignored:
+            continue
+        snapshot, actual = directory / "source" / name, root / name
+        if (not snapshot.is_file() or hashlib.sha256(snapshot.read_bytes()).hexdigest() != previous.get(name)
+                or not actual.is_file() or hashlib.sha256(actual.read_bytes()).hexdigest() != expected):
+            return False
+        if previous.get(name) != expected:
+            if name != TRAINING_CONFIG:
+                return False
+            try:
+                equivalent = evaluation_config_equivalent(snapshot.read_text(), actual.read_text())
+            except (ValueError, SyntaxError):
+                return False
+            if not equivalent:
+                return False
+        checked += 1
+    return checked > 0 and any(name.endswith("/dynamic_env.py") for name in current)
 
 
 def training_checkpoint(log, experiment, name, root=ROOT):

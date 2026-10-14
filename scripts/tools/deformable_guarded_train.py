@@ -134,6 +134,7 @@ def main(argv=None):
                 args.baseline_flat_dir = args.reuse_short_run / "baseline_flat"
         if args.baseline_flat_dir:
             base_flat = args.baseline_flat_dir.resolve()
+            state["baseline_flat_reused_from"] = str(base_flat)
             report = report_in(base_flat)
             if (Path(report["checkpoint"]).resolve() != args.checkpoint or report["seed"] != 1234
                     or report["steps"] != 2400 or set(report["results"]["POLICY"]) != set(SCENARIOS)):
@@ -163,6 +164,22 @@ def main(argv=None):
         if not gate["passed"]:
             state.update(status="needs_iteration", reason="Short training fails measured flat/actor convergence gate")
             return 3
+        # Reject changed slope behavior before spending on independent flat
+        # probes. Full coverage and every independent gate remain mandatory.
+        base_slopes, short_slopes = args.output_dir / "baseline_slopes", args.output_dir / "short_slopes"
+        for grade in (5, 17, 20, 0, 10):
+            evaluate(args, state, args.checkpoint, f"baseline_slopes/grade_{grade}", grade, 1234, transfer=True, steps=1200)
+            evaluate(args, state, candidate, f"short_slopes/grade_{grade}", grade, 1234, steps=1200)
+            grade_assessment = paired_slopes(base_slopes, short_slopes, grades=(grade,))
+            write_json(args.output_dir / f"short_grade_{grade}_assessment.json", grade_assessment)
+            if not grade_assessment["passed"]:
+                state.update(status="needs_iteration", reason=f"Short training regressed paired {grade:g}-degree behavior")
+                return 3
+        paired = paired_slopes(base_slopes, short_slopes)
+        write_json(args.output_dir / "short_slope_assessment.json", paired)
+        if not paired["passed"] or not paired["complete"]:
+            state.update(status="needs_iteration", reason="Short training regressed paired contact/tilt/safety")
+            return 3
         # A second seed is used only after the candidate and gates are fixed.
         admission = []
         for grade in (2., 2.9, 0):
@@ -179,20 +196,6 @@ def main(argv=None):
                    complete=True, passed=all(r["passed"] for r in admission)))
         if not all(r["passed"] for r in admission):
             state.update(status="needs_iteration", reason="Independent near-flat/noisy admission failed")
-            return 3
-        base_slopes, short_slopes = args.output_dir / "baseline_slopes", args.output_dir / "short_slopes"
-        for grade in (0, 5, 10, 17, 20):
-            evaluate(args, state, args.checkpoint, f"baseline_slopes/grade_{grade}", grade, 1234, transfer=True, steps=1200)
-            evaluate(args, state, candidate, f"short_slopes/grade_{grade}", grade, 1234, steps=1200)
-            grade_assessment = paired_slopes(base_slopes, short_slopes, grades=(grade,))
-            write_json(args.output_dir / f"short_grade_{grade}_assessment.json", grade_assessment)
-            if not grade_assessment["passed"]:
-                state.update(status="needs_iteration", reason=f"Short training regressed paired {grade:g}-degree behavior")
-                return 3
-        paired = paired_slopes(base_slopes, short_slopes)
-        write_json(args.output_dir / "short_slope_assessment.json", paired)
-        if not paired["passed"]:
-            state.update(status="needs_iteration", reason="Short training regressed paired contact/tilt/safety")
             return 3
         verify_source(args, state)
         state.update(short_qualified=True, last_qualified_checkpoint=str(candidate), status="long_training")
