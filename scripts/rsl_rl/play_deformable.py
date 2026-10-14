@@ -37,7 +37,9 @@ if _RSL_RL_SCRIPTS not in sys.path:
     sys.path.insert(0, _RSL_RL_SCRIPTS)
 
 import argparse
+import json
 import math
+from pathlib import Path
 import time
 
 from isaaclab.app import AppLauncher
@@ -51,12 +53,18 @@ parser.add_argument(
 )
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to model_XXXX.pt")
 parser.add_argument("--num_envs", type=int, default=1, help="Must be 1 for keyboard play.")
-parser.add_argument("--vx_max", type=float, default=3.0, help="Max forward/backward speed (m/s).")
-parser.add_argument("--vy_max", type=float, default=1.6, help="Max lateral speed (m/s).")
-parser.add_argument("--wz_max", type=float, default=6.283185307179586, help="Max yaw rate (rad/s); 2*pi = 60 rpm.")
+parser.add_argument("--vx_max", type=float, default=None, help="Forward cap: third-person/field 0.8, ordinary play 3.0 m/s.")
+parser.add_argument("--vy_max", type=float, default=None, help="Lateral cap: third-person/field 0.5, ordinary play 1.6 m/s.")
+parser.add_argument("--wz_max", type=float, default=None, help="Yaw cap: third-person/field 1.5, ordinary play 2*pi rad/s.")
 parser.add_argument("--wz_step", type=float, default=0.6, help="Yaw-rate increment per Z/X press (rad/s).")
 parser.add_argument("--no_vis", action="store_true", default=False, help="Disable play visualization (contact/level/HUD).")
 parser.add_argument("--fixed_camera", action="store_true", help="Keep the camera stationary between resets to see world displacement.")
+parser.add_argument("--camera-mode", choices=("follow", "fixed", "third-person"), default=None)
+parser.add_argument("--field-root", type=str, default=None, help="RMUC package directory containing asset_package.json.")
+parser.add_argument("--spawn-xy", nargs=2, type=float, default=None, metavar=("X", "Y"))
+parser.add_argument("--spawn-yaw", type=float, default=0., help="Initial field heading in source-world degrees.")
+parser.add_argument("--teleop-replay", type=str, default=None, help="Bounded diagnostic replay of third-person input events.")
+parser.add_argument("--capture-output", type=str, default=None, help="Save the final GUI viewport for validation.")
 parser.add_argument("--debug_motion", action="store_true", help="Print commanded and measured motion every 0.5 simulation seconds.")
 parser.add_argument("--max_steps", type=int, default=0, help="Stop after this many policy steps; 0 runs until closed.")
 parser.add_argument("--render_hz", type=float, default=50.0, help="GUI refresh rate in simulation time; control timing is preserved.")
@@ -76,6 +84,15 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(device="cpu")
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.fixed_camera and args_cli.camera_mode not in (None, "fixed"):
+    parser.error("--fixed_camera conflicts with --camera-mode")
+args_cli.camera_mode = args_cli.camera_mode or ("fixed" if args_cli.fixed_camera else "follow")
+args_cli.fixed_camera = args_cli.camera_mode == "fixed"
+for name, ordinary, driving in (("vx_max", 3., .8), ("vy_max", 1.6, .5), ("wz_max", 2*math.pi, 1.5)):
+    if getattr(args_cli, name) is None:
+        setattr(args_cli, name, driving if args_cli.field_root or args_cli.camera_mode == "third-person" else ordinary)
+    if not math.isfinite(getattr(args_cli, name)) or getattr(args_cli, name) <= 0:
+        parser.error(f"{name} must be positive and finite")
 if args_cli.num_envs != 1 or args_cli.max_steps < 0:
     parser.error("keyboard play requires --num_envs=1 and nonnegative --max_steps")
 if not math.isfinite(args_cli.render_hz) or args_cli.render_hz <= 0 or args_cli.cpu_threads < 1:
@@ -84,6 +101,25 @@ if args_cli.benchmark_motion and not args_cli.max_steps:
     parser.error("--benchmark_motion requires a bounded --max_steps")
 if not os.path.isfile(args_cli.checkpoint):
     parser.error("checkpoint file does not exist")
+if args_cli.field_root and args_cli.grade_deg is not None:
+    parser.error("--field-root cannot be combined with --grade-deg")
+if not args_cli.field_root and (args_cli.spawn_xy is not None or args_cli.spawn_yaw != 0.):
+    parser.error("--spawn-xy/--spawn-yaw require --field-root")
+if not all(math.isfinite(value) for value in [args_cli.spawn_yaw, *(args_cli.spawn_xy or [])]):
+    parser.error("spawn coordinates and heading must be finite")
+replay_events = []
+if args_cli.teleop_replay:
+    if args_cli.camera_mode != "third-person" or not args_cli.max_steps or args_cli.benchmark_motion:
+        parser.error("--teleop-replay requires bounded third-person play without --benchmark_motion")
+    replay_events = json.loads(Path(args_cli.teleop_replay).read_text())
+    if not isinstance(replay_events, list) or any(event.get("type") not in ("key", "right", "move", "scroll")
+            or type(event.get("step")) is not int or not 0 <= event["step"] < args_cli.max_steps for event in replay_events):
+        parser.error("replay must contain valid events with policy steps inside --max_steps")
+    replay_events.sort(key=lambda event: event["step"])
+if args_cli.field_root:
+    package = Path(args_cli.field_root).expanduser().resolve() / "asset_package.json"
+    if not package.is_file():
+        parser.error(f"field package not found: {package}")
 
 sys.argv = [sys.argv[0]] + hydra_args
 from play_lifecycle import PlayLifecycle
@@ -118,6 +154,7 @@ from scripts.utils.deformable_checkpoint import (  # noqa: E402
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_num_threads(args_cli.cpu_threads)
+third_person_controller = None
 
 
 def _disable_viewport_wasd() -> None:
@@ -239,6 +276,7 @@ def _print_suspension_reference(env) -> None:
 
 
 def main() -> None:
+    global third_person_controller
     _disable_viewport_wasd()
     # ---- env + agent config -------------------------------------------------
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
@@ -261,6 +299,10 @@ def main() -> None:
     env_cfg.episode_length_s = 1.0e6
     if getattr(env_cfg, "runtime_guard_enabled", False):
         env_cfg.guard_training_ground_truth = False
+    if args_cli.field_root:
+        env_cfg.field_root = args_cli.field_root
+        env_cfg.field_spawn_xy = args_cli.spawn_xy
+        env_cfg.field_spawn_yaw = args_cli.spawn_yaw
     # Match the initial visible asset to the configured low-body reference.
     # Reset still solves per-corner contact on terrain before the first action.
     q_ref = float(env_cfg.q_cmd_choices[0])
@@ -283,7 +325,11 @@ def main() -> None:
         env_cfg.observation_space = 32 * env_cfg.policy_history_length
 
     # ---- environment --------------------------------------------------------
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    if args_cli.field_root:
+        from agent_tasks.direct.deformable_suspension.field_env import DeformableFieldEnv
+        env = DeformableFieldEnv(cfg=env_cfg, render_mode=None)
+    else:
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     shutdown.bind_env(env)
     if args_cli.grade_deg is not None:
         _place_on_grade_ramp(env)
@@ -307,7 +353,7 @@ def main() -> None:
     # env 创建后 viewport 已就绪，再确保一次 orbit（防 App 启动时未生效）
     _disable_viewport_wasd()
 
-    keyboard = None if args_cli.headless else DeformableKeyboard(
+    keyboard = None if args_cli.headless or args_cli.camera_mode == "third-person" else DeformableKeyboard(
         DeformableKeyboardCfg(
             vx_max=args_cli.vx_max,
             vy_max=args_cli.vy_max,
@@ -320,6 +366,11 @@ def main() -> None:
         keyboard.set_env(env)
         keyboard.reset()
         print(f"[INFO] {keyboard}")
+    if args_cli.camera_mode == "third-person":
+        from deformable_third_person import ThirdPersonController
+        third_person_controller = ThirdPersonController(env, vx_max=args_cli.vx_max, vy_max=args_cli.vy_max,
+            wz_max=args_cli.wz_max, live_input=not args_cli.headless and not args_cli.teleop_replay)
+        print(f"[INFO] {third_person_controller}", flush=True)
 
     # ---- visualization (A 接触 + B 水平 + C HUD) ----
     play_vis = None
@@ -336,10 +387,14 @@ def main() -> None:
     # ---- reset + loop -------------------------------------------------------
     camera_follow.smooth_camera_positions = []
     if not getattr(args_cli, "headless", False):
-        camera_follow(env)
-    print("[INFO] play 已启动：W/S 前后，A/D 横移，X/Z 自旋，Q 查询/切换基准，L 归零")
+        if third_person_controller is not None:
+            third_person_controller.update_camera()
+        else:
+            camera_follow(env)
+    print("[INFO] play 已启动" if third_person_controller is not None else
+          "[INFO] play 已启动：W/S 前后，A/D 横移，X/Z 自旋，Q 查询/切换基准，L 归零")
     print("[INFO] 请确保 Isaac Sim 窗口有焦点才能接收键盘输入")
-    print(f"[INFO] 相机模式：{'固定（可观察世界位移）' if args_cli.fixed_camera else '自动跟随（机器人会留在画面中央）'}")
+    print(f"[INFO] 相机模式：{args_cli.camera_mode}")
     motion_tick = 0
     motion_interval = max(1, round(0.5 / env.unwrapped.step_dt))
     motion_origin = env.unwrapped.robot.data.root_pos_w[0].clone()
@@ -352,10 +407,24 @@ def main() -> None:
     benchmark_period = max(1, args_cli.max_steps // len(benchmark_commands))
     last_visual_step = -env.unwrapped.cfg.sim.render_interval
     last_report_wall = time.perf_counter()
+    replay_index = 0
+    if args_cli.field_root and args_cli.profile:
+        probes = env.unwrapped.verify_physics_queries()
+        print("[field-probes] " + json.dumps(probes), flush=True)
+        if not all(probe["passed"] for probe in probes):
+            raise RuntimeError("Field collision/query verification failed")
 
     while simulation_app.is_running() and not shutdown.requested:
         if keyboard is not None:
             keyboard.apply()
+        if third_person_controller is not None:
+            while replay_index < len(replay_events) and replay_events[replay_index]["step"] == motion_tick:
+                third_person_controller.dispatch(replay_events[replay_index])
+                replay_index += 1
+            reset_obs = third_person_controller.apply()
+            if reset_obs is not None:
+                obs = reset_obs
+                motion_origin = env.unwrapped.robot.data.root_pos_w[0].clone()
         if args_cli.benchmark_motion:
             index = min(len(benchmark_commands)-1, motion_tick // benchmark_period)
             env.unwrapped.cmd_buf[:] = torch.tensor(benchmark_commands[index], device=env.device)
@@ -369,7 +438,10 @@ def main() -> None:
             if play_vis is not None:
                 play_vis.update()
             if not getattr(args_cli, "headless", False) and not args_cli.fixed_camera:
-                camera_follow(env)
+                if third_person_controller is not None:
+                    third_person_controller.update_camera()
+                else:
+                    camera_follow(env)
             last_visual_step = env.unwrapped._sim_step_counter
         motion_tick += 1
         performance.record_step()
@@ -407,14 +479,33 @@ def main() -> None:
         if bool(dones.any()):
             if keyboard is not None:
                 keyboard.reset()
+            if third_person_controller is not None:
+                third_person_controller.reset()
             motion_origin = env.unwrapped.robot.data.root_pos_w[0].clone()
             camera_follow.smooth_camera_positions = []
             if not getattr(args_cli, "headless", False):
-                camera_follow(env)
+                if third_person_controller is not None:
+                    third_person_controller.update_camera()
+                else:
+                    camera_follow(env)
             print("[INFO] 环境重置，键盘命令已归零")
         if args_cli.max_steps and motion_tick >= args_cli.max_steps:
             break
-    performance.finish(args_cli.profile_output)
+    extras = {}
+    if args_cli.field_root:
+        extras["field"] = env.unwrapped.field_audit()
+        extras["field"]["physics_probes"] = getattr(env.unwrapped, "field_physics_probes", [])
+    if third_person_controller is not None:
+        extras["third_person"] = third_person_controller.audit()
+    performance.finish(args_cli.profile_output, extra=extras)
+    if args_cli.capture_output and not args_cli.headless:
+        from omni.kit.viewport.utility import get_active_viewport, capture_viewport_to_file
+        capture_path = Path(args_cli.capture_output).resolve()
+        capture_path.parent.mkdir(parents=True, exist_ok=True)
+        capture = capture_viewport_to_file(get_active_viewport(), str(capture_path))
+        for _ in range(12):
+            simulation_app.update()
+        print(f"[capture] {capture_path}", flush=True)
 
 
 if __name__ == "__main__":
@@ -429,4 +520,6 @@ if __name__ == "__main__":
         traceback.print_exc()
         raise
     finally:
+        if third_person_controller is not None:
+            third_person_controller.close()
         shutdown.close()

@@ -1,0 +1,147 @@
+"""Static collision geometry queries; original USD assets are never saved."""
+
+from pathlib import Path
+import hashlib
+import json
+
+import numpy as np
+import torch
+import warp as wp
+
+
+def resolve_field_asset(asset_root):
+    root = Path(asset_root).expanduser().resolve()
+    package = root / "asset_package.json"
+    data = json.loads(package.read_text())
+    if data.get("units") != "metres" or data.get("usd_up_axis") != "Z":
+        raise ValueError("Field must use metres and Z-up coordinates")
+    entry = (root / data["entries"]["isaac_static_collision_usd"]).resolve()
+    if not entry.is_relative_to(root):
+        raise ValueError("Field entry must be inside its asset package")
+    if not entry.is_file():
+        raise FileNotFoundError(entry)
+    return root, entry, hashlib.sha256(package.read_bytes()).hexdigest()
+
+
+@wp.kernel
+def _support_rays(mesh_id: wp.uint64, starts: wp.array(dtype=wp.vec3),
+                  positions: wp.array(dtype=wp.vec3), normals: wp.array(dtype=wp.vec3),
+                  valid: wp.array(dtype=wp.int32), maximum: float):
+    i = wp.tid()
+    origin = starts[i] + wp.vec3(0., 0., .025)
+    positions[i] = starts[i]
+    normals[i] = wp.vec3(0., 0., 1.)
+    valid[i] = 0
+    # Ignore back faces and vertical walls as support; they remain physical colliders.
+    for attempt in range(8):
+        hit = wp.mesh_query_ray(mesh_id, origin, wp.vec3(0., 0., -1.), maximum)
+        if not hit.result:
+            break
+        if hit.normal[2] > .1:
+            positions[i] = origin + wp.vec3(0., 0., -hit.t)
+            normals[i] = hit.normal
+            valid[i] = 1
+            break
+        origin = origin + wp.vec3(0., 0., -hit.t - .001)
+
+
+@wp.kernel
+def _segment_ray(mesh_id: wp.uint64, origin: wp.vec3, direction: wp.vec3,
+                 maximum: float, distance: wp.array(dtype=wp.float32)):
+    hit = wp.mesh_query_ray(mesh_id, origin, direction, maximum)
+    distance[0] = -1.
+    if hit.result:
+        distance[0] = hit.t
+
+
+class FieldSurface:
+    def __init__(self, vertices, triangles, device="cpu", records=None):
+        self.vertices = np.asarray(vertices, dtype=np.float32)
+        self.triangles = np.asarray(triangles, dtype=np.int32)
+        self.device = device
+        wp.init()
+        self.mesh = wp.Mesh(points=wp.array(self.vertices, dtype=wp.vec3, device=device),
+                            indices=wp.array(self.triangles.reshape(-1), dtype=wp.int32, device=device))
+        self.bounds = np.array((self.vertices.min(0), self.vertices.max(0)))
+        self.records = records or []
+        self.query_count = 0
+        self.cache_hits = 0
+        self._tick = None
+        self._cache = {}
+        self._segment_distance = wp.zeros(1, dtype=wp.float32, device=device)
+
+    @classmethod
+    def from_stage(cls, stage, path, device):
+        from pxr import Usd, UsdGeom, UsdPhysics
+        xforms = UsdGeom.XformCache()
+        vertices, triangles, records = [], [], []
+        offset = 0
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(path), Usd.TraverseInstanceProxies()):
+            if not prim.IsA(UsdGeom.Mesh) or not prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+            if not UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get():
+                continue
+            approximation = UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+            if approximation not in (None, "none"):
+                raise ValueError(f"Field query needs exact triangle colliders: {prim.GetPath()} ({approximation})")
+            geom = UsdGeom.Mesh(prim)
+            points = np.asarray(geom.GetPointsAttr().Get(), dtype=np.float64)
+            transform = np.asarray(xforms.GetLocalToWorldTransform(prim))
+            points = (np.c_[points, np.ones(len(points))] @ transform)[:, :3]
+            counts = np.asarray(geom.GetFaceVertexCountsAttr().Get())
+            indices = np.asarray(geom.GetFaceVertexIndicesAttr().Get(), dtype=np.int32)
+            if np.any(counts != 3):
+                raise ValueError(f"Field collider must be triangulated: {prim.GetPath()}")
+            faces = indices.reshape(-1, 3)
+            if geom.GetOrientationAttr().Get() == "leftHanded":
+                faces = faces[:, (0, 2, 1)]
+            if np.linalg.det(transform[:3, :3]) < 0:
+                faces = faces[:, (0, 2, 1)]
+            face_points = points[faces]
+            cross = np.cross(face_points[:, 1]-face_points[:, 0], face_points[:, 2]-face_points[:, 0])
+            areas = np.linalg.norm(cross, axis=-1)
+            upward = cross[:, 2] > .9 * areas
+            records.append(dict(path=str(prim.GetPath()), triangles=len(faces),
+                                first_triangle=sum(record["triangles"] for record in records),
+                                upward_area_m2=float(areas[upward].sum()/2),
+                                upward_bounds=np.array((face_points[upward].reshape(-1, 3).min(0),
+                                                        face_points[upward].reshape(-1, 3).max(0))).tolist()
+                                if upward.any() else None))
+            vertices.append(points)
+            triangles.append(faces + offset)
+            offset += len(points)
+        if not vertices:
+            raise ValueError("Field contains no enabled triangle collision meshes")
+        return cls(np.concatenate(vertices), np.concatenate(triangles), device, records)
+
+    def support(self, points, tick=None):
+        if tick != self._tick:
+            self._tick = tick
+            self._cache.clear()
+        key = (tuple(points.shape), points.detach().cpu().numpy().tobytes())
+        if key in self._cache:
+            self.cache_hits += 1
+            return self._cache[key]
+        shape = points.shape
+        starts = points.reshape(-1, 3).contiguous()
+        hits = torch.empty_like(starts)
+        normals = torch.empty_like(starts)
+        valid = torch.empty(len(starts), device=self.device, dtype=torch.int32)
+        wp.launch(_support_rays, dim=len(starts), inputs=[self.mesh.id, wp.from_torch(starts, dtype=wp.vec3),
+                  wp.from_torch(hits, dtype=wp.vec3), wp.from_torch(normals, dtype=wp.vec3),
+                  wp.from_torch(valid), float(self.bounds[1, 2]-self.bounds[0, 2]+10.)], device=self.device)
+        result = (hits.reshape(shape)[..., 2], normals.reshape(shape), valid.reshape(shape[:-1]).bool())
+        self.query_count += 1
+        self._cache[key] = result
+        return result
+
+    def segment(self, origin, direction, maximum):
+        wp.launch(_segment_ray, dim=1, inputs=[self.mesh.id, wp.vec3(*origin), wp.vec3(*direction),
+                  float(maximum), self._segment_distance], device=self.device)
+        distance = float(self._segment_distance.numpy()[0])
+        return None if distance < 0. else distance
+
+    def audit(self):
+        return dict(collision_meshes=len(self.records), query_triangles=len(self.triangles),
+                    world_bounds_m=self.bounds.tolist(), query_count=self.query_count,
+                    cache_hits=self.cache_hits, collision_records=self.records)

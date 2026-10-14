@@ -73,7 +73,11 @@ class PlayPerformance:
             q = data.joint_pos[0, self.env._legs_idx]
             self.motion.append(dict(step=self.steps, simulation_s=self.steps*self.env.step_dt,
                 command=self.env.cmd_buf[0].tolist(), velocity=data.root_link_lin_vel_b[0].tolist(),
+                position=data.root_link_pos_w[0].tolist(), quaternion=data.root_link_quat_w[0].tolist(),
                 yaw_rate=data.root_ang_vel_b[0, 2].item(),
+                leg_targets_deg=torch.rad2deg(self.env.cfg.leg_physical_angle_zero-self.env.leg_target[0]).tolist(),
+                tilt_deg=float(torch.rad2deg(torch.atan2(data.projected_gravity_b[0, :2].norm(),
+                                                       -data.projected_gravity_b[0, 2]))),
                 leg_angles_deg=torch.rad2deg(self.env.cfg.leg_physical_angle_zero-q).tolist(),
                 contact_count=int((self.env.wheel_normal_forces[0]>
                                    self.env.cfg.wheel_contact_force_threshold).sum().item()),
@@ -88,7 +92,7 @@ class PlayPerformance:
                 f"controller={self.seconds['controller']/wall:.0%} "
                 f"physics={self.seconds['physics']/wall:.0%} render={self.seconds['render']/wall:.0%}")
 
-    def finish(self, output=None):
+    def finish(self, output=None, extra=None):
         wall = time.perf_counter()-self.started
         for owner, name, original in reversed(self.originals):
             setattr(owner, name, original)
@@ -98,6 +102,7 @@ class PlayPerformance:
             physics_dt=self.env.physics_dt, policy_dt=self.env.step_dt,
             render_interval=self.env.cfg.sim.render_interval,
             phase_seconds=dict(self.seconds), phase_calls=dict(self.calls), motion=self.motion)
+        report.update(extra or {})
         if self.enabled:
             print("[perf-summary] " + json.dumps(report, ensure_ascii=False), flush=True)
         if output:
