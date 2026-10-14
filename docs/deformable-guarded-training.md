@@ -316,3 +316,48 @@ P99 0.130485 ms、最大 0.152364 ms。原始导出没有 RMCS metadata，
 
 现有目录不能重复覆盖。查看状态/日志后选择新迭代目录。脚本不启动车辆、
 不写回 RMCS，也不自动替换实车 ONNX。
+
+## 2026-10-14：训练停止状态与 play 性能
+
+上述大训练已按用户要求停止，训练调度器和子进程均已退出，
+`status.json` 为 `stopped`、`current_job=null`。最后完整验收的累计更新数
+是 5,000，对应 `2026-10-14_12-40-18_training_long_05/model_999.pt`。
+后续未完成验收的候选不替代该权重。下列诊断只运行有步数上限的 GUI
+play，没有重启训练。
+
+WASD 和 X/Z 的慢响应主要来自仿真时间推进缓慢。启动、模型加载和
+初始着色器编译不计入以下计时；全部实测使用同一已验收 checkpoint，
+平地、单车、固定相机，并开启耗时统计和运动日志。
+
+| 配置 | 仿真时间 | 现实时间 | 实时倍率 |
+| --- | ---: | ---: | ---: |
+| 原 GPU，200 Hz 画面，保留训练统计和旧 wrench 接口 | 0.7 s | 17.671 s | 0.0396× |
+| CPU，50 Hz 画面，保留训练统计和旧 wrench 接口 | 4.0 s | 23.121 s | 0.1730× |
+| CPU，50 Hz 画面，跳过训练统计，使用相同 wrench composer | 4.0 s | 18.575 s | 0.2153× |
+
+新版比原 GPU 探针快约 5.44 倍，但仍需约 4.64 秒现实时间推进一秒
+仿真，尚未达到实时。原 GPU 探针的策略推理仅占总耗时约 0.9%；新版
+CPU 策略平均约 0.46 ms。主要开销仍是物理控制、场景数据更新和渲染。
+表中原 GPU 探针与 CPU 探针时长不同，速度比用于诊断本机表现。
+最后两项使用同一 seed=123、800 步和站立/前进/横移/双向旋转指令，
+16 组采样的指令、速度、转速、四腿角度、接触数和打滑完全相同；
+采样均为四轮接触。该短对照不替代完整坡度验收。
+
+play 默认改为单线程 CPU，画面及可视化更新使用 50 Hz 仿真时间。
+物理步长仍为 1 ms，策略间隔仍为 5 ms，五帧历史仍按 10 ms 采样。
+实际画面频率会随实时倍率降低，本次约 10.8 次/现实秒；`--render_hz 50`
+不保证现实时间下的 50 FPS。`--profile` 每两秒输出实时倍率，1.0×
+表示达到实时，低于 1.0× 表示慢放。
+
+```sh
+./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python -B scripts/rsl_rl/play_deformable.py \
+  --task Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4 \
+  --checkpoint logs/rsl_rl/deformable_guarded_mlp5_v4/2026-10-14_12-40-18_training_long_05/model_999.pt \
+  --device cpu --num_envs 1 --grade-deg 0 \
+  --vx_max 0.8 --vy_max 0.5 --wz_max 1.5 \
+  --render_hz 50 --fixed_camera --debug_motion --profile
+```
+
+测量、checkpoint/source SHA256、CPU 配对差异和进程清理结果保存在
+`outputs/deformable_play_performance_20261014/summary.json`；各探针的
+原始 JSON 和日志保留在同一输出目录及其父目录。

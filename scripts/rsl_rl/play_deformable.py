@@ -10,14 +10,14 @@
 
 键位：
     W/S  前进/后退 (vx)      A/D  左移/右移 (vy)
-    X/Z  自旋 +/-(ωz, 增量)   Q    查询/切换基准角   L  全部归零
+    X/Z  自旋 +/-(ωz, 增量，松开保持)   Q  查询/切换基准角   L  全部归零
 
 用法（仓库根目录，需 GUI）：
     python scripts/rsl_rl/play_deformable.py \
-        --task=Robotics-Deformable-Suspension-Rough-Keyboard-Play-History-Transformer-v2 \
-        --checkpoint=logs/rsl_rl/deformable_foundation_precision_v2/<run>/model_999.pt \
-        --grade-deg=20 --fixed_camera --debug_motion \
-        --device=cuda:0
+        --task=Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4 \
+        --checkpoint=logs/rsl_rl/deformable_guarded_mlp5_v4/<run>/model_999.pt \
+        --grade-deg=0 --fixed_camera --debug_motion --profile \
+        --device=cpu
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -38,6 +38,7 @@ if _RSL_RL_SCRIPTS not in sys.path:
 
 import argparse
 import math
+import time
 
 from isaaclab.app import AppLauncher
 
@@ -58,6 +59,14 @@ parser.add_argument("--no_vis", action="store_true", default=False, help="Disabl
 parser.add_argument("--fixed_camera", action="store_true", help="Keep the camera stationary between resets to see world displacement.")
 parser.add_argument("--debug_motion", action="store_true", help="Print commanded and measured motion every 0.5 simulation seconds.")
 parser.add_argument("--max_steps", type=int, default=0, help="Stop after this many policy steps; 0 runs until closed.")
+parser.add_argument("--render_hz", type=float, default=50.0, help="GUI refresh rate in simulation time; control timing is preserved.")
+parser.add_argument("--cpu_threads", type=int, default=1, help="Torch CPU threads for this single-robot play process.")
+parser.add_argument("--profile", action="store_true", help="Measure policy, physics/control and rendering wall time.")
+parser.add_argument("--profile_output", type=str, default=None, help="Save timing and motion measurements as JSON.")
+parser.add_argument("--benchmark_motion", action="store_true", help="Run a bounded simulated standing/forward/lateral/spin command sequence.")
+parser.add_argument("--legacy_wrench_api", action="store_true", help="Use the original external-wrench wrapper for performance comparisons.")
+parser.add_argument("--training_metrics", action="store_true", help="Compute unused training rewards/statistics during play for comparisons.")
+parser.add_argument("--seed", type=int, default=None, help="Repeatable simulation seed for diagnostics.")
 parser.add_argument(
     "--grade-deg",
     type=float,
@@ -65,9 +74,14 @@ parser.add_argument(
     help="Override the periodic terrain with a constant 0..20 degree ramp for visual validation.",
 )
 AppLauncher.add_app_launcher_args(parser)
+parser.set_defaults(device="cpu")
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.num_envs != 1 or args_cli.max_steps < 0:
     parser.error("keyboard play requires --num_envs=1 and nonnegative --max_steps")
+if not math.isfinite(args_cli.render_hz) or args_cli.render_hz <= 0 or args_cli.cpu_threads < 1:
+    parser.error("render_hz must be positive and finite; cpu_threads must be positive")
+if args_cli.benchmark_motion and not args_cli.max_steps:
+    parser.error("--benchmark_motion requires a bounded --max_steps")
 if not os.path.isfile(args_cli.checkpoint):
     parser.error("checkpoint file does not exist")
 
@@ -96,10 +110,14 @@ from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 from keyboard_controller_deformable import DeformableKeyboard, DeformableKeyboardCfg  # noqa: E402
 from deformable_play_vis import DeformablePlayVis  # noqa: E402
 from agent_tasks.direct.deformable_suspension import cfg_utils as du  # noqa: E402
-from scripts.utils.deformable_checkpoint import validate_deformable_checkpoint  # noqa: E402
+from scripts.utils.deformable_checkpoint import (  # noqa: E402
+    configure_recovery_precision,
+    validate_deformable_checkpoint,
+)
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.set_num_threads(args_cli.cpu_threads)
 
 
 def _disable_viewport_wasd() -> None:
@@ -225,9 +243,24 @@ def main() -> None:
     # ---- env + agent config -------------------------------------------------
     env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs)
     env_cfg.play = True
+    if args_cli.seed is not None:
+        env_cfg.seed = args_cli.seed
     _configure_grade(env_cfg, args_cli.grade_deg)
     resume_path = os.path.abspath(args_cli.checkpoint)
     validate_deformable_checkpoint(env_cfg, resume_path)
+    # Render less often without changing 1ms physics, 200Hz policy or history.
+    from deformable_play_performance import configure_render_rate
+    configure_render_rate(env_cfg, args_cli.render_hz)
+    # Training tasks can also be played with their original control contract.
+    # Keep keyboard commands from being resampled or scaled by the curriculum.
+    env_cfg.external_cmd_override = True
+    env_cfg.commands_world_frame = False
+    env_cfg.spawn_dir_stratify = False
+    env_cfg.spawn_dir_jitter = False
+    env_cfg.boundary_reset_enabled = False
+    env_cfg.episode_length_s = 1.0e6
+    if getattr(env_cfg, "runtime_guard_enabled", False):
+        env_cfg.guard_training_ground_truth = False
     # Match the initial visible asset to the configured low-body reference.
     # Reset still solves per-corner contact on terrain before the first action.
     q_ref = float(env_cfg.q_cmd_choices[0])
@@ -244,6 +277,7 @@ def main() -> None:
 
     from scripts.utils.deformable_checkpoint import load_deformable_agent_config
     agent_cfg = load_deformable_agent_config(resume_path, args_cli.device)
+    configure_recovery_precision(agent_cfg["policy"], agent_cfg["algorithm"])
     if hasattr(env_cfg, "policy_history_length"):
         env_cfg.policy_history_length = agent_cfg["policy"].get("history_length", 1)
         env_cfg.observation_space = 32 * env_cfg.policy_history_length
@@ -255,6 +289,17 @@ def main() -> None:
         _place_on_grade_ramp(env)
         print(f"[INFO] 固定坡度 play: {args_cli.grade_deg:.1f}°，已放置在 20 m 上坡段内部", flush=True)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.get("clip_actions"))
+    if not args_cli.legacy_wrench_api:
+        # The legacy wrapper only converts inputs and forwards to this same
+        # composer, while logging a deprecation warning every physics step.
+        env.unwrapped.robot.set_external_force_and_torque = (
+            env.unwrapped.robot.permanent_wrench_composer.set_forces_and_torques
+        )
+    if not args_cli.training_metrics:
+        # Reward/direction statistics are not read by the frozen inference
+        # policy. Action-history updates remain in _pre_physics_step.
+        play_rewards = torch.zeros(env.unwrapped.num_envs, device=env.device)
+        env.unwrapped._get_rewards = lambda: play_rewards.zero_()
     obs, _ = env.reset()
     _print_suspension_reference(env)
     q = env.unwrapped.robot.data.joint_pos[0, env.unwrapped._legs_idx]
@@ -298,18 +343,39 @@ def main() -> None:
     motion_tick = 0
     motion_interval = max(1, round(0.5 / env.unwrapped.step_dt))
     motion_origin = env.unwrapped.robot.data.root_pos_w[0].clone()
+    from deformable_play_performance import PlayPerformance
+    performance = PlayPerformance(env.unwrapped, enabled=args_cli.profile)
+    performance.start()
+    benchmark_commands = ((0., 0., 0.), (args_cli.vx_max, 0., 0.),
+                          (0., args_cli.vy_max, 0.), (0., 0., args_cli.wz_max),
+                          (0., 0., -args_cli.wz_max))
+    benchmark_period = max(1, args_cli.max_steps // len(benchmark_commands))
+    last_visual_step = -env.unwrapped.cfg.sim.render_interval
+    last_report_wall = time.perf_counter()
 
     while simulation_app.is_running() and not shutdown.requested:
         if keyboard is not None:
             keyboard.apply()
+        if args_cli.benchmark_motion:
+            index = min(len(benchmark_commands)-1, motion_tick // benchmark_period)
+            env.unwrapped.cmd_buf[:] = torch.tensor(benchmark_commands[index], device=env.device)
+        policy_start = time.perf_counter()
         with torch.inference_mode():
             actions = policy(obs)
+            performance.record_policy(policy_start)
             obs, _, dones, _ = env.step(actions)
-        if play_vis is not None:
-            play_vis.update()
-        if not getattr(args_cli, "headless", False) and not args_cli.fixed_camera:
-            camera_follow(env)
+        # USD marker writes and camera GPU->CPU transfers follow the GUI cadence.
+        if env.unwrapped._sim_step_counter - last_visual_step >= env.unwrapped.cfg.sim.render_interval:
+            if play_vis is not None:
+                play_vis.update()
+            if not getattr(args_cli, "headless", False) and not args_cli.fixed_camera:
+                camera_follow(env)
+            last_visual_step = env.unwrapped._sim_step_counter
         motion_tick += 1
+        performance.record_step()
+        if args_cli.profile and time.perf_counter() - last_report_wall >= 2.0:
+            print(performance.progress(), flush=True)
+            last_report_wall = time.perf_counter()
         if args_cli.debug_motion and motion_tick % motion_interval == 0:
             u = env.unwrapped
             data = u.robot.data
@@ -348,6 +414,7 @@ def main() -> None:
             print("[INFO] 环境重置，键盘命令已归零")
         if args_cli.max_steps and motion_tick >= args_cli.max_steps:
             break
+    performance.finish(args_cli.profile_output)
 
 
 if __name__ == "__main__":
@@ -355,5 +422,11 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print(">>> interrupted by user, closing", flush=True)
+    except Exception:
+        # SimulationApp.close may terminate Python before the pending
+        # exception is displayed. Keep the actual cause visible first.
+        import traceback
+        traceback.print_exc()
+        raise
     finally:
         shutdown.close()
