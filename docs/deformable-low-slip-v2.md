@@ -38,10 +38,10 @@ Use the `isaaclab` environment. New training logs default to
 ```bash
 python scripts/rsl_rl/train.py --task=Robotics-Deformable-Suspension-Rough-History-Transformer-v1 --num_envs=128 --max_iterations=10000 --headless --device=cuda:0
 ./run_gui.sh python scripts/rsl_rl/play_deformable.py --task=Robotics-Deformable-Suspension-Rough-Keyboard-Play-History-Transformer-v1 --checkpoint=<low-slip-checkpoint> --device=cuda:0 --vx_max=1 --vy_max=1 --fixed_camera --debug_motion
-python -m pytest scripts/tools/test_deformable_dynamic.py -q
-python scripts/tools/deformable_dynamic_probe.py --device=cuda:0 --steps=600 --strict
-python scripts/tools/deformable_grade_probe.py --device=cuda:0 --grade=0 --steps=600 --full-spin --strict
-python scripts/tools/deformable_grade_probe.py --device=cuda:0 --grade=8 --steps=900 --transitions --strict
+python -m pytest tools/test_deformable_dynamic.py -q
+python tools/deformable_dynamic_probe.py --device=cuda:0 --steps=600 --strict
+python tools/deformable_grade_probe.py --device=cuda:0 --grade=0 --steps=600 --full-spin --strict
+python tools/deformable_grade_probe.py --device=cuda:0 --grade=8 --steps=900 --transitions --strict
 ```
 
 The old 3999 checkpoint can still load for comparison, but learned the old tire

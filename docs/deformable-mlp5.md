@@ -70,7 +70,7 @@ play 支持 `--grade-deg 10`、`17` 或 `20` 查看固定长坡。
 
 ```bash
 ./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python -B \
-  scripts/tools/deformable_suspension_eval.py \
+  tools/deformable_suspension_eval.py \
   --task Robotics-Deformable-Suspension-Support-Leveling-Joint-History-MLP-Real2Sim-v3 \
   --checkpoint <MLP运行目录>/model_49.pt \
   --policy-only --history 5 --grade-deg 10 --num_envs 16 --steps 600 \
@@ -114,7 +114,7 @@ MLP 0.0305 ms、旧 8 帧 Transformer 0.2749 ms。
 
 ```bash
 ./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python -B -u \
-  scripts/tools/deformable_mlp_train.py \
+  tools/deformable_mlp_train.py \
   --checkpoint logs/rsl_rl/deformable_real2sim_support_leveling_mlp5_v3/2026-10-08_20-17-57_mlp5_short_20261008/model_49.pt \
   --output-dir outputs/deformable_mlp5_joint_long_20261008 --run
 ```

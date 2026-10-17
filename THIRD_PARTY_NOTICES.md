@@ -16,10 +16,10 @@
   - **相同方式共享**：衍生作品须以相同协议（BY-NC-SA）授权，**不得**以 MIT 等方式再授权。
 
   受影响的文件：
-  - `source/agent_rl/agent_rl/rsl_rl/algorithms/ppo_him.py`
-  - `source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_him.py`
-  - `source/agent_rl/agent_rl/rsl_rl/modules/him_estimator.py`
-  - `source/agent_rl/agent_rl/rsl_rl/runners/on_policy_runner_him.py`
+  - `src/agent_rl/rsl_rl/algorithms/ppo_him.py`
+  - `src/agent_rl/rsl_rl/modules/actor_critic_him.py`
+  - `src/agent_rl/rsl_rl/modules/him_estimator.py`
+  - `src/agent_rl/rsl_rl/runners/on_policy_runner_him.py`
 
 > ⚠️ 该协议与仓库根目录的 MIT 声明**不兼容**。若需商业发布，应移除/替换上述 HIM 相关文件，或另行取得上游作者授权。
 
@@ -31,10 +31,10 @@
 - **许可要点**：算法代码未附带 LICENSE，此处仅作学术引用与致谢；使用前建议与上游作者确认授权。
 
   受影响的文件：
-  - `source/agent_rl/agent_rl/rsl_rl/algorithms/ppo_dreamwaq.py`
-  - `source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_dreamwaq.py`
-  - `source/agent_rl/agent_rl/rsl_rl/modules/nn/vqvae.py`
-  - `source/agent_rl/agent_rl/rsl_rl/runners/on_policy_runner_dreamwaq.py`
+  - `src/agent_rl/rsl_rl/algorithms/ppo_dreamwaq.py`
+  - `src/agent_rl/rsl_rl/modules/actor_critic_dreamwaq.py`
+  - `src/agent_rl/rsl_rl/modules/nn/vqvae.py`
+  - `src/agent_rl/rsl_rl/runners/on_policy_runner_dreamwaq.py`
 
 ## 3. ddt_rl_isaacgym（NP3O）
 
@@ -44,10 +44,10 @@
 - **许可要点**：未附带 LICENSE，此处作学术引用与致谢；NP3O 思路参考 legged_gym 与 LocomotionWithNP3O。
 
   受影响的文件：
-  - `source/agent_rl/agent_rl/rsl_rl/algorithms/np3o.py`
-  - `source/agent_rl/agent_rl/rsl_rl/modules/actor_critic_balowtwins.py`
-  - `source/agent_rl/agent_rl/rsl_rl/runners/on_constraint_policy_runner.py`
-  - `source/agent_rl/agent_rl/rsl_rl/storage/rollout_storage.py`
+  - `src/agent_rl/rsl_rl/algorithms/np3o.py`
+  - `src/agent_rl/rsl_rl/modules/actor_critic_balowtwins.py`
+  - `src/agent_rl/rsl_rl/runners/on_constraint_policy_runner.py`
+  - `src/agent_rl/rsl_rl/storage/rollout_storage.py`
 
 ## 4. rsl_rl / legged_gym（基座框架）
 

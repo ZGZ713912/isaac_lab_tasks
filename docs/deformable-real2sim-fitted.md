@@ -129,16 +129,16 @@ checkpoint=/absolute/path/to/run/model_N.pt
 重现数据拟合与回放：
 
 ```bash
-python scripts/tools/deformable_assembly_fit.py \
+python tools/deformable_assembly_fit.py \
   --output outputs/deformable_real2sim_20261005/dynamics_fit_v3.json
-python scripts/tools/deformable_current_fit.py \
+python tools/deformable_current_fit.py \
   --output outputs/deformable_real2sim_20261005/current_fit.json
-./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python scripts/tools/deformable_fitted_isaac_replay.py \
+./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python tools/deformable_fitted_isaac_replay.py \
   --fit outputs/deformable_real2sim_20261005/dynamics_fit_v3.json \
   --csv /home/noir/Documents/workspace/deformable阶越/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv \
   --output outputs/deformable_real2sim_20261005/isaac_fitted_replay_v3_full.json \
   --windows-per-stage 300 --headless --device cuda:0
-./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python scripts/tools/deformable_fitted_closed_loop.py \
+./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python tools/deformable_fitted_closed_loop.py \
   --csv /home/noir/Documents/workspace/deformable阶越/deformable_angle_sweep_suspended_2026-10-04_23-03-11_run1.csv \
   --output outputs/deformable_real2sim_20261005/fitted_closed_loop_phase1.json \
   --headless --device cuda:0

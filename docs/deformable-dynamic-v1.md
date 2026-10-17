@@ -39,8 +39,8 @@ Activate the `isaaclab` environment first. Start fresh: V0 checkpoints cannot lo
 python scripts/rsl_rl/train.py --task=Robotics-Deformable-Suspension-Flat-History-Transformer-v1 --num_envs=128 --max_iterations=10000 --headless --device=cuda:0
 python scripts/rsl_rl/train.py --task=Robotics-Deformable-Suspension-Rough-History-Transformer-v1 --num_envs=128 --max_iterations=10000 --headless --device=cuda:0
 ./run_gui.sh python scripts/rsl_rl/play_deformable.py --task=Robotics-Deformable-Suspension-Rough-Keyboard-Play-History-Transformer-v1 --checkpoint=<v1-checkpoint> --device=cuda:0 --vx_max=1 --vy_max=1
-python scripts/tools/deformable_dynamic_probe.py --device=cuda:0 --steps=600 --strict
-python -m pytest scripts/tools/test_deformable_dynamic.py -q
+python tools/deformable_dynamic_probe.py --device=cuda:0 --steps=600 --strict
+python -m pytest tools/test_deformable_dynamic.py -q
 ```
 
 For 16-frame ablations set all three together: `env.policy_history_length=16 env.observation_space=512 agent.policy.history_length=16`. For single-frame ablations use `1`, `32`, `1` respectively. Changed time embeddings require a fresh model.

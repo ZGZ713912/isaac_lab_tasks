@@ -9,7 +9,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-for directory in (ROOT, ROOT / "scripts/rsl_rl", *(ROOT / "source" / p for p in ("agent_world", "agent_tasks", "agent_rl"))):
+for directory in (ROOT, ROOT / "scripts/rsl_rl", ROOT / "src"):
     sys.path.insert(0, str(directory))
 
 from isaaclab.app import AppLauncher

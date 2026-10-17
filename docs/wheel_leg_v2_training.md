@@ -1,6 +1,6 @@
 # Wheel_leg_V2 训练说明（移植自 V40 完成训练栈）
 
-本任务把 [wheeled-biped-rl-train](../../../wheeled-biped-rl-train)（V40 完成训练仓）
+本任务把 wheeled-biped-rl-train（V40 完成训练参考仓，见[本地参考项目说明](../references/README.md)）
 的 **contract 驱动 DirectRLEnv** 架构移植到本仓库的闭链轮腿机器人 `Wheel_leg_V2`。
 
 ## 1. 机器人差异
@@ -28,8 +28,8 @@ effort/knee_soft_limit`），增加前倾约束 `pitch/pitch_rate`，并在车�
 ## 2. 文件
 
 ```
-source/agent_world/agent_world/assets/wheel_leg_V2.py            # ArticulationCfg（指向已构建 USD）
-source/agent_tasks/agent_tasks/direct/wheel_leg_v2/
+src/agent_world/assets/wheel_leg_V2.py            # ArticulationCfg（指向已构建 USD）
+src/agent_tasks/direct/wheel_leg_v2/
   __init__.py                                                    # gym 注册
   env_cfg.py                                                     # DirectRLEnvCfg + stage 子类
   env.py                                                         # WheelLegV2Env（闭链适配）
@@ -66,7 +66,7 @@ source/agent_tasks/agent_tasks/direct/wheel_leg_v2/
 conda activate isaaclab
 
 # 0) 资产闭链回归（应通过，worst closure error ~0.7mm）
-python scripts/tools/validate_wheel_leg_v2_closed.py --headless --device cuda:0
+python tools/validate_wheel_leg_v2_closed.py --headless --device cuda:0
 
 # 1) 端到端 smoke（少环境少迭代）
 python scripts/rsl_rl/train.py --task=Robotics-Wheel-Leg-V2-Stand-v0 \
@@ -232,7 +232,7 @@ python scripts/rsl_rl/diagnose_wheel_leg_v2.py \
 - 零位质心在接地点**前方 13 mm** ⇒ 静力前倾失稳，必须靠轮子主动配平（配平力矩 ≈1.8 N·m）。
 - 轮半径 0.06 m 正确（`L_link3.STL` 直径实测 0.120 m）。整车 13.886 kg（base 11.62 kg）。
 
-### 10.3 probe 实测（`scripts/tools/wheel_leg_v2_wheel_probe.py`）
+### 10.3 probe 实测（`tools/wheel_leg_v2_wheel_probe.py`）
 无策略直接驱动轮关节速度目标（`action[2]/action[5]`，腿维置 0 保持名义位形）。
 **修复前**（无气簧，自由 base，`wheel_velocity_scale=10`）：
 
@@ -274,7 +274,7 @@ python scripts/rsl_rl/diagnose_wheel_leg_v2.py \
 开环 probe 不能用来判断气簧好坏。
 
 ### 10.7 诊断工具
-- `scripts/tools/wheel_leg_v2_wheel_probe.py`：无策略轮系 probe。
+- `tools/wheel_leg_v2_wheel_probe.py`：无策略轮系 probe。
   `--fix-base`（隔离伺服/力矩）、`--no-gas-spring`、`--wheel-kd`、`--settle/--measure`；
   输出 `logs/debug/wheel_leg_v2_wheel_probe_*.json`（含每 10 步 trace：vx/wz/ω_y）。
 - 新增训练日志：`Orientation/{pitch,roll}_deg`、`Orientation/pitch_rate_rad_s`、

@@ -23,7 +23,7 @@
 ```bash
 LD_LIBRARY_PATH=/home/noir/.local/lib \
   /home/noir/miniconda3/envs/isaaclab/bin/python \
-  scripts/tools/deformable_precision_pipeline.py \
+  tools/deformable_precision_pipeline.py \
   --checkpoint logs/rsl_rl/deformable_minangle_residual_v2/2026-10-03_00-00-56/model_9999.pt \
   --output-dir logs/debug/deformable_precision_20261003 \
   --run
@@ -53,7 +53,7 @@ LD_LIBRARY_PATH=/home/noir/.local/lib \
 ```bash
 LD_LIBRARY_PATH=/home/noir/.local/lib \
   /home/noir/miniconda3/envs/isaaclab/bin/python -B \
-  scripts/tools/deformable_suspension_eval.py \
+  tools/deformable_suspension_eval.py \
   --task Robotics-Deformable-Suspension-BestEffort-Foundation-v2 \
   --checkpoint logs/rsl_rl/deformable_minangle_residual_v2/2026-10-03_00-00-56/model_9999.pt \
   --num_envs 16 --steps 600 --policy-only --grade-deg 20 --device cuda:0
@@ -139,7 +139,7 @@ play 禁用本机 IsaacLab 的 STOP 后无限渲染回调，退出超过 8 秒�
 
 ```bash
 /home/noir/miniconda3/envs/isaaclab/bin/python \
-  scripts/tools/deformable_feasibility.py --best-effort --slopes 10 17 20
+  tools/deformable_feasibility.py --best-effort --slopes 10 17 20
 ```
 
 几何扫描覆盖每个坡度的 24 个朝向，要求四轮球面同时接触、腿关节位于

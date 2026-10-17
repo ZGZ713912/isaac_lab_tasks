@@ -31,7 +31,7 @@ print(max(math.hypot(p[0],p[1]) for p in P), max(p[2] for p in P)-min(p[2] for p
 EOF
 
 # USD 侧（需要 pxr；系统中 /usr/bin/usdcat 缺 libboost_iostreams.so.1.92.0）
-# scripts/tools/inspect_usd — 或用带 pxr 的 python 直接读：
+# tools/inspect_usd — 或用带 pxr 的 python 直接读：
 #   /Wheel_leg_V1/L_link3/collisions  ->  Xform, instanceable, prepend references </colliders/L_link3>
 #     L_link3/node_STL_BINARY_  apiSchemas=[PhysicsCollisionAPI, PhysicsMeshCollisionAPI]
 #                               physics:approximation = convexHull
@@ -52,19 +52,19 @@ EOF
 
 | 文件 | 作用 |
 | --- | --- |
-| `scripts/tools/prepare_wheel_leg_v1_urdf.py --wheel-collision cylinder` | 从 SolidWorks 原始 URDF 生成 `urdf/urdf_V4.0_cylwheel.urdf`：轮子 `<collision>` 由 mesh 换成 `<cylinder radius="0.0600000032" length="0.0250000004"/>`，视觉/惯性/关节**一个字节都没动**（diff 只有两处 `<collision>`） |
-| `scripts/tools/convert_wheel_leg_urdf_cylinder.sh` | 把该 URDF 转成独立资产目录 `usd_files/Wheel_leg_V1_cylwheel/`，并校验物理层里出现解析 `Cylinder` |
+| `tools/prepare_wheel_leg_v1_urdf.py --wheel-collision cylinder` | 从 SolidWorks 原始 URDF 生成 `urdf/urdf_V4.0_cylwheel.urdf`：轮子 `<collision>` 由 mesh 换成 `<cylinder radius="0.0600000032" length="0.0250000004"/>`，视觉/惯性/关节**一个字节都没动**（diff 只有两处 `<collision>`） |
+| `tools/convert_wheel_leg_urdf_cylinder.sh` | 把该 URDF 转成独立资产目录 `usd_files/Wheel_leg_V1_cylwheel/`，并校验物理层里出现解析 `Cylinder` |
 
 命令：
 
 ```bash
 # 1) 生成 cylinder 变体 URDF（已执行，产物已落盘）
-python scripts/tools/prepare_wheel_leg_v1_urdf.py --wheel-collision cylinder
+python tools/prepare_wheel_leg_v1_urdf.py --wheel-collision cylinder
 
 # 2) 转 USD（需要 GPU + isaaclab，产物目录独立，不覆盖现有资产）
-bash scripts/tools/convert_wheel_leg_urdf_cylinder.sh
+bash tools/convert_wheel_leg_urdf_cylinder.sh
 
-# 3) A/B：把 source/agent_world/agent_world/assets/wheel_leg_V1.py 的 usd_path
+# 3) A/B：把 src/agent_world/assets/wheel_leg_V1.py 的 usd_path
 #    指向 Wheel_leg_V1_cylwheel/Wheel_leg_V1_cylwheel.usd，跑同一个任务/同一超参，
 #    对比 episode length、轮子接触力（play_wheel_material_debug）、轨迹抖动。
 ```

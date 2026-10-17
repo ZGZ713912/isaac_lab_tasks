@@ -79,7 +79,7 @@ normal chassis clearance give 24/24 feasible directions at 0, 2 and 5 degrees,
 16/24 at 8 degrees, 3/24 at 10 degrees and 0/24 at 17 degrees. These are not
 dynamic performance guarantees; V2 starts at 0-5 degrees for this reason.
 
-`scripts/tools/deformable_suspension_eval.py` evaluates the
+`tools/deformable_suspension_eval.py` evaluates the
 `minangle_residual_v2` action contract, without training, exporting or writing
 reports. The default registered task is
 `Robotics-Deformable-Suspension-Rough-History-Transformer-v2`.
@@ -92,8 +92,8 @@ Run in the repaired `isaaclab` conda environment, from the repository root.
 Do not launch alongside another GPU simulation.
 
 ```bash
-conda run --no-capture-output -n isaaclab python -B scripts/tools/deformable_suspension_eval.py --checkpoint logs/rsl_rl/deformable_minangle_residual_v2/RUN/model_9999.pt --num_envs 32 --steps 600 --seed 1234 --device cuda:0 --strict
-conda run --no-capture-output -n isaaclab python -B scripts/tools/deformable_suspension_eval.py --num_envs 32 --steps 600 --seed 1234 --history 8 --device cuda:0
+conda run --no-capture-output -n isaaclab python -B tools/deformable_suspension_eval.py --checkpoint logs/rsl_rl/deformable_minangle_residual_v2/RUN/model_9999.pt --num_envs 32 --steps 600 --seed 1234 --device cuda:0 --strict
+conda run --no-capture-output -n isaaclab python -B tools/deformable_suspension_eval.py --num_envs 32 --steps 600 --seed 1234 --history 8 --device cuda:0
 ```
 
 Use `--task TASK` to select an available compatible task. `--scenarios static`
@@ -192,16 +192,16 @@ even when `passed` is false. No GPU evaluation results are claimed by this docum
 
 ## Minimal Ablation
 
-`scripts/tools/deformable_ablation.py` defaults to rendering commands only:
+`tools/deformable_ablation.py` defaults to rendering commands only:
 MLP and Transformer, H1/H4/H8, with shared seeds `42 123 2026` (18 jobs).
 No simulator is imported by this entrypoint. Explicit `--run` launches the
 jobs sequentially with the current `sys.executable`, from the repository root.
 Use the Isaac Lab Python environment when actually launching training.
 
 ```bash
-python scripts/tools/deformable_ablation.py --dry-run --evaluate
-python scripts/tools/deformable_ablation.py --run --iterations 100 --num-envs 128 --models mlp transformer --seeds 42 123 2026 --timeout 3600 --evaluate
-python -m pytest scripts/tools/test_deformable_ablation.py -q
+python tools/deformable_ablation.py --dry-run --evaluate
+python tools/deformable_ablation.py --run --iterations 100 --num-envs 128 --models mlp transformer --seeds 42 123 2026 --timeout 3600 --evaluate
+python -m pytest tools/test_deformable_ablation.py -q
 ```
 
 Default training budget is 100 iterations and 128 environments; `--num-envs`

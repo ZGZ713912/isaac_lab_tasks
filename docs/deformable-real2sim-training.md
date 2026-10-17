@@ -729,7 +729,7 @@ HUD 接触取动态法向力并使用同一接触阈值，速度采用 root-link
 
 ```bash
 checkpoint=/absolute/path/to/run/model_N.pt
-/home/noir/miniconda3/envs/isaaclab/bin/python scripts/tools/deformable_real2sim_benchmark.py \
+/home/noir/miniconda3/envs/isaaclab/bin/python tools/deformable_real2sim_benchmark.py \
   --checkpoint "$checkpoint" --output-dir outputs/a_new_benchmark --run
 ```
 
