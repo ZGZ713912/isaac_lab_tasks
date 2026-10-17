@@ -1,0 +1,11 @@
+# Install CPU PyTorch separately before these dependencies.
+pytest>=8
+numpy>=1.26.0
+PyYAML
+matplotlib
+tensorboard
+scipy
+trimesh
+onnx
+onnxruntime
+rsl-rl-lib==3.0.1

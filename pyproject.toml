@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wheeled-legged-rl"
+version = "0.1.0"
+description = "Isaac Lab tasks, robot assets and RL algorithms for wheeled-legged robots"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+license = {file = "LICENSE"}
+authors = [{name = "SCUTRobotLab"}]
+# Isaac Sim, Isaac Lab, PyTorch and RSL-RL are supplied by the simulator environment.
+# Installing this checkout must not replace its CUDA or simulator packages.
+
+[project.optional-dependencies]
+train = [
+    "numpy>=1.26.0", "psutil", "tensorboard", "pytorch-kinematics",
+    "pybullet", "gymnasium", "tensordict", "PyYAML", "matplotlib",
+    "omegaconf", "prettytable", "onnx", "onnxruntime", "onnxscript", "scipy", "trimesh",
+]
+dev = ["pytest>=8", "build"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"" = "src"
+scripts = "scripts"
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["agent_world*", "agent_tasks*", "agent_rl*", "scripts*"]
+exclude = ["scripts.setup*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+agent_tasks = ["**/*.json", "**/*.yaml", "**/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", ".", "tools", "scripts/rsl_rl"]

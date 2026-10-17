@@ -65,7 +65,7 @@ Joint 关闭旧接触、轮载均衡、二次倾角、单轴水平、线性倾�
 ```bash
 cd /home/noir/Documents/workspace/example/wheeled-legged_RL
 /home/noir/miniconda3/envs/isaaclab/bin/python -B -u \
-  /home/noir/Documents/workspace/example/wheeled-legged_RL/scripts/tools/deformable_leveling_short_train.py \
+  /home/noir/Documents/workspace/example/wheeled-legged_RL/tools/deformable_leveling_short_train.py \
   --stage joint --iterations 500 --num-envs 512 --seed 47 --noise-std 0.015 \
   --checkpoint /home/noir/Documents/workspace/example/wheeled-legged_RL/logs/rsl_rl/deformable_real2sim_support_leveling_mixed_v3/2026-10-08_06-03-36_support_leveling_mixed_short_20261008_060329_910497/model_2499.pt \
   --run

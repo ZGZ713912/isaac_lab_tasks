@@ -56,7 +56,7 @@ def _build_actor(state_dict: dict) -> tuple[nn.Module, int, int]:
     """从 ``actor.*`` 权重重建 rsl_rl ActorCritic 的 actor MLP（Linear+ELU）。"""
     if "actor.router.0.weight" in state_dict:
         import importlib.util
-        path = os.path.join(_REPO_ROOT, "source/agent_rl/agent_rl/rsl_rl/modules/sensor_routed_mlp.py")
+        path = os.path.join(_REPO_ROOT, "src/agent_rl/rsl_rl/modules/sensor_routed_mlp.py")
         spec = importlib.util.spec_from_file_location("sensor_routed_export", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -111,10 +111,9 @@ def _is_transformer(state_dict: dict) -> bool:
 
 def _build_transformer_actor(state_dict: dict, checkpoint_path: str) -> tuple[nn.Module, int, int, int]:
     """重建 ActorCriticTransformer 的 actor；超参从同 run 的 params/agent.yaml 读取。"""
-    for pkg in ("agent_rl",):
-        pkg_root = os.path.join(_REPO_ROOT, "source", pkg)
-        if pkg_root not in sys.path:
-            sys.path.insert(0, pkg_root)
+    pkg_root = os.path.join(_REPO_ROOT, "src")
+    if pkg_root not in sys.path:
+        sys.path.insert(0, pkg_root)
     import yaml
 
     from agent_rl.rsl_rl.modules.actor_critic_transformer import (

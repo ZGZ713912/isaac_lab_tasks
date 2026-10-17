@@ -3,10 +3,10 @@
 - 日期：2026-09-11
 - 状态：done（当前代码快照说明；行号会随代码变动漂移，以函数名/类名为准）
 - 相关代码：
-  - 资产：`source/agent_world/agent_world/assets/wheel_leg_V1.py`
-  - 任务包：`source/agent_tasks/agent_tasks/direct/wheel_leg_v1/`
-  - 地形库：`source/agent_tasks/agent_tasks/manager/mdp/isaaclab/terrains.py`
-  - 算法：`source/agent_rl/agent_rl/rsl_rl/`（PPO / DreamWaQ / HIM / NP3O）
+  - 资产：`src/agent_world/assets/wheel_leg_V1.py`
+  - 任务包：`src/agent_tasks/direct/wheel_leg_v1/`
+  - 地形库：`src/agent_tasks/manager/mdp/isaaclab/terrains.py`
+  - 算法：`src/agent_rl/rsl_rl/`（PPO / DreamWaQ / HIM / NP3O）
   - 脚本：`scripts/rsl_rl/{train,play}.py`
 
 ---
@@ -59,7 +59,7 @@
 - 左右腿关节轴镜像，同号动作 = 一伸一缩 → 落地后两腿不对称。
 
 **修正**（不动任何几何尺寸，只改坐标系/正方向）：
-`scripts/tools/prepare_wheel_leg_v1_urdf.py` 以 SolidWorks 原始导出为输入，
+`tools/prepare_wheel_leg_v1_urdf.py` 以 SolidWorks 原始导出为输入，
 做下面两件事后写出 `urdf/urdf_V4.0.urdf`。
 坐标轴不对的原始 URDF（`urdf_V4.0_solidworks.urdf`）与对应的旧 USD 已从仓库删除，
 避免误用；如需重新规范化，可从 git 历史 `21f2a31` 取回原始文件后再运行脚本：
@@ -81,8 +81,8 @@
 **转换命令**（改完 URDF 必须重转 USD）：
 
 ```bash
-python scripts/tools/prepare_wheel_leg_v1_urdf.py
-bash scripts/tools/convert_wheel_leg_urdf.sh
+python tools/prepare_wheel_leg_v1_urdf.py
+bash tools/convert_wheel_leg_urdf.sh
 ```
 
 **随之调整的 Flat 训练配置**（`wheel_leg_task/env_cfg.py:WheelLegV1FlatEnvCfg`）：

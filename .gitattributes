@@ -1,3 +1,7 @@
 # 二进制文档：让 git diff 只输出 "Binary files differ"，
 # 避免 rsl_rl 的 store_code_state 因非 UTF-8 字节抛 UnicodeEncodeError 中断训练。
 *.pdf binary
+
+# Preserve the existing LFS contract after moving robot assets out of source.
+assets/robots/deformable_V2/configuration/deformable_V2_base.usd filter=lfs diff=lfs merge=lfs -text
+assets/robots/deformable_V2/meshes/base_link.STL filter=lfs diff=lfs merge=lfs -text

@@ -85,10 +85,10 @@ CPU 单车，物理步长 1 ms，策略周期 5 ms（200 Hz 仿真时间），
 
 ```bash
 /home/noir/miniconda3/envs/isaaclab/bin/python -B -m pytest -q -p no:cacheprovider \
-  scripts/tools/test_deformable_field_play.py \
-  scripts/tools/test_deformable_third_person_input.py \
-  scripts/tools/test_deformable_play_performance.py \
-  scripts/tools/test_play_lifecycle.py
+  tools/test_deformable_field_play.py \
+  tools/test_deformable_third_person_input.py \
+  tools/test_deformable_play_performance.py \
+  tools/test_play_lifecycle.py
 ```
 
 在上述 play 命令后追加以下参数，执行 2,400 步有界 GUI 回放：

@@ -348,7 +348,7 @@ RMS 变化 2.2033e-4、最大 0.00203，已经影响临界启动接触。
 2.4626 m/s。原 Transformer 也有 0.4778/2.4671 m/s 的陡坡驻车误差；
 不能继承基线的溜坡并把它称为可用。原始报告和轨迹全部保留。
 
-新增 `scripts/tools/deformable_mlp_motion_audit.py` 根据完整真实轨迹检查
+新增 `tools/deformable_mlp_motion_audit.py` 根据完整真实轨迹检查
 驻车、平移、旋转与边界失败。工程目标为驻车速度 P95 ≤0.10 m/s、
 稳态平移误差 P95 ≤0.15 m/s、偏航误差 P95 ≤0.10 rad/s；从 checkpoint
 实际保存配置读取线速度 2 m/s²、偏航 4 rad/s² 的指令限幅，先留出所需
@@ -494,7 +494,7 @@ PPO 和独立物理复验，旧第十八版转换原型的范围保持不变。
 复验开始；见 `v17_long_01_benchmark_source_provenance.json`。控制
 表达式一致性和实际运行证据分别记录，不能混作同一类证明。
 
-`scripts/tools/deformable_tire_wrench_audit.py` 使用这些同相位实测量，
+`tools/deformable_tire_wrench_audit.py` 使用这些同相位实测量，
 按实际轮轴力臂计算电机牵引限额，并同时约束零侧向力和零偏航力矩。
 对偶求解已与独立 SciPy 原始线性规划比较，通过随机、退化、零轮载
 及倾斜轮轴等检查。它表示实测轮载下的准静态轮胎必要条件，尚不能
@@ -520,7 +520,7 @@ CAD 质量/质心、相同 mimic 关系、四轮接触、六维力/力矩平衡�
 到达、全部连杆碰撞间隙、鲁棒性或实车轴端力矩。没有使用固定验收
 状态拟合策略，也没有因此降低验收要求。
 
-`scripts/tools/deformable_mlp_specialist_trial.py` 已准备下一次独立 20°
+`tools/deformable_mlp_specialist_trial.py` 已准备下一次独立 20°
 短训：来源必须按精确字节通过完整复验，结构复制不被标记为新的
 物理通过；新训练的专家 3 必须实际更新、其他专家及路由保持冻结。
 默认 100 轮、128 环境、种子 53，学习率 5e-6、在线保持权重 1/
@@ -580,7 +580,7 @@ Transformer 一致的 0.01 正交增益和零偏置，减小冷启动时的随�
 
 ## 训练方法
 
-`scripts/tools/deformable_mlp_distill.py collect` 在 Isaac Sim 中采集已有
+`tools/deformable_mlp_distill.py collect` 在 Isaac Sim 中采集已有
 `model_2499.pt` Transformer 的真实闭环行为。训练种子为 2401，验收种子
 1234 和 4321 在入口处保留。Actor 标签来自教师的传感器观测，Critic 的
 特权量只用于价值训练。每个环境的整条轨迹属于一个划分，避免相邻帧随机
@@ -634,7 +634,7 @@ Transformer 一致的 0.01 正交增益和零偏置，减小冷启动时的随�
 | 17° | 6.0608° | 5.8358° |
 | 20° | 9.0608° | 8.8358° |
 
-工具为 `scripts/tools/deformable_contact_limit.py`，报告为
+工具为 `tools/deformable_contact_limit.py`，报告为
 `continuous_contact_limit_20261010.json` 和
 `continuous_contact_limit_gap1mm_20261010.json`；记录实际几何源码哈希。
 5 个新增测试检查端点四轮见证、独立精确高度区间在上限之外的空交集、

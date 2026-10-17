@@ -307,7 +307,7 @@ P99 0.130485 ms、最大 0.152364 ms。原始导出没有 RMCS metadata，
 
 ```sh
 ./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python -B -u \
-  scripts/tools/run_deformable_guarded_experiment.py \
+  tools/run_deformable_guarded_experiment.py \
   --checkpoint logs/rsl_rl/deformable_real2sim_recovered_routed_mlp5_v3/2026-10-10_20-32-54_guarded_motion_specialized_v17_20261010_long_01/model_999.pt \
   --probe-checkpoint logs/rsl_rl/deformable_guarded_mlp5_v4/2026-10-13_03-36-43_iteration_03_short/model_99.pt \
   --output-base outputs/deformable_guarded_200hz_20261012/startup_safe_experiments \

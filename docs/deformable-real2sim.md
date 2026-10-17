@@ -51,11 +51,11 @@ CSV 采样约 5 ms；CAN 指令周期约 **2.000 ms**，反馈周期约 **1.999 
 重现审计（仓库根目录）：
 
 ```bash
-/home/noir/miniconda3/envs/isaaclab/bin/python scripts/tools/deformable_real2sim_identify.py \
+/home/noir/miniconda3/envs/isaaclab/bin/python tools/deformable_real2sim_identify.py \
   --csv /home/noir/Documents/workspace/deformable扫频数据慢速/*.csv \
   --csv /home/noir/Documents/workspace/deformable扫频数据慢速加高速悬空/*.csv \
   --csv /home/noir/Documents/workspace/deformable阶越/*.csv \
-  --output source/agent_tasks/agent_tasks/direct/deformable_suspension/configs/deformable_real2sim.json \
+  --output src/agent_tasks/direct/deformable_suspension/configs/deformable_real2sim.json \
   --report outputs/deformable_real2sim_20261005/audit.json
 ```
 

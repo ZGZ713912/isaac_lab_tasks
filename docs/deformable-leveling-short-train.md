@@ -10,7 +10,7 @@
 ## 启动
 
 ```bash
-python /home/noir/Documents/workspace/example/wheeled-legged_RL/scripts/tools/deformable_leveling_short_train.py --stage five --run
+python /home/noir/Documents/workspace/example/wheeled-legged_RL/tools/deformable_leveling_short_train.py --stage five --run
 ```
 
 入口脚本使用本机 IsaacLab Python 和 `run_gui.sh`，无需先切换 conda 环境。

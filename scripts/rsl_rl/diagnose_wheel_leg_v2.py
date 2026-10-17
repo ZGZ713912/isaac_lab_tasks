@@ -23,10 +23,9 @@ import sys
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-for _pkg in ("agent_world", "agent_tasks", "agent_rl"):
-    _pkg_root = os.path.join(_REPO_ROOT, "source", _pkg)
-    if _pkg_root not in sys.path:
-        sys.path.insert(0, _pkg_root)
+_src_root = os.path.join(_REPO_ROOT, "src")
+if _src_root not in sys.path:
+    sys.path.insert(0, _src_root)
 _RSL_RL_SCRIPTS = os.path.join(_REPO_ROOT, "scripts", "rsl_rl")
 if _RSL_RL_SCRIPTS not in sys.path:
     sys.path.insert(0, _RSL_RL_SCRIPTS)
