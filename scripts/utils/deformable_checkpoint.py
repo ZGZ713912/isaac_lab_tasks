@@ -21,9 +21,10 @@ def configure_recovery_precision(policy_cfg, algorithm_cfg):
                 purpose="Match independent Isaac Sim evaluation and native ONNX inference")
 
 
-def load_deformable_agent_config(checkpoint, device):
+def load_deformable_agent_config(checkpoint, device, *, params_dir=None):
     """Use the saved policy architecture rather than a play task's defaults."""
-    path = Path(checkpoint).resolve().parent / "params" / "agent.yaml"
+    params = Path(params_dir) if params_dir is not None else Path(checkpoint).resolve().parent / "params"
+    path = params / "agent.yaml"
     if not path.is_file():
         raise ValueError(f"Keep params/agent.yaml with the deformable checkpoint: {path}")
     saved = yaml.safe_load(path.read_text())
@@ -52,9 +53,9 @@ def snapshot_real2sim_model(cfg, log_dir):
     cfg.real2sim_model_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
 
 
-def validate_deformable_policy(checkpoint, policy_cfg):
+def validate_deformable_policy(checkpoint, policy_cfg, *, params_dir=None):
     """MLP fine-tunes require the same architecture, including history width."""
-    saved = load_deformable_agent_config(checkpoint, "cpu")["policy"]
+    saved = load_deformable_agent_config(checkpoint, "cpu", params_dir=params_dir)["policy"]
     mlp_classes = ("ActorCriticSuspensionMLP", "ActorCriticSuspensionRoutedMLP", "ActorCriticSuspensionDefaultSplitMLP")
     if not any(name in mlp_classes for name in (saved["class_name"], policy_cfg["class_name"])):
         return  # Existing Transformer geometry-input expansion remains supported.
@@ -75,12 +76,13 @@ def validate_deformable_policy(checkpoint, policy_cfg):
             )
 
 
-def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None, *, allow_runtime_guard_transition=False):
+def validate_deformable_checkpoint(cfg, checkpoint, policy_cfg=None, *, allow_runtime_guard_transition=False,
+                                   params_dir=None):
     if not hasattr(cfg, "action_contract_version"):
         return  # Other robot families have their own contracts.
     if policy_cfg is not None:
-        validate_deformable_policy(checkpoint, policy_cfg)
-    params = Path(checkpoint).resolve().parent / "params"
+        validate_deformable_policy(checkpoint, policy_cfg, params_dir=params_dir)
+    params = Path(params_dir) if params_dir is not None else Path(checkpoint).resolve().parent / "params"
     env_path = params / "env.yaml"
     if not env_path.is_file():
         raise ValueError(f"Keep params/env.yaml with the deformable checkpoint: {env_path}")

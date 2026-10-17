@@ -46,6 +46,41 @@ def test_wrap_crossing_does_not_command_a_full_rotation():
     assert 0. < state.command(math.radians(179.))[2] < .2
 
 
+@pytest.mark.parametrize("name,sign", [("Q", 1.), ("E", -1.)])
+def test_keyboard_heading_hold_release_and_wrap(name, sign):
+    state = controls.ThirdPersonState(target_yaw=sign*math.radians(179.))
+    state.key(name, True, state.target_yaw)
+    for _ in range(100):
+        state.key(name, True, 0.)  # OS key repeat cannot change the turn rate.
+        state.advance(.005)
+    assert state.target_yaw == pytest.approx(-sign*math.radians(151.))
+    assert sign*state.command(sign*math.radians(179.))[2] > 0.
+    state.key(name, False, 0.)
+    target = state.target_yaw
+    state.advance(10.)
+    assert state.target_yaw == target
+    assert state.command(target)[2] == 0.
+
+
+def test_keyboard_heading_rate_is_step_independent_and_opposing_keys_cancel():
+    headings = []
+    for dt in (.005, .02):
+        state = controls.ThirdPersonState(wz_max=.5)
+        state.key("Q", True, 0.)
+        for _ in range(round(1./dt)):
+            state.advance(dt)
+        headings.append(state.target_yaw)
+        state.key("E", True, 0.)
+        state.advance(1.)
+        assert state.target_yaw == pytest.approx(headings[-1])
+        state.key("W", True, 0.)
+        assert state.command(state.target_yaw) == (.8, 0., 0.)
+        state.stop(.1, suspend=True)
+        state.advance(1.)
+        assert state.target_yaw == pytest.approx(.1) and state.command(0.) == (0., 0., 0.)
+    assert headings == pytest.approx([.5, .5])
+
+
 def test_keys_cancel_and_release_preserves_other_held_keys():
     state = controls.ThirdPersonState()
     state.key("W", True, 0.)
@@ -106,6 +141,21 @@ def test_static_surface_height_normal_no_hit_and_tick_cache():
     ground.support(points, tick=2)
     assert ground.query_count == 2
     assert ground.segment((0.,0.,1.), (0.,0.,-1.), 2.) == pytest.approx(1.,abs=1.e-6)
+
+
+@pytest.mark.parametrize("wheel_count", [2, 4])
+def test_spawn_uses_actual_negative_ground_and_all_wheel_support(wheel_count):
+    ground = surface.FieldSurface([[-3.,-3.,-1.], [3.,-3.,-1.], [3.,3.,-1.], [-3.,3.,-1.]],
+                                  [[0,1,2],[0,2,3]], records=[dict(upward_area_m2=36.,
+                                  upward_bounds=[[-3.,-3.,-1.],[3.,3.,-1.]])])
+    wheels = np.array([[0.,-.2,-.15],[0.,.2,-.15],[.25,-.2,-.15],[.25,.2,-.15]])[:wheel_count]
+    spawn = surface.select_field_spawn(ground, wheels, .06, requested=(0.,0.), yaw_deg=90.)
+    assert spawn["position"] == pytest.approx([0.,0.,-.7898], abs=1.e-6)
+    assert spawn["wheel_height_spread_m"] < 1.e-6
+    assert np.array(spawn["rotation"])[:,0] == pytest.approx([0.,1.,0.],abs=1.e-6)
+    # Root is over the edge but one wheel misses: never accept partial support.
+    with pytest.raises(ValueError, match="flat spawn"):
+        surface.select_field_spawn(ground, wheels, .06, requested=(0.,2.9), yaw_deg=0.)
 
 
 def test_asset_contract_and_missing_external_entry(tmp_path):

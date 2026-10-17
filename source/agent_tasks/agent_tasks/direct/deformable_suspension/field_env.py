@@ -1,42 +1,18 @@
 """Single-vehicle play on a framework-owned RMUC field, with the original tire law."""
 
-import math
 import numpy as np
 import torch
 
 from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 from isaaclab.assets import Articulation
 from isaaclab.sensors import ContactSensor
-from isaaclab.terrains import TerrainImporter
 from isaaclab.utils.math import quat_from_matrix
 import isaaclab.sim as sim_utils
+from agent_world.terrains.field_importer import FieldTerrainImporter
 
 from . import cfg_utils as du
 from .dynamic_env import DeformableDynamicEnv
-from .field_surface import FieldSurface, collision_coverage, resolve_field_asset
-
-
-class FieldTerrainImporter(TerrainImporter):
-    def import_usd(self, name, usd_path):
-        self.field_path = self.cfg.prim_path + "/" + name
-        stage = sim_utils.get_current_stage()
-        if UsdGeom.GetStageUpAxis(stage) != "Z" or not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.):
-            raise ValueError("Field destination stage must use metres and Z-up")
-        with Usd.EditContext(stage, Usd.EditTarget(stage.GetSessionLayer())):
-            field = UsdGeom.Xform.Define(stage, self.field_path).GetPrim()
-            if not field.GetReferences().AddReference(usd_path):
-                raise RuntimeError(f"Could not reference field: {usd_path}")
-            for prim in list(Usd.PrimRange(field)):
-                if prim.IsA(UsdPhysics.Scene):
-                    prim.SetActive(False)
-            # Keep the trained tire law as sole owner of wheel tangential force.
-            # Inherit the original terrain's multiply combine mode so a zero-
-            # friction wheel stays zero on these referenced USD colliders too.
-            self.material_path = self.cfg.prim_path + "/PhysicsMaterial"
-            material = self.cfg.physics_material.func(self.material_path, self.cfg.physics_material)
-            UsdShade.MaterialBindingAPI.Apply(field).Bind(UsdShade.Material(material),
-                bindingStrength=UsdShade.Tokens.strongerThanDescendants, materialPurpose="physics")
-        self.terrain_prim_paths.append(self.field_path)
+from .field_surface import FieldSurface, collision_coverage, resolve_field_asset, select_field_spawn
 
 
 class DeformableFieldEnv(DeformableDynamicEnv):
@@ -126,63 +102,12 @@ class DeformableFieldEnv(DeformableDynamicEnv):
         return position[:, 2] - self._ground_height(position[:, None])[:, 0]
 
     def _select_spawn(self, requested, yaw_deg):
-        floor = max(self.field_surface.records, key=lambda item: item["upward_area_m2"])
-        bounds = np.asarray(floor["upward_bounds"])
-        if requested is None:
-            xy = np.array(np.meshgrid(np.arange(bounds[0, 0]+1., bounds[1, 0]-1., .5),
-                                      np.arange(bounds[0, 1]+1., bounds[1, 1]-1., .5))).reshape(2, -1).T
-            xy = xy[np.argsort(np.linalg.norm(xy - (-10., -3.), axis=1))]
-        else:
-            xy = np.asarray([requested], dtype=float)
         q = torch.full((1, 4), float(self.cfg.q_cmd_choices[0]), device=self.device)
         centers, _ = du.wheel_geometry(q)
-        centers = centers[0].cpu().numpy()
-        yaw = math.radians(yaw_deg)
-        forward = np.array((math.cos(yaw), math.sin(yaw), 0.))
-        high = float(self.field_surface.bounds[1, 2]+1.)
-        for candidate in xy:
-            probe = torch.tensor([[*candidate, high]], dtype=torch.float32, device=self.device)
-            height, normals, valid = self.field_surface.support(probe, tick="spawn")
-            if not bool(valid[0]) or not bounds[0, 2]-.02 <= float(height[0]) <= bounds[1, 2]+.02:
-                continue
-            normal = normals[0].cpu().numpy()
-            if normal[2] < math.cos(math.radians(3.)):
-                continue
-            fwd = forward - normal * np.dot(forward, normal)
-            fwd /= np.linalg.norm(fwd)
-            rotation = np.column_stack((fwd, np.cross(normal, fwd), normal))
-            rotated = centers @ rotation.T
-            probes = np.c_[candidate + rotated[:, :2], np.full(4, high)]
-            h, n, v = self.field_surface.support(torch.tensor(probes, dtype=torch.float32, device=self.device), "spawn")
-            if not bool(v.all()) or bool((n[:, 2] < math.cos(math.radians(3.))).any()):
-                continue
-            z = h.cpu().numpy()-rotated[:, 2]+du.WHEEL_RADIUS/n[:, 2].cpu().numpy()
-            if np.ptp(z) > .002:
-                continue
-            ground_z = float(height[0])
-            position = np.r_[candidate, float(z.max()+.0002)]
-            blocked = False
-            clearance_radius = 2. if requested is None else .7
-            for elevation in (.12, .3):
-                origin = np.r_[candidate, ground_z+elevation]
-                for angle in np.linspace(0., 2*math.pi, 8, endpoint=False):
-                    if self.field_surface.segment(origin, (math.cos(angle), math.sin(angle), 0.), clearance_radius) is not None:
-                        blocked = True
-                        break
-                if blocked:
-                    break
-            if blocked:
-                continue
-            if requested is None:
-                rear = (-math.cos(yaw)*math.cos(math.radians(20.)),
-                        -math.sin(yaw)*math.cos(math.radians(20.)), math.sin(math.radians(20.)))
-                if self.field_surface.segment(position + (0., 0., .12), rear, 3.) is not None:
-                    continue
-            quaternion = quat_from_matrix(torch.tensor(rotation, dtype=torch.float32, device=self.device)).tolist()
-            return dict(position=position.tolist(), quaternion=quaternion, ground_z=ground_z,
-                        origin=[*candidate.tolist(), ground_z], normal=normal.tolist(),
-                        wheel_height_spread_m=float(np.ptp(z)), auto_selected=requested is None)
-        raise ValueError(f"No clear four-wheel flat spawn at {requested!r}; use another --spawn-xy")
+        spawn = select_field_spawn(self.field_surface, centers[0].cpu().numpy(), du.WHEEL_RADIUS, requested, yaw_deg)
+        rotation = torch.tensor(spawn.pop("rotation"), dtype=torch.float32, device=self.device)
+        spawn["quaternion"] = quat_from_matrix(rotation).tolist()
+        return spawn
 
     def _reset_idx(self, env_ids):
         self._field_generation += 1

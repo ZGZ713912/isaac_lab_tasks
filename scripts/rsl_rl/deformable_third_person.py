@@ -23,9 +23,21 @@ class ThirdPersonController:
         self._subscription = None
         self._last_mouse = self._restore_cursor = None
         self._keyboard_active = False
+        self._viewport_frame = None
         viewport = get_active_viewport_window()
         if viewport is not None:
-            viewport.get_frame("deformable-third-person-input")
+            self._viewport_frame = viewport.get_frame("deformable-third-person-input")
+            if live_input:
+                # Kit's UI consumes physical viewport clicks before they reach
+                # carb.input. Bind that UI path as well as the native input path.
+                self._viewport_frame.set_mouse_pressed_fn(
+                    lambda x, y, button, flags, obj=weakref.proxy(self): obj._on_viewport_press(x, y, button, flags))
+                self._viewport_frame.set_mouse_released_fn(
+                    lambda x, y, button, flags, obj=weakref.proxy(self): obj._on_viewport_release(x, y, button, flags))
+                self._viewport_frame.set_mouse_moved_fn(
+                    lambda x, y, *args, obj=weakref.proxy(self): obj._move_mouse((x, y)))
+                self._viewport_frame.set_mouse_wheel_fn(
+                    lambda x, y, flags, obj=weakref.proxy(self): obj.dispatch(dict(type="scroll", amount=y)))
         self._closed = False
         self.camera_samples = []
         self._camera_sample_step = -1000
@@ -36,8 +48,9 @@ class ThirdPersonController:
                 lambda event, obj=weakref.proxy(self): obj._on_input(event), order=0)
 
     def __str__(self):
-        return ("第三人称驾驶：W/S 前后，A/D 横移；按住右键，左右转车头/上下调整视角；"
-                "松开后完成目标朝向；滚轮缩放；L 停止，R 重置，Esc 释放鼠标。请先点击场地视口。")
+        return ("第三人称驾驶：W/S 前后，A/D 横移；按住 Q/E 向左/右转车头，松开后完成最后朝向；"
+                "相机始终跟随实际车头。右键鼠标也可转向/调俯仰；滚轮缩放；"
+                "L 停止，R 重置，Esc 释放输入。请先点击场地视口。")
 
     def yaw(self):
         return quaternion_yaw(self.env.robot.data.root_link_quat_w[0].tolist())
@@ -73,19 +86,50 @@ class ThirdPersonController:
         return (widget.screen_position_x <= x <= widget.screen_position_x + widget.computed_width
                 and widget.screen_position_y <= y <= widget.screen_position_y + widget.computed_height)
 
+    def _viewport_focused(self):
+        viewport = get_active_viewport_window()
+        return viewport is not None and viewport.focused
+
+    def _on_viewport_press(self, x, y, button, flags):
+        if button in (0, 1):
+            self._keyboard_active = True
+        if button == 1 and not self.state.right_held:
+            self.dispatch(dict(type="right", down=True))
+            self.capture_mouse()
+
+    def _on_viewport_release(self, x, y, button, flags):
+        if button == 1 and self.state.right_held:
+            self.dispatch(dict(type="right", down=False))
+            self.release_mouse()
+
+    def _move_mouse(self, position):
+        if not self.state.right_held:
+            return
+        if self._last_mouse is not None:
+            self.dispatch(dict(type="move", dx=position[0]-self._last_mouse[0],
+                               dy=position[1]-self._last_mouse[1]))
+        self._last_mouse = tuple(position)
+
     def _on_input(self, event):
         if not self.app_window.is_focused():
             return True
         if event.deviceType == carb.input.DeviceType.KEYBOARD:
+            if self._keyboard_active and not self._viewport_focused():
+                self._keyboard_active = False
+                self.state.stop(self.yaw(), suspend=True)
+                self.release_mouse()
             raw = event.event
-            name = raw.input.name
+            # CHAR carries text, whereas key press/repeat/release carry a
+            # KeyboardInput enum. Physical typing emits both kinds of event.
+            name = raw.input.upper() if isinstance(raw.input, str) else raw.input.name
             down = raw.type == carb.input.KeyboardEventType.KEY_PRESS
-            if raw.type not in (carb.input.KeyboardEventType.KEY_PRESS, carb.input.KeyboardEventType.KEY_RELEASE):
-                return True
-            if name in ("W", "S", "A", "D", "L", "R", "ESCAPE", "X", "Z", "Q") and self._keyboard_active:
-                self.dispatch(dict(type="key", name=name, down=down))
-                if name in ("ESCAPE", "L", "R") and down:
-                    self.release_mouse()
+            if name in ("W", "S", "A", "D", "Q", "E", "L", "R", "ESCAPE", "X", "Z") and self._keyboard_active:
+                if raw.type in (carb.input.KeyboardEventType.KEY_PRESS, carb.input.KeyboardEventType.KEY_RELEASE):
+                    self.dispatch(dict(type="key", name=name, down=down))
+                    if name in ("ESCAPE", "L", "R") and down:
+                        self.release_mouse()
+                # Consume characters and auto-repeat too, without dispatching a
+                # second command or allowing the viewport's shortcuts to run.
                 return False
         elif event.deviceType == carb.input.DeviceType.MOUSE:
             raw = event.event
@@ -100,11 +144,7 @@ class ThirdPersonController:
                 self.release_mouse()
                 return False
             if et == carb.input.MouseEventType.MOVE and self.state.right_held:
-                position = tuple(raw.pixel_coords)
-                if self._last_mouse is not None:
-                    self.dispatch(dict(type="move", dx=position[0]-self._last_mouse[0],
-                                       dy=position[1]-self._last_mouse[1]))
-                self._last_mouse = position
+                self._move_mouse(raw.pixel_coords)
                 return False
             if et == carb.input.MouseEventType.SCROLL and (self.state.right_held or self._over_viewport(raw.pixel_coords)):
                 self.dispatch(dict(type="scroll", amount=raw.scrollDelta[1]))
@@ -130,7 +170,9 @@ class ThirdPersonController:
             self.state.scroll(event["amount"])
 
     def apply(self):
-        if self.live_input and not self.app_window.is_focused():
+        if self.live_input and (not self.app_window.is_focused()
+                               or (self._keyboard_active and not self._viewport_focused())):
+            self._keyboard_active = False
             self.state.stop(self.yaw(), suspend=True)
             self.release_mouse()
         if self.state.reset_requested:
@@ -141,6 +183,7 @@ class ThirdPersonController:
                 obs, _ = self.wrapper.reset()
             self.reset()
             return obs
+        self.state.advance(self.env.step_dt)
         yaw_rate = float(self.env.robot.data.root_ang_vel_b[0, 2])
         self.env.cmd_buf[:] = self.env.cmd_buf.new_tensor(self.state.command(self.yaw(), yaw_rate))
         return None
@@ -163,7 +206,8 @@ class ThirdPersonController:
     def audit(self):
         return dict(input_counts=self.input_counts, target_yaw=self.state.target_yaw,
                     camera_samples=self.camera_samples, live_input=self.live_input,
-                    behavior="Physical yaw target persists after right-button release")
+                    keyboard_turn_rate_rad_s=min(self.state.keyboard_turn_rate, self.state.wz_max),
+                    behavior="Hold Q/E to change heading; release keeps the final target; camera follows actual yaw")
 
     def close(self):
         if self._closed:
@@ -172,4 +216,9 @@ class ThirdPersonController:
         if self._subscription is not None:
             self.input.unsubscribe_to_input_events(self._subscription)
             self._subscription = None
+        if self._viewport_frame is not None and self.live_input:
+            self._viewport_frame.set_mouse_pressed_fn(None)
+            self._viewport_frame.set_mouse_released_fn(None)
+            self._viewport_frame.set_mouse_moved_fn(None)
+            self._viewport_frame.set_mouse_wheel_fn(None)
         self._closed = True

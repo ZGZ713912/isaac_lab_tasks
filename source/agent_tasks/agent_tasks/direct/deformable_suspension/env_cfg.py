@@ -180,6 +180,7 @@ class DeformableSuspensionBaseEnvCfg(DirectRLEnvCfg):
 
     # ---- 底盘触地两阶段：前 N 轮软惩罚（不死亡），之后死亡 ----
     # 用正确 steps/iteration 后，1000 ≈ 真实 PPO iteration 1000；再留裕量防过早全灭。
+    chassis_ground_termination_enabled: bool = True  # play 关闭触底重置；训练保留原判定
     base_contact_death_after_iterations = 2000
 
 

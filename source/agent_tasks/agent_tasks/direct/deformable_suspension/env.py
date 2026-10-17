@@ -445,7 +445,6 @@ class DeformableSuspensionEnv(DirectRLEnv):
         roll_lim = math.sin(math.radians(self.cfg.termination_roll_deg))
         pitch_lim = math.sin(math.radians(self.cfg.termination_pitch_deg))
         orientation_term = (pgb[:, 0].abs() > pitch_lim) | (pgb[:, 1].abs() > roll_lim)
-        base_low_term = self.base_height < self.cfg.terminate_base_height_low
         tunnel_term = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if self.cfg.terminate_body_top is not None:
             tunnel_term = (self.base_height + du.BODY_TOP_OFFSET) > self.cfg.terminate_body_top
@@ -456,17 +455,18 @@ class DeformableSuspensionEnv(DirectRLEnv):
         )
         # 底盘触地两阶段：前 N 轮软惩罚（不终止），之后死亡
         self._base_contact = base_contact
-        iter_now = self.common_step_counter // max(1, self.cfg.training_progress_steps_per_iteration)
-        base_contact_death = base_contact & (iter_now >= self.cfg.base_contact_death_after_iterations)
-        # 底盘离地保护：低车身时 q 增大很快把底盘压到地面，单独判死。
-        chassis_low_term = self.chassis_clearance < self.cfg.terminate_chassis_clearance
+        grounding_term = torch.zeros_like(base_contact)
+        if self.cfg.chassis_ground_termination_enabled:
+            iter_now = self.common_step_counter // max(1, self.cfg.training_progress_steps_per_iteration)
+            base_contact_death = base_contact & (iter_now >= self.cfg.base_contact_death_after_iterations)
+            base_low_term = self.base_height < self.cfg.terminate_base_height_low
+            chassis_low_term = self.chassis_clearance < self.cfg.terminate_chassis_clearance
+            grounding_term = base_contact_death | base_low_term | chassis_low_term
         terminated = (
-            base_contact_death
+            grounding_term
             | orientation_term
-            | base_low_term
             | tunnel_term
             | nan_term
-            | chassis_low_term
         )
         time_out = self.episode_length_buf >= self.max_episode_length
         # 越界（跑出所属单位格）→ 按 time_out 重置

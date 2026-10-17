@@ -3,6 +3,7 @@
 from pathlib import Path
 import hashlib
 import json
+import math
 
 import numpy as np
 import torch
@@ -54,6 +55,64 @@ def collision_coverage(asset_root, field_path, records):
                 source_body_definitions=len(definitions), source_body_instances=len(source["body_instances"]),
                 enabled_source_body_instances=matched, uncovered_body_instances=len(uncovered),
                 uncovered=uncovered)
+
+
+def select_field_spawn(surface, wheel_centers_b, wheel_radius, requested=None, yaw_deg=0.):
+    """Fit a flat, unobstructed spawn to all wheel contacts in source-world coordinates."""
+    floor = max(surface.records, key=lambda item: item["upward_area_m2"])
+    bounds = np.asarray(floor["upward_bounds"])
+    if requested is None:
+        xy = np.array(np.meshgrid(np.arange(bounds[0, 0]+1., bounds[1, 0]-1., .5),
+                                  np.arange(bounds[0, 1]+1., bounds[1, 1]-1., .5))).reshape(2, -1).T
+        xy = xy[np.argsort(np.linalg.norm(xy - (-10., -3.), axis=1))]
+    else:
+        xy = np.asarray([requested], dtype=float)
+    yaw = math.radians(yaw_deg)
+    forward = np.array((math.cos(yaw), math.sin(yaw), 0.))
+    high = float(surface.bounds[1, 2]+1.)
+    centers = np.asarray(wheel_centers_b)
+    for candidate in xy:
+        probe = torch.tensor([[*candidate, high]], dtype=torch.float32, device=surface.device)
+        height, normals, valid = surface.support(probe, tick="spawn")
+        if not bool(valid[0]) or not bounds[0, 2]-.02 <= float(height[0]) <= bounds[1, 2]+.02:
+            continue
+        normal = normals[0].cpu().numpy()
+        if normal[2] < math.cos(math.radians(3.)):
+            continue
+        fwd = forward - normal * np.dot(forward, normal)
+        fwd /= np.linalg.norm(fwd)
+        rotation = np.column_stack((fwd, np.cross(normal, fwd), normal))
+        rotated = centers @ rotation.T
+        probes = np.c_[candidate + rotated[:, :2], np.full(len(centers), high)]
+        h, n, v = surface.support(torch.tensor(probes, dtype=torch.float32, device=surface.device), "spawn")
+        if not bool(v.all()) or bool((n[:, 2] < math.cos(math.radians(3.))).any()):
+            continue
+        z = h.cpu().numpy()-rotated[:, 2]+wheel_radius/n[:, 2].cpu().numpy()
+        if np.ptp(z) > .002:
+            continue
+        ground_z = float(height[0])
+        position = np.r_[candidate, float(z.max()+.0002)]
+        blocked = False
+        for elevation in (.12, .3):
+            origin = np.r_[candidate, ground_z+elevation]
+            for angle in np.linspace(0., 2*math.pi, 8, endpoint=False):
+                if surface.segment(origin, (math.cos(angle), math.sin(angle), 0.),
+                                   2. if requested is None else .7) is not None:
+                    blocked = True
+                    break
+            if blocked:
+                break
+        if blocked:
+            continue
+        if requested is None:
+            rear = (-math.cos(yaw)*math.cos(math.radians(20.)),
+                    -math.sin(yaw)*math.cos(math.radians(20.)), math.sin(math.radians(20.)))
+            if surface.segment(position + (0., 0., .12), rear, 3.) is not None:
+                continue
+        return dict(position=position.tolist(), rotation=rotation.tolist(), ground_z=ground_z,
+                    origin=[*candidate.tolist(), ground_z], normal=normal.tolist(),
+                    wheel_height_spread_m=float(np.ptp(z)), auto_selected=requested is None)
+    raise ValueError(f"No clear {len(centers)}-wheel flat spawn at {requested!r}; use another --spawn-xy")
 
 
 @wp.kernel

@@ -8,9 +8,10 @@
 
 """Deformable 主动悬挂键盘 play：加载 checkpoint + GUI + 键盘遥控查看训练效果。
 
-键位：
+默认第三人称键位：
     W/S  前进/后退 (vx)      A/D  左移/右移 (vy)
-    X/Z  自旋 +/-(ωz, 增量，松开保持)   Q  查询/切换基准角   L  全部归零
+    Q/E  按住左转/右转车头，松开后完成最后朝向；相机跟随实际车头。L 全部归零。
+    显式选择 follow/fixed 时保留旧键位：X/Z 累加自旋速度，Q 查询/切换基准角。
 
 用法（仓库根目录，需 GUI）：
     python scripts/rsl_rl/play_deformable.py \
@@ -51,7 +52,10 @@ parser.add_argument(
     default="Robotics-Deformable-Suspension-Rough-Keyboard-Play-History-Transformer-v2",
     help="Task name (keyboard play variant).",
 )
-parser.add_argument("--checkpoint", type=str, required=True, help="Path to model_XXXX.pt")
+policy_source = parser.add_mutually_exclusive_group(required=True)
+policy_source.add_argument("--checkpoint", type=str, help="Path to model_XXXX.pt")
+policy_source.add_argument("--onnx", type=str, help="ONNX actor; inference does not load a .pt checkpoint")
+parser.add_argument("--policy-config", type=str, default=None, help="Matching training run or params directory for ONNX")
 parser.add_argument("--num_envs", type=int, default=1, help="Must be 1 for keyboard play.")
 parser.add_argument("--vx_max", type=float, default=None, help="Forward cap: third-person/field 0.8, ordinary play 3.0 m/s.")
 parser.add_argument("--vy_max", type=float, default=None, help="Lateral cap: third-person/field 0.5, ordinary play 1.6 m/s.")
@@ -87,7 +91,7 @@ parser.set_defaults(device="cpu")
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.fixed_camera and args_cli.camera_mode not in (None, "fixed"):
     parser.error("--fixed_camera conflicts with --camera-mode")
-args_cli.camera_mode = args_cli.camera_mode or ("fixed" if args_cli.fixed_camera else "follow")
+args_cli.camera_mode = args_cli.camera_mode or ("fixed" if args_cli.fixed_camera else "third-person")
 args_cli.fixed_camera = args_cli.camera_mode == "fixed"
 for name, ordinary, driving in (("vx_max", 3., .8), ("vy_max", 1.6, .5), ("wz_max", 2*math.pi, 1.5)):
     if getattr(args_cli, name) is None:
@@ -100,8 +104,10 @@ if not math.isfinite(args_cli.render_hz) or args_cli.render_hz <= 0 or args_cli.
     parser.error("render_hz must be positive and finite; cpu_threads must be positive")
 if args_cli.benchmark_motion and not args_cli.max_steps:
     parser.error("--benchmark_motion requires a bounded --max_steps")
-if not os.path.isfile(args_cli.checkpoint):
-    parser.error("checkpoint file does not exist")
+if not os.path.isfile(args_cli.onnx or args_cli.checkpoint):
+    parser.error("policy file does not exist")
+if args_cli.policy_config and not args_cli.onnx:
+    parser.error("--policy-config requires --onnx")
 if args_cli.field_root and args_cli.grade_deg is not None:
     parser.error("--field-root cannot be combined with --grade-deg")
 if not args_cli.field_root and (args_cli.spawn_xy is not None or args_cli.spawn_yaw != 0.):
@@ -241,6 +247,13 @@ def _configure_grade(env_cfg, grade_deg: float | None) -> None:
         env_cfg.termination_pitch_deg = 45.0
 
 
+def _configure_play_termination(env_cfg) -> None:
+    """Allow driving after bottoming out, with manual R reset available."""
+    env_cfg.chassis_ground_termination_enabled = False
+    env_cfg.boundary_reset_enabled = False
+    env_cfg.episode_length_s = 1.0e6
+
+
 def _place_on_grade_ramp(env) -> None:
     """Put the single play environment well inside the uphill part of the ramp."""
     unwrapped = env.unwrapped
@@ -287,8 +300,17 @@ def main() -> None:
     if args_cli.seed is not None:
         env_cfg.seed = args_cli.seed
     _configure_grade(env_cfg, args_cli.grade_deg)
-    resume_path = os.path.abspath(args_cli.checkpoint)
-    validate_deformable_checkpoint(env_cfg, resume_path)
+    resume_path = os.path.abspath(args_cli.onnx or args_cli.checkpoint)
+    params_dir = None
+    onnx_saved = None
+    if args_cli.onnx:
+        from onnx_policy import OnnxPolicy, load_policy_config, resolve_policy_config, validate_saved_fields
+        params_dir = resolve_policy_config(resume_path, args_cli.policy_config)
+        onnx_saved, _ = load_policy_config(params_dir)
+        validate_saved_fields(env_cfg, onnx_saved, (
+            "observation_space", "state_space", "action_space", "decimation", "policy_history_length",
+            "cmd_scale", "q_cmd_scale", "ang_vel_scale", "joint_pos_scale", "joint_vel_scale", "leg_action_scale"))
+    validate_deformable_checkpoint(env_cfg, resume_path, params_dir=params_dir)
     # Render less often without changing 1ms physics, 200Hz policy or history.
     from deformable_play_performance import configure_render_rate
     configure_render_rate(env_cfg, args_cli.render_hz)
@@ -298,8 +320,8 @@ def main() -> None:
     env_cfg.commands_world_frame = False
     env_cfg.spawn_dir_stratify = False
     env_cfg.spawn_dir_jitter = False
-    env_cfg.boundary_reset_enabled = False
-    env_cfg.episode_length_s = 1.0e6
+    _configure_play_termination(env_cfg)
+    print("[INFO] Play: chassis ground contact/clearance/low-height resets disabled; R resets the vehicle.", flush=True)
     if getattr(env_cfg, "runtime_guard_enabled", False):
         env_cfg.guard_training_ground_truth = False
     if args_cli.field_root:
@@ -321,11 +343,18 @@ def main() -> None:
     )
 
     from scripts.utils.deformable_checkpoint import load_deformable_agent_config
-    agent_cfg = load_deformable_agent_config(resume_path, args_cli.device)
+    agent_cfg = load_deformable_agent_config(resume_path, args_cli.device, params_dir=params_dir)
     configure_recovery_precision(agent_cfg["policy"], agent_cfg["algorithm"])
     if hasattr(env_cfg, "policy_history_length"):
+        if args_cli.onnx and agent_cfg["policy"].get("history_length", 1) != env_cfg.policy_history_length:
+            raise ValueError("ONNX saved agent/environment history lengths differ")
         env_cfg.policy_history_length = agent_cfg["policy"].get("history_length", 1)
         env_cfg.observation_space = 32 * env_cfg.policy_history_length
+    if args_cli.onnx:
+        policy = OnnxPolicy(resume_path, observation_dim=env_cfg.observation_space,
+            action_dim=env_cfg.action_space, history_length=env_cfg.policy_history_length, frame_dim=32,
+            saved_env=onnx_saved)
+        print("[policy] " + json.dumps(policy.audit()), flush=True)
 
     # ---- environment --------------------------------------------------------
     if args_cli.field_root:
@@ -382,10 +411,11 @@ def main() -> None:
         print("[INFO] 可视化已开启：红球=接触, 绿杆=世界竖直/红杆=车身z轴, HUD=姿态/高度/接触力")
 
     # ---- runner + checkpoint ------------------------------------------------
-    runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=args_cli.device)
-    print(f"[INFO] Loading checkpoint: {resume_path}")
-    runner.load(resume_path, load_optimizer=False)
-    policy = runner.get_inference_policy(device=env.unwrapped.device)
+    if not args_cli.onnx:
+        runner = OnPolicyRunner(env, agent_cfg, log_dir=None, device=args_cli.device)
+        print(f"[INFO] Loading checkpoint: {resume_path}")
+        runner.load(resume_path, load_optimizer=False)
+        policy = runner.get_inference_policy(device=env.unwrapped.device)
 
     # ---- reset + loop -------------------------------------------------------
     camera_follow.smooth_camera_positions = []
@@ -507,7 +537,13 @@ def main() -> None:
             print("[INFO] 环境重置，键盘命令已归零")
         if args_cli.max_steps and motion_tick >= args_cli.max_steps:
             break
-    extras = {}
+    extras = {"play_termination": {
+        "chassis_ground_termination_enabled": env.unwrapped.cfg.chassis_ground_termination_enabled,
+        "boundary_reset_enabled": env.unwrapped.cfg.boundary_reset_enabled,
+    }}
+    if args_cli.onnx:
+        extras["policy"] = policy.audit()
+        extras["policy"]["config_directory"] = str(params_dir)
     if args_cli.field_root:
         extras["field"] = env.unwrapped.field_audit()
         extras["field"]["physics_probes"] = getattr(env.unwrapped, "field_physics_probes", [])

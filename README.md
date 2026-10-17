@@ -112,6 +112,20 @@ python scripts/rsl_rl/play.py --task=<task_name> --num_envs=1 --checkpoint=<mode
 python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Rough-Play-v0 --num_envs=1 --checkpoint=<model_path> --keyboard
 ```
 
+### Play on the RMUC2026 field
+
+```bash
+./play_rmuc.sh deformable  # Guarded MLP v4，WASD 移动、Q/E 转向，第三人称跟随
+./play_rmuc.sh wheel-leg   # Wheel-leg V4，跟随相机；默认 checkpoint 仅训练站立
+
+# 用同一入口指定 ONNX（也接受 --onnx PATH），不读取 .pt 权重
+./play_rmuc.sh deformable --checkpoint /absolute/path/to/model.onnx
+./play_rmuc.sh wheel-leg --checkpoint /absolute/path/to/model.onnx
+```
+
+地图安装在 `assets/terrains/RMUC2026_V2_gray_fence_revision_03/`，已脱离 Downloads。
+模型选择、操作及回放验证见 [RMUC 场地 play](docs/rmuc-field-play.md)。
+
 ### Record V14 rough speed/reward curves
 
 `WheelbipeV14RoughEnvCfg_v1_Play` 中已启用 `velocity_trace_cfg`，会在 play 时自动选择指定地形中的一个 agent，记录速度、高度和当前配置下的 reward contribution，并导出 CSV 与交互式 HTML。

@@ -20,6 +20,7 @@ class ThirdPersonState:
     vx_max: float = .8
     vy_max: float = .5
     wz_max: float = 1.5
+    keyboard_turn_rate: float = math.radians(60.)
     sensitivity_deg: float = .15
     distance: float = 3.
     pitch_deg: float = 20.
@@ -46,12 +47,20 @@ class ThirdPersonState:
         elif down and name == "R":
             self.stop(yaw)
             self.reset_requested = True
-        elif name in ("W", "S", "A", "D"):
+        elif name in ("W", "S", "A", "D", "Q", "E"):
             if down:
                 self.suspended = False
                 self.pressed.add(name)
             else:
                 self.pressed.discard(name)
+
+    def advance(self, dt):
+        """Held Q/E move the heading target in simulation time, without key-repeat increments."""
+        if not self.suspended:
+            turn = int("Q" in self.pressed) - int("E" in self.pressed)
+            rate = min(self.keyboard_turn_rate, self.wz_max)
+            if turn:
+                self.target_yaw = wrap_angle(self.target_yaw + turn * rate * dt)
 
     def right_button(self, down):
         self.right_held = bool(down)

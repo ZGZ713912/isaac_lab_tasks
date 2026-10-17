@@ -3,10 +3,16 @@
 在仓库根目录运行：
 
 ```bash
+./play_rmuc.sh deformable
+```
+
+统一启动器及 wheel-leg 的地图 play 见 [RMUC 场地 play](rmuc-field-play.md)。完整命令为：
+
+```bash
 ./run_gui.sh /home/noir/miniconda3/envs/isaaclab/bin/python -B scripts/rsl_rl/play_deformable.py \
   --task Robotics-Deformable-Suspension-Guarded-History-MLP-Real2Sim-v4 \
   --checkpoint logs/rsl_rl/deformable_guarded_mlp5_v4/2026-10-14_12-40-18_training_long_05/model_999.pt \
-  --field-root /home/noir/Downloads/RMUC2026_V2_gray_fence_revision_03 \
+  --field-root assets/terrains/RMUC2026_V2_gray_fence_revision_03 \
   --camera-mode third-person --device cpu --num_envs 1 --render_hz 50
 ```
 
@@ -17,11 +23,19 @@
 ## 操作
 
 先点击 Isaac Sim 的场地视口，使其接收驾驶输入。
+驾驶激活后，WASD 和 Q/E 由车辆接管，不再触发编辑器的移动/旋转工具快捷键。
+点击其他面板或输入框会停止驾驶输入；回到场地视口再点击一次即可继续。
+
+如果旧窗口正在反复报 `AttributeError: 'str' object has no attribute 'name'`，
+请退出该 play 窗口后重新运行 `./play_rmuc.sh deformable`。已启动的进程不会自动加载代码修复。
+2026-10-16 的修复分别处理 Kit 的字符串字符事件和视口 UI 点击事件；只有按下/松开事件改变驾驶状态。
 
 | 输入 | 行为 |
 | --- | --- |
 | W / S | 沿实际车头前进 / 后退，默认上限 0.8 m/s |
 | A / D | 相对实际车头左移 / 右移，默认上限 0.5 m/s |
+| 按住 Q / E | 连续向左 / 右调整车头目标朝向，默认 60°/仿真秒；可与 WASD 同时使用 |
+| 松开 Q / E | 停止累加目标，车辆完成最后设定的朝向后保持 |
 | 按住右键，鼠标左右移动 | 设置车头目标朝向，灵敏度 0.15°/像素；右移向右转 |
 | 松开右键 | 释放鼠标，车辆继续转到最后的目标朝向 |
 | 按住右键，鼠标上下移动 | 调整镜头俯仰，上移提高视角，限制 5–75° |
@@ -30,13 +44,14 @@
 | R | 重置出生姿态、底盘驱动、观测历史和悬挂保护状态 |
 | Esc / 窗口失焦 | 清空输入、取消转向并释放鼠标 |
 
-组合键同时生效；相反方向互相抵消，斜向输入归一化。
+组合键同时生效；相反方向互相抵消，斜向输入归一化。Q/E 同时按下不累加朝向。
 第三人称中 X/Z 不再设置旋转速度。
 转向使用环绕角误差，经车轮驱动实际车身，最大 1.5 rad/s，误差进入 1° 后停止旋转指令。
 相机默认 3 m、俯仰 20°，跟随实际车头方向，并以世界竖直轴保持水平。
 场地已有碰撞几何挡住相机时，会自动缩短镜头距离。
 
-保留普通 `--camera-mode follow`、`--camera-mode fixed` 和旧的 `--fixed_camera`。
+`play_deformable.py` 默认启用第三人称，W 始终沿相机水平朝向前进。
+保留显式选择的普通 `--camera-mode follow`、`--camera-mode fixed` 和旧的 `--fixed_camera`；这些旧模式沿用原键位。
 `--fixed_camera` 与第三人称同时指定会报错。可用 `--vx_max`、`--vy_max`、`--wz_max` 调整指令上限。
 
 ## 场地与出生点
@@ -114,3 +129,10 @@ CPU 单车，物理步长 1 ms，策略周期 5 ms（200 Hz 仿真时间），
 最终驾驶轨迹没有遇到镜头遮挡；缩短镜头的分支经过独立几何测试，
 早期 `smoke_01.json` 也记录了真实场地碰撞将 3 m 镜头缩短的情况。
 原生输入通过程序注入验证接口与路由，没有对人手鼠标操作的手感做量化评估。
+
+2026-10-16 增加 Q/E 键盘第三人称驾驶后，30 项回归测试通过，
+并完成 `outputs/rmuc_field_install_20261016/deformable-keyboard-gui-01.json` 的 2,400 步回放。
+170° 出生朝向下，Q 左转跨过 ±180°，E 反向转回；松键后的最终误差分别为 0.988° / 0.988°。
+W 位移与实际车头偏差 0.005°，48 个采样点均四轮接触。
+回放约 0.199×、9.96 次渲染更新/墙钟秒，进程退出码 0，结束后无仿真或训练进程残留。
+完整安装及验证结果见 [统一场地说明](rmuc-field-play.md)。
