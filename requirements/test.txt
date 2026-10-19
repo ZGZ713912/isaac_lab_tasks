@@ -9,3 +9,12 @@ trimesh
 onnx
 onnxruntime
 rsl-rl-lib==3.0.1
+# rsl-rl-lib only asks for torch>=2.6.0, so without these pins the resolve replaces
+# the CPU wheel installed by the workflow with the CUDA wheel from PyPI and moves
+# the CPU regression run onto a different torch than the Isaac Lab environment.
+torch==2.10.0
+torchvision==0.25.0
+# Imported at module scope by tests/test_deformable_field_play.py (warp) and
+# the deformable fit toolchain used by tests/test_deformable_identification.py.
+pandas>=2.2
+warp-lang>=1.16
